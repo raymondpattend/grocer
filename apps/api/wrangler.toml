@@ -1,0 +1,33 @@
+name = "grocer-api"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+# ---------------------------------------------------------------------------
+# D1 database — stores ONLY Live Activity push tokens + lightweight snapshots.
+# CloudKit remains the source of truth for all grocery data.
+#
+# Create it once with:
+#   pnpm --filter @grocer/api exec wrangler d1 create grocer
+# then paste the returned database_id below.
+# ---------------------------------------------------------------------------
+[[d1_databases]]
+binding = "DB"
+database_name = "grocer"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+# ---------------------------------------------------------------------------
+# Non-secret vars. Secrets (APNS_PRIVATE_KEY) are set with `wrangler secret put`
+# and, for local dev, via .dev.vars (see .dev.vars.example).
+# ---------------------------------------------------------------------------
+[vars]
+APNS_ENVIRONMENT = "sandbox"          # "sandbox" | "production"
+APNS_TEAM_ID = "REPLACE_TEAM_ID"      # Apple Developer Team ID (10 chars)
+APNS_KEY_ID = "REPLACE_KEY_ID"        # APNs auth key ID (10 chars)
+APNS_BUNDLE_ID = "org.narro.grocer"   # iOS app bundle id (APNs topic base)
+IOS_MIN_BUILD = "1"
+IOS_LATEST_BUILD = "1"
+
+[observability]
+enabled = true

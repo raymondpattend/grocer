@@ -1,0 +1,213 @@
+import ActivityKit
+import Foundation
+import Observation
+
+/// Coordinates ActivityKit Live Activities and the APNs token registration
+/// that powers family-wide push-to-start behavior.
+///
+/// Two token streams matter:
+///  1. **push-to-start token** (iOS 17.2+): lets the backend START a Live
+///     Activity on this device via APNs even when the app isn't running. We
+///     register it whenever it changes (and when the family setting is on).
+///  2. **per-activity update token**: produced once a specific activity is
+///     running, lets the backend UPDATE/END that activity. We post it back so
+///     update/end pushes can target it.
+///
+/// The shopper's own device also starts the activity locally for immediate
+/// feedback; family devices rely on the push-to-start fan-out from the API.
+@Observable
+@MainActor
+final class LiveActivityManager {
+    static let shared = LiveActivityManager()
+
+    private let api = APIClient.shared
+    private let settings = SettingsStore.shared
+
+    /// Whether ActivityKit Live Activities are allowed by the user/system.
+    private(set) var areActivitiesEnabled: Bool = false
+
+    /// Context needed to register tokens. Set once the household/member resolve.
+    private var householdId: String?
+    private var memberId: String?
+
+    /// The local activity the shopper started (if any). This in-memory
+    /// reference is lost if iOS kills the app during a trip — `findRunningActivity`
+    /// recovers it from `Activity.activities`.
+    private var currentActivity: Activity<GroceryActivityAttributes>?
+    private var currentSessionId: String?
+
+    private var observationTasks: [Task<Void, Never>] = []
+
+    func configure(householdId: String, memberId: String) {
+        self.householdId = householdId
+        self.memberId = memberId
+        areActivitiesEnabled = ActivityAuthorizationInfo().areActivitiesEnabled
+        startObservingTokens()
+    }
+
+    // MARK: - Token observation
+
+    /// Observe push-to-start and (later) update tokens, posting them to the API.
+    private func startObservingTokens() {
+        observationTasks.forEach { $0.cancel() }
+        observationTasks.removeAll()
+
+        // Push-to-start token (iOS 17.2+). Only register if the family setting is on.
+        if #available(iOS 17.2, *) {
+            let task = Task { [weak self] in
+                for await tokenData in Activity<GroceryActivityAttributes>.pushToStartTokenUpdates {
+                    await self?.registerPushToStart(token: tokenData.hexString)
+                }
+            }
+            observationTasks.append(task)
+
+            // Register the current token immediately if one already exists.
+            if let data = Activity<GroceryActivityAttributes>.pushToStartToken {
+                Task { await registerPushToStart(token: data.hexString) }
+            }
+        }
+
+        // Watch any already-running activities for their update tokens.
+        let updates = Task { [weak self] in
+            for await activity in Activity<GroceryActivityAttributes>.activityUpdates {
+                self?.observeUpdateToken(for: activity)
+            }
+        }
+        observationTasks.append(updates)
+    }
+
+    private func registerPushToStart(token: String?) async {
+        guard let householdId, let memberId else { return }
+        await api.registerPushToStart(
+            RegisterTokenPayload(
+                householdId: householdId,
+                memberId: memberId,
+                deviceId: settings.deviceId,
+                pushToStartToken: settings.familyLiveActivitiesEnabled ? token : nil,
+                pushNotificationToken: nil,
+                familyLiveActivitiesEnabled: settings.familyLiveActivitiesEnabled,
+                notificationsEnabled: nil,
+                appVersion: settings.appVersion
+            )
+        )
+    }
+
+    /// Called when the family Live Activity setting changes — re-registers so the
+    /// backend stops/starts targeting this device.
+    func familyPreferenceChanged() {
+        if #available(iOS 17.2, *) {
+            Task { await registerPushToStart(token: Activity<GroceryActivityAttributes>.pushToStartToken?.hexString) }
+        } else {
+            Task { await registerPushToStart(token: nil) }
+        }
+    }
+
+    private func observeUpdateToken(for activity: Activity<GroceryActivityAttributes>) {
+        let sessionId = activity.attributes.sessionId
+        let task = Task { [weak self] in
+            for await tokenData in activity.pushTokenUpdates {
+                await self?.registerUpdateToken(token: tokenData.hexString, sessionId: sessionId)
+            }
+        }
+        observationTasks.append(task)
+    }
+
+    private func registerUpdateToken(token: String, sessionId: String) async {
+        guard let householdId, let memberId else { return }
+        await api.registerUpdateToken(
+            RegisterUpdateTokenPayload(
+                householdId: householdId,
+                memberId: memberId,
+                deviceId: settings.deviceId,
+                sessionId: sessionId,
+                updateToken: token
+            )
+        )
+    }
+
+    // MARK: - Local activity lifecycle (shopper's own device)
+
+    /// Start the Live Activity locally on the shopper's device. Family devices
+    /// receive a push-to-start from the API instead (see GroceryRepository).
+    func startLocalActivity(session: ShoppingSession, content: GroceryActivityAttributes.ContentState) {
+        guard ActivityAuthorizationInfo().areActivitiesEnabled,
+              settings.familyLiveActivitiesEnabled else { return }
+
+        let attributes = GroceryActivityAttributes(
+            householdId: session.householdId,
+            sessionId: session.id
+        )
+
+        do {
+            currentActivity = try Activity.request(
+                attributes: attributes,
+                content: .init(state: content, staleDate: nil),
+                pushType: .token
+            )
+            currentSessionId = session.id
+        } catch {
+            print("[LiveActivity] start failed: \(error)")
+        }
+    }
+
+    func updateLocalActivity(content: GroceryActivityAttributes.ContentState) {
+        let activity = currentActivity ?? findRunningActivity()
+        guard let activity else { return }
+        Task {
+            await activity.update(.init(state: content, staleDate: nil))
+        }
+    }
+
+    func endLocalActivity(content: GroceryActivityAttributes.ContentState) {
+        let activity = currentActivity ?? findRunningActivity()
+        guard let activity else {
+            print("[LiveActivity] endLocalActivity — no running activity found, ending all stale activities")
+            endAllActivities(content: content)
+            return
+        }
+        print("[LiveActivity] ending activity for session \(activity.attributes.sessionId)")
+        Task {
+            await activity.end(.init(state: content, staleDate: nil), dismissalPolicy: .after(.now + 60 * 5))
+            currentActivity = nil
+            currentSessionId = nil
+        }
+    }
+
+    /// Find a running activity that matches the current session, or any running
+    /// activity if we've lost the session reference (app was killed mid-trip).
+    private func findRunningActivity() -> Activity<GroceryActivityAttributes>? {
+        let running = Activity<GroceryActivityAttributes>.activities.filter {
+            $0.activityState == .active || $0.activityState == .stale
+        }
+        if let sessionId = currentSessionId,
+           let match = running.first(where: { $0.attributes.sessionId == sessionId }) {
+            return match
+        }
+        return running.first
+    }
+
+    /// End ALL running activities — used as a fallback when the specific
+    /// activity reference is lost (e.g. app was killed during a trip).
+    private func endAllActivities(content: GroceryActivityAttributes.ContentState) {
+        let running = Activity<GroceryActivityAttributes>.activities.filter {
+            $0.activityState == .active || $0.activityState == .stale
+        }
+        guard !running.isEmpty else {
+            print("[LiveActivity] no running activities to end")
+            return
+        }
+        print("[LiveActivity] ending \(running.count) stale activities")
+        for activity in running {
+            Task {
+                await activity.end(.init(state: content, staleDate: nil), dismissalPolicy: .after(.now + 60 * 5))
+            }
+        }
+        currentActivity = nil
+        currentSessionId = nil
+    }
+}
+
+private extension Data {
+    /// Hex string used to transmit ActivityKit/APNs tokens to the backend.
+    var hexString: String { map { String(format: "%02x", $0) }.joined() }
+}

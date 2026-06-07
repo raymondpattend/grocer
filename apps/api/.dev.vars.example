@@ -1,0 +1,13 @@
+# Copy to `.dev.vars` for local `wrangler dev`. NEVER commit the real file.
+#
+# The APNs auth key is the contents of the AuthKey_XXXXXXXXXX.p8 file you
+# download from the Apple Developer portal. Paste it with literal \n escapes
+# OR as a real multi-line value (wrangler supports multi-line .dev.vars).
+
+APNS_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nMIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBHkwdwIBAQQg...\n-----END PRIVATE KEY-----"
+
+# These can also live in wrangler.toml [vars]; values here override for local dev.
+APNS_ENVIRONMENT="sandbox"
+APNS_TEAM_ID="ABCDE12345"
+APNS_KEY_ID="FGHIJ67890"
+APNS_BUNDLE_ID="org.narro.grocer"

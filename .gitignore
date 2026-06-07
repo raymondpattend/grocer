@@ -1,0 +1,40 @@
+# Node / pnpm
+node_modules/
+dist/
+.turbo/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Cloudflare / Wrangler
+.wrangler/
+.dev.vars
+.dev.vars.local
+wrangler.local.toml
+
+# Secrets
+*.p8
+*.pem
+.env
+.env.*
+!.env.example
+
+# macOS
+.DS_Store
+
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+*.xcuserdatad/
+xcuserdata/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+# XcodeGen produces the project; keep it out of source control by default.
+apps/ios/Grocer.xcodeproj/
+
+# Swift Package Manager
+.build/
+Packages/
+Package.resolved

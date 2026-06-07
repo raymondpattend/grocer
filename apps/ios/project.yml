@@ -1,0 +1,74 @@
+# XcodeGen project definition.
+#
+# Generate the Xcode project with:
+#   brew install xcodegen   (once)
+#   cd apps/ios && xcodegen generate
+#   open Grocer.xcodeproj
+#
+# Then set your Team and replace the bundle identifiers / iCloud container.
+# See apps/ios/README.md and docs/ENTITLEMENTS.md.
+
+name: Grocer
+options:
+  bundleIdPrefix: org.narro
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.0"
+    DEVELOPMENT_TEAM: "LNY6LA39SW" # Narro LLC
+    CODE_SIGN_STYLE: Automatic
+    # Gates CloudKit. Default YES (normal builds use CloudKit). Build with
+    # GR_CLOUDKIT_ENABLED=NO for UI-only / local sample-data mode.
+    GR_CLOUDKIT_ENABLED: "YES"
+
+targets:
+  Grocer:
+    type: application
+    platform: iOS
+    sources:
+      - path: Grocer
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.narro.grocer
+        INFOPLIST_FILE: Grocer/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Grocer/Grocer.entitlements
+        GENERATE_INFOPLIST_FILE: NO
+        ENABLE_PREVIEWS: YES
+    dependencies:
+      - target: GrocerWidget
+
+  GrocerWidget:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: GrocerWidget
+      # The ActivityAttributes type is shared with the app target.
+      - path: Grocer/Shared/GroceryActivityAttributes.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.narro.grocer.GrocerWidget
+        INFOPLIST_FILE: GrocerWidget/Info.plist
+        CODE_SIGN_ENTITLEMENTS: GrocerWidget/GrocerWidget.entitlements
+        GENERATE_INFOPLIST_FILE: NO
+
+schemes:
+  Grocer:
+    build:
+      targets:
+        Grocer: all
+        GrocerWidget: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release

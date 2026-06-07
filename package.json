@@ -1,0 +1,17 @@
+{
+  "name": "grocer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Private family grocery app — SwiftUI + CloudKit iOS app with a Cloudflare Workers (Hono) API for Live Activity push delivery.",
+  "packageManager": "pnpm@9.12.0",
+  "scripts": {
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "dev:api": "pnpm --filter @grocer/api dev",
+    "deploy:api": "pnpm --filter @grocer/api deploy",
+    "test:api": "pnpm --filter @grocer/api test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
