@@ -27,14 +27,29 @@
 		<string>remote-notification</string>
 	</array>
 	<key>UILaunchScreen</key>
-	<dict/>
+	<dict>
+		<key>UIColorName</key>
+		<string>SystemBackgroundColor</string>
+	</dict>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
 	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
 	<!-- Gates CloudKit (see CloudKitService). Driven by GR_CLOUDKIT_ENABLED. -->
 	<key>GRCloudKitEnabled</key>
 	<string>$(GR_CLOUDKIT_ENABLED)</string>
+	<!-- Declares Grocer as a CloudKit share handler so tapping an iCloud
+	     share link routes to userDidAcceptCloudKitShareWith (see
+	     ShareAcceptance.swift) instead of falling back to an App Store lookup. -->
+	<key>CKSharingSupported</key>
+	<true/>
 	<!-- Required for Live Activities. -->
 	<key>NSSupportsLiveActivities</key>
 	<true/>

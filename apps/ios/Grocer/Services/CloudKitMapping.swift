@@ -195,6 +195,7 @@ extension ShoppingSession: CloudKitApplicable {
             storeName: string(r, CK.Field.storeName),
             startedAt: date(r, CK.Field.startedAt) ?? Date(),
             endedAt: date(r, CK.Field.endedAt),
+            updatedAt: date(r, CK.Field.updatedAt) ?? r.modificationDate ?? date(r, CK.Field.startedAt) ?? Date(),
             status: status
         )
     }
@@ -207,6 +208,7 @@ extension ShoppingSession: CloudKitApplicable {
         r[CK.Field.storeName] = storeName as CKRecordValue?
         r[CK.Field.startedAt] = startedAt as CKRecordValue
         r[CK.Field.endedAt] = endedAt as CKRecordValue?
+        r[CK.Field.updatedAt] = updatedAt as CKRecordValue
         r[CK.Field.status] = status.rawValue as CKRecordValue
     }
 }

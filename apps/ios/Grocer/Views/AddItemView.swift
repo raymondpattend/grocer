@@ -10,9 +10,7 @@ struct AddItemView: View {
     @State private var notes = ""
     @State private var replacementPreference = ""
     @State private var priority: ItemPriority = .normal
-    @State private var suggestions: [Suggestion] = []
     @State private var categoryEditedManually = false
-    @State private var suggestTask: Task<Void, Never>?
     @State private var showPastItems = false
 
     var body: some View {
@@ -31,24 +29,6 @@ struct AddItemView: View {
                 TextField("Name", text: $name)
                     .textInputAutocapitalization(.words)
                     .onSubmit { if canSave { save() } }
-
-                if !filteredSuggestions.isEmpty {
-                    ForEach(filteredSuggestions) { suggestion in
-                        Button { apply(suggestion) } label: {
-                            HStack {
-                                Image(systemName: "sparkles").foregroundStyle(.green)
-                                VStack(alignment: .leading) {
-                                    Text(suggestion.name)
-                                    if let detail = suggestionDetail(suggestion) {
-                                        Text(detail).font(.caption).foregroundStyle(.secondary)
-                                    }
-                                }
-                                Spacer()
-                            }
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
             }
 
             Section("Details (optional)") {
@@ -81,8 +61,12 @@ struct AddItemView: View {
                     .disabled(!canSave)
             }
         }
-        .task(id: name) {
-            await updateSuggestions()
+        .onChange(of: name) { _, newValue in
+            guard !categoryEditedManually else { return }
+            let trimmed = newValue.trimmingCharacters(in: .whitespaces)
+            if trimmed.count >= 2 {
+                category = CategoryGuess.guess(for: trimmed)
+            }
         }
         .sheet(isPresented: $showPastItems) {
             PastItemsSheet { selectedName in
@@ -94,49 +78,17 @@ struct AddItemView: View {
         }
     }
 
+    private var trimmedName: String {
+        name.trimmingCharacters(in: .whitespaces)
+    }
+
     private var canSave: Bool {
-        !name.trimmingCharacters(in: .whitespaces).isEmpty
-    }
-
-    private var filteredSuggestions: [Suggestion] {
-        let trimmed = name.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !trimmed.isEmpty else { return [] }
-        return suggestions.filter { $0.name.lowercased() != trimmed }
-    }
-
-    private func suggestionDetail(_ s: Suggestion) -> String? {
-        [s.quantity, s.category, s.notes].compactMap { $0 }.joined(separator: " · ").nilIfEmpty
-    }
-
-    private func apply(_ s: Suggestion) {
-        name = s.name
-        if let q = s.quantity { quantity = q }
-        if let c = GroceryCategory(rawValue: s.category) { category = c; categoryEditedManually = true }
-        if let n = s.notes { notes = n }
-        suggestions = []
-    }
-
-    @MainActor
-    private func updateSuggestions() async {
-        let trimmed = name.trimmingCharacters(in: .whitespaces)
-        guard trimmed.count >= 2 else { suggestions = []; return }
-
-        if !categoryEditedManually {
-            category = CategoryGuess.guess(for: trimmed)
-        }
-
-        try? await Task.sleep(for: .milliseconds(300))
-        guard !Task.isCancelled else { return }
-
-        let recent = repo.pendingItems.map(\.name)
-        let result = await APIClient.shared.suggestions(query: trimmed, recent: recent)
-        guard !Task.isCancelled else { return }
-        suggestions = result
+        !trimmedName.isEmpty
     }
 
     private func save() {
         repo.addItem(
-            name: name.trimmingCharacters(in: .whitespaces),
+            name: trimmedName,
             quantity: quantity,
             category: category,
             notes: notes,
@@ -191,8 +143,4 @@ private struct PastItemsSheet: View {
             }
         }
     }
-}
-
-private extension String {
-    var nilIfEmpty: String? { isEmpty ? nil : self }
 }

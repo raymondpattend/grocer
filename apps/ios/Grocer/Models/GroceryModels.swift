@@ -176,6 +176,7 @@ struct ShoppingSession: Identifiable, Hashable {
     var storeName: String?
     var startedAt: Date
     var endedAt: Date?
+    var updatedAt: Date
     var status: SessionStatus
 }
 

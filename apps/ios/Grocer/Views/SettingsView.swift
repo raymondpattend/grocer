@@ -11,6 +11,7 @@ struct SettingsView: View {
     @State private var apiHealthy: Bool?
     @State private var displayName = ""
     @State private var groupName = ""
+    @State private var committedGroupName = ""
     @State private var shareError: String?
     @State private var preparingShare = false
     @State private var confirmLeave = false
@@ -41,16 +42,19 @@ struct SettingsView: View {
         .task { apiHealthy = await APIClient.shared.health() }
         .onAppear {
             displayName = repo.displayName
-            groupName = repo.currentHousehold?.name ?? ""
+            syncGroupNameFromRepo()
         }
         .onChange(of: repo.currentHousehold?.id) { _, _ in
-            groupName = repo.currentHousehold?.name ?? ""
+            syncGroupNameFromRepo()
+        }
+        .onChange(of: repo.currentHousehold?.name) { _, _ in
+            syncGroupNameFromRepoIfClean()
         }
         .onChange(of: selectedProfilePhoto) { _, newItem in
             loadProfilePhoto(newItem)
         }
         .onDisappear {
-            commitPendingChanges()
+            commitDisplayName()
         }
         .alert("Couldn’t start sharing", isPresented: Binding(
             get: { shareError != nil }, set: { if !$0 { shareError = nil } }
@@ -97,10 +101,11 @@ struct SettingsView: View {
     }
 
     private var profileSection: some View {
-        Section("Profile") {
+        let currentProfileImage = repo.profileImageData
+        return Section("Profile") {
             HStack(alignment: .center, spacing: 16) {
                 PhotosPicker(selection: $selectedProfilePhoto, matching: .images) {
-                    ProfilePicture(imageData: repo.profileImageData, size: 72)
+                    ProfilePicture(imageData: currentProfileImage, size: 72)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Change profile photo")
@@ -121,13 +126,17 @@ struct SettingsView: View {
 
     private var groupSection: some View {
         Section("Group") {
-            HStack {
-                TextField("Group Name", text: $groupName)
-                    .submitLabel(.done)
-                    .onSubmit { commitGroupName() }
-                commitButton(isEnabled: canSaveGroupName) {
-                    commitGroupName()
+            if repo.isOwnerOfCurrentGroup {
+                HStack {
+                    TextField("Group Name", text: $groupName)
+                        .submitLabel(.done)
+                        .onSubmit { commitGroupName() }
+                    commitButton(isEnabled: canSaveGroupName) {
+                        commitGroupName()
+                    }
                 }
+            } else {
+                LabeledContent("Name", value: repo.currentHousehold?.name ?? "Group")
             }
         }
     }
@@ -196,10 +205,12 @@ struct SettingsView: View {
             LabeledContent("Sync", value: syncLabel)
             LabeledContent("CloudKit", value: repo.usingCloudKit ? "Active" : "Disabled")
             LabeledContent("Container", value: CloudKitService.shared.container != nil ? "OK" : "nil")
+            LabeledContent("Subscriptions", value: repo.subscriptionStatus.statusText)
             LabeledContent("Groups", value: "\(repo.households.count)")
             LabeledContent("Members", value: "\(repo.members.count)")
             LabeledContent("Lists", value: "\(repo.lists.count)")
             LabeledContent("Items", value: "\(repo.items.count)")
+            LabeledContent("Events", value: "\(repo.currentAuditEvents.count)")
             LabeledContent("App version", value: settings.appVersion)
 
             Button("Force Refresh") {
@@ -266,7 +277,7 @@ struct SettingsView: View {
 
     private var canSaveGroupName: Bool {
         let trimmed = groupName.trimmingCharacters(in: .whitespacesAndNewlines)
-        return !trimmed.isEmpty && trimmed != (repo.currentHousehold?.name ?? "")
+        return repo.isOwnerOfCurrentGroup && !trimmed.isEmpty && trimmed != committedGroupName
     }
 
     @ViewBuilder
@@ -296,13 +307,36 @@ struct SettingsView: View {
     }
 
     private func commitGroupName() {
+        guard repo.isOwnerOfCurrentGroup else {
+            syncGroupNameFromRepo()
+            return
+        }
         let trimmed = groupName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            groupName = repo.currentHousehold?.name ?? ""
+            syncGroupNameFromRepo()
+            return
+        }
+        guard trimmed != committedGroupName else {
+            groupName = committedGroupName
             return
         }
         repo.renameGroup(trimmed)
+        committedGroupName = trimmed
         groupName = trimmed
+    }
+
+    private func syncGroupNameFromRepo() {
+        let name = repo.currentHousehold?.name ?? ""
+        committedGroupName = name
+        groupName = name
+    }
+
+    private func syncGroupNameFromRepoIfClean() {
+        let latest = repo.currentHousehold?.name ?? ""
+        if groupName == committedGroupName {
+            groupName = latest
+        }
+        committedGroupName = latest
     }
 
     private func loadProfilePhoto(_ item: PhotosPickerItem?) {
@@ -332,8 +366,13 @@ struct SettingsView: View {
         Task {
             defer { preparingShare = false }
             do {
-                let (share, container) = try await repo.prepareShare()
-                ShareSheetPresenter.present(share: share, container: container)
+                if #available(iOS 26.0, *) {
+                    let url = try await repo.prepareOneTimeInviteURL()
+                    ShareSheetPresenter.presentInvite(url: url)
+                } else {
+                    let (share, container) = try await repo.prepareShare()
+                    ShareSheetPresenter.present(share: share, container: container)
+                }
             } catch {
                 shareError = error.localizedDescription
             }

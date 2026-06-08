@@ -8,62 +8,95 @@ struct GroceryListView: View {
 
     @State private var quickAddText = ""
     @State private var showingAddItem = false
+    @State private var showingAuditLog = false
     @State private var showingSettings = false
     @State private var sessionForNav: ShoppingSession?
     @State private var showNewGroup = false
     @State private var showEditGroup = false
-    @State private var showRemoved = false
     @State private var showStartTrip = false
-    @State private var tripStoreName = ""
     @FocusState private var quickAddFocused: Bool
 
     private var tint: Color { repo.currentHousehold?.tint ?? .green }
 
     var body: some View {
-        List {
-            if let session = repo.activeSession {
-                Section {
+        ScrollView {
+            LazyVStack(spacing: 0) {
+                if let session = repo.activeSession {
                     ActiveSessionBanner(session: session, progress: repo.progress(for: session), tint: tint) {
                         sessionForNav = session
                     }
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 12)
                 }
-            }
 
-            if repo.currentList != nil {
-                Section {
+                if repo.currentList != nil {
                     quickAddRow
-                } footer: {
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 16)
+
+                    ForEach(repo.pendingItems.groupedByCategory(), id: \.category) { group in
+                        VStack(alignment: .leading, spacing: 0) {
+                            CategoryHeader(category: group.category)
+                                .padding(.horizontal, 20)
+                                .padding(.bottom, 8)
+                                .padding(.top, 4)
+
+                            VStack(spacing: 0) {
+                                ForEach(Array(group.items.enumerated()), id: \.element.id) { index, item in
+                                    NavigationLink(value: item) {
+                                        GroceryItemRow(
+                                            item: item,
+                                            member: repo.currentMembers.first { $0.id == item.requestedByMemberId }
+                                        )
+                                    }
+                                    .buttonStyle(.plain)
+
+                                    if index < group.items.count - 1 {
+                                        Divider()
+                                            .padding(.leading, 76)
+                                    }
+                                }
+                            }
+                            .background(Color(.secondarySystemGroupedBackground))
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .padding(.horizontal, 16)
+                        }
+                        .padding(.bottom, 12)
+                    }
+
+                    if repo.pendingItems.isEmpty {
+                        ContentUnavailableView("Nothing on the list", systemImage: "checklist",
+                                               description: Text("Add what you need for \(repo.currentHousehold?.name ?? "this group")."))
+                        .padding(.top, 40)
+                    }
+
                     if !repo.pendingItems.isEmpty {
                         Text("^[\(repo.pendingItems.count) item](inflect: true) on the list")
+                            .font(.footnote)
+                            .foregroundStyle(.tertiary)
+                            .padding(.top, 8)
+                            .padding(.bottom, 20)
                     }
+                } else if repo.currentHousehold != nil {
+                    // A group is selected but its list hasn't arrived yet — e.g.
+                    // a freshly joined shared group whose records are still
+                    // syncing. Showing "No groups yet" here would be misleading.
+                    ContentUnavailableView("Syncing group…", systemImage: "icloud.and.arrow.down",
+                                           description: Text("\(repo.currentHousehold?.name ?? "This group")'s list is on its way."))
+                    .padding(.top, 40)
+                } else if repo.hasCompletedInitialLoad {
+                    ContentUnavailableView("No groups yet", systemImage: "person.2",
+                                           description: Text("Create a group to start planning."))
+                    .padding(.top, 40)
+                } else {
+                    GroceryListSkeleton()
                 }
-
-                ForEach(repo.pendingItems.groupedByCategory(), id: \.category) { group in
-                    Section {
-                        ForEach(group.items) { item in
-                            NavigationLink(value: item) { GroceryItemRow(item: item) }
-                        }
-                    } header: {
-                        CategoryHeader(category: group.category)
-                    }
-                }
-
-                if repo.pendingItems.isEmpty && repo.removedItems.isEmpty {
-                    ContentUnavailableView("Nothing on the list", systemImage: "checklist",
-                                           description: Text("Add what you need for \(repo.currentHousehold?.name ?? "this group")."))
-                }
-
-                if !repo.removedItems.isEmpty {
-                    removedSection
-                }
-            } else if repo.hasCompletedInitialLoad {
-                ContentUnavailableView("No groups yet", systemImage: "person.2",
-                                       description: Text("Create a group to start planning."))
-            } else {
-                GroceryListSkeleton()
             }
+            .padding(.top, 8)
         }
-        .listStyle(.insetGrouped)
+        .background(Color(.systemGroupedBackground))
+        .refreshable { await repo.manualRefresh() }
+        .animation(.default, value: repo.pendingItems.map(\.id))
         .navigationTitle(repo.currentHousehold?.name ?? "Grocer")
         .navigationBarTitleDisplayMode(.large)
         .tint(tint)
@@ -84,24 +117,26 @@ struct GroceryListView: View {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button { showingAddItem = true } label: { Image(systemName: "plus") }
                     .disabled(repo.currentList == nil)
+                Button { showingAuditLog = true } label: { Image(systemName: "clock.arrow.circlepath") }
+                    .disabled(repo.currentHousehold == nil)
+                    .accessibilityLabel("Audit Log")
                 Button { showingSettings = true } label: { Image(systemName: "gearshape") }
             }
         }
         .sheet(isPresented: $showingAddItem) { NavigationStack { AddItemView() } }
+        .sheet(isPresented: $showingAuditLog) { NavigationStack { AuditLogView() } }
         .sheet(isPresented: $showingSettings) { NavigationStack { SettingsView() } }
         .sheet(isPresented: $showNewGroup) { NavigationStack { GroupEditorView(group: nil) } }
         .sheet(isPresented: $showEditGroup) { NavigationStack { GroupEditorView(group: repo.currentHousehold) } }
         .sheet(isPresented: $showStartTrip) {
             StartTripSheet(
-                storeName: $tripStoreName,
                 groupName: repo.currentHousehold?.name ?? "this group",
                 itemCount: repo.pendingItems.count,
                 tint: tint
             ) {
                 guard let list = repo.currentList else { return }
-                let store = tripStoreName.trimmingCharacters(in: .whitespacesAndNewlines)
                 Task {
-                    await repo.startShopping(list: list, storeName: store.isEmpty ? nil : store)
+                    await repo.startShopping(list: list)
                     sessionForNav = repo.activeSession
                 }
             }
@@ -123,7 +158,7 @@ struct GroceryListView: View {
             }
             Divider()
             Button { showNewGroup = true } label: { Label("New Group", systemImage: "plus") }
-            if repo.currentHousehold != nil {
+            if repo.currentHousehold != nil && repo.isOwnerOfCurrentGroup {
                 Button { showEditGroup = true } label: { Label("Edit Group", systemImage: "paintbrush") }
             }
         } label: {
@@ -139,16 +174,24 @@ struct GroceryListView: View {
     // MARK: - Quick add
 
     private var quickAddRow: some View {
-        HStack {
-            Image(systemName: "plus.circle.fill").foregroundStyle(tint)
+        HStack(spacing: 10) {
+            Image(systemName: "plus.circle.fill")
+                .font(.title3)
+                .foregroundStyle(tint)
             TextField("Add item…", text: $quickAddText)
                 .focused($quickAddFocused)
                 .submitLabel(.done)
                 .onSubmit(submitQuickAdd)
             if !quickAddText.isEmpty {
-                Button("Add", action: submitQuickAdd).buttonStyle(.borderless)
+                Button("Add", action: submitQuickAdd)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(tint)
             }
         }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     private func submitQuickAdd() {
@@ -160,75 +203,8 @@ struct GroceryListView: View {
         quickAddFocused = true
     }
 
-    private var removedSection: some View {
-        Section {
-            Button {
-                withAnimation { showRemoved.toggle() }
-            } label: {
-                HStack {
-                    Label("Completed & Removed (\(repo.removedItems.count))", systemImage: "archivebox")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.tertiary)
-                        .rotationEffect(.degrees(showRemoved ? 90 : 0))
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            if showRemoved {
-                ForEach(repo.removedItems) { item in
-                    HStack(spacing: 10) {
-                        Image(systemName: statusIcon(for: item.status))
-                            .foregroundStyle(statusColor(for: item.status))
-                            .font(.caption)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(item.name)
-                                .font(.body)
-                                .foregroundStyle(.secondary)
-                            Text(item.status.rawValue)
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                        }
-                        Spacer()
-                        Button {
-                            repo.restoreItem(item)
-                        } label: {
-                            Text("Re-add")
-                                .font(.caption.weight(.medium))
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                    }
-                }
-            }
-        }
-    }
-
-    private func statusIcon(for status: ItemStatus) -> String {
-        switch status {
-        case .found: return "checkmark.circle.fill"
-        case .replaced: return "arrow.triangle.2.circlepath.circle.fill"
-        case .removed: return "minus.circle.fill"
-        default: return "circle"
-        }
-    }
-
-    private func statusColor(for status: ItemStatus) -> Color {
-        switch status {
-        case .found: return .green
-        case .replaced: return .blue
-        case .removed: return .orange
-        default: return .secondary
-        }
-    }
-
     private var startShoppingButton: some View {
         Button {
-            tripStoreName = repo.currentHousehold?.storeName ?? ""
             showStartTrip = true
         } label: {
             Label("Start Shopping", systemImage: "cart.fill")
@@ -247,38 +223,125 @@ struct GroceryListView: View {
 
 struct GroceryItemRow: View {
     let item: GroceryItem
+    var member: HouseholdMember?
+
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
+            ProductImageView(itemName: item.name, size: 52)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(item.name)
+                    .font(.body.weight(.medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+
+                HStack(spacing: 4) {
+                    if let qty = item.quantity {
+                        Text(qty)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if item.notes != nil {
+                        if item.quantity != nil {
+                            Text("·").font(.caption).foregroundStyle(.tertiary)
+                        }
+                        Text(item.notes!)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+            }
+
+            Spacer(minLength: 4)
+
             if item.priority == .high {
                 Image(systemName: "exclamationmark.circle.fill")
                     .foregroundStyle(.red)
-                    .font(.caption)
-            }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(item.name).font(.body)
-                HStack(spacing: 6) {
-                    if let qty = item.quantity { Text(qty); Text("·") }
-                    Text("Added by \(item.requestedByDisplayName)")
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
-            if item.priority == .low {
-                Spacer()
+                    .font(.subheadline)
+            } else if item.priority == .low {
                 Text("low")
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
-                    .background(.quaternary, in: Capsule())
+                    .background(Color(.systemGray5), in: Capsule())
+            }
+
+            MemberAvatarView(member: member, size: 28)
+
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.quaternary)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .contentShape(Rectangle())
+    }
+}
+
+/// Displays a household member's profile picture as a small circular avatar.
+///
+/// The decoded image is produced off the main thread by `AvatarImageCache` and
+/// held in `@State`, so it is NOT re-decoded on every `body` pass (which would
+/// otherwise stall the main thread on each keystroke when the avatar appears in a
+/// frequently-invalidated list).
+struct MemberAvatarView: View {
+    let member: HouseholdMember?
+    var size: CGFloat = 28
+
+    @State private var image: UIImage?
+
+    private struct AvatarToken: Equatable {
+        let id: String?
+        let byteCount: Int
+    }
+
+    private var token: AvatarToken {
+        AvatarToken(id: member?.id, byteCount: member?.profileImageData?.count ?? 0)
+    }
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: size, height: size)
+                    .clipShape(Circle())
+            } else {
+                Circle()
+                    .fill(Color(.systemGray5))
+                    .frame(width: size, height: size)
+                    .overlay {
+                        Text(initials(for: member))
+                            .font(.system(size: size * 0.38, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.secondary)
+                    }
             }
         }
+        .task(id: token) {
+            guard let data = member?.profileImageData else {
+                image = nil
+                return
+            }
+            let scale = UIScreen.main.scale
+            image = await AvatarImageCache.shared.thumbnail(for: data, maxPixel: size * scale)
+        }
+    }
+
+    private func initials(for member: HouseholdMember?) -> String {
+        guard let name = member?.displayName, !name.isEmpty else { return "?" }
+        let parts = name.split(separator: " ")
+        if parts.count >= 2 {
+            return "\(parts[0].prefix(1))\(parts[1].prefix(1))".uppercased()
+        }
+        return String(name.prefix(1)).uppercased()
     }
 }
 
 struct StartTripSheet: View {
     @Environment(\.dismiss) private var dismiss
-    @Binding var storeName: String
     let groupName: String
     let itemCount: Int
     var tint: Color = .green
@@ -299,19 +362,9 @@ struct StartTripSheet: View {
                 }
                 .padding(.top, 8)
 
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Store")
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.secondary)
-                    TextField("Where are you shopping?", text: $storeName)
-                        .textFieldStyle(.roundedBorder)
-                        .textInputAutocapitalization(.words)
-                }
-                .padding(.horizontal)
-
-                Text("Set a default store in **Edit Group** so it's always pre-filled.")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+                Text("Ready to start a shopping trip?")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
 
@@ -361,9 +414,16 @@ struct ActiveSessionBanner: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Text("View").font(.subheadline.weight(.medium))
-                Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
+                Text("View")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(tint)
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.quaternary)
             }
+            .padding(14)
+            .background(Color(.secondarySystemGroupedBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
         .buttonStyle(.plain)
     }

@@ -14,6 +14,12 @@
 	<key>com.apple.developer.ubiquity-kvstore-identifier</key>
 	<string>$(TeamIdentifierPrefix)$(CFBundleIdentifier)</string>
 
+	<!-- CloudKit one-time share links (CKShare.Participant.oneTimeURLParticipant). -->
+	<key>com.apple.developer.icloud-extended-share-access</key>
+	<array>
+		<string>InProcessOneTimeLinks</string>
+	</array>
+
 	<!-- Push Notifications: needed for ActivityKit push-to-start / updates. -->
 	<key>aps-environment</key>
 	<string>development</string>

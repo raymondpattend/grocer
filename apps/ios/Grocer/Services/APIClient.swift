@@ -8,12 +8,17 @@ import Foundation
 /// swallowed (logged) so they never block the grocery workflow.
 actor APIClient {
     static let shared = APIClient()
+    #if DEBUG
+    static let baseURLString = "https://grocer-75.localcan.dev"
+    #else
+    static let baseURLString = "https://grocer.narro.org"
+    #endif
 
     /// Override with your deployed Worker URL. For the simulator, the default
     /// localhost works against `wrangler dev`.
     private let baseURL: URL
 
-    init(baseURL: URL = URL(string: "https://grocer-75.localcan.dev")!) {
+    init(baseURL: URL = URL(string: APIClient.baseURLString)!) {
         self.baseURL = baseURL
     }
 
@@ -89,8 +94,19 @@ actor APIClient {
 
     // MARK: - Transport
 
-    private func get<T: Decodable>(_ path: String) async -> T? {
-        var req = URLRequest(url: baseURL.appendingPathComponent(path))
+    private func get<T: Decodable>(
+        _ path: String,
+        query: [String: String] = [:]
+    ) async -> T? {
+        var components = URLComponents(
+            url: baseURL.appendingPathComponent(path),
+            resolvingAgainstBaseURL: false
+        )
+        if !query.isEmpty {
+            components?.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) }
+        }
+        guard let url = components?.url else { return nil }
+        var req = URLRequest(url: url)
         req.httpMethod = "GET"
         return await perform(req)
     }

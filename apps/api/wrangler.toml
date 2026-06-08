@@ -14,12 +14,34 @@ compatibility_flags = ["nodejs_compat"]
 [[d1_databases]]
 binding = "DB"
 database_name = "grocer"
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+database_id = "cafa38d7-0f60-4a22-a52b-00d56079354c"
 migrations_dir = "migrations"
 
 # ---------------------------------------------------------------------------
-# Non-secret vars. Secrets (APNS_PRIVATE_KEY) are set with `wrangler secret put`
-# and, for local dev, via .dev.vars (see .dev.vars.example).
+# R2 bucket — caches AI-generated product images so each item name is only
+# generated once.  Create with:
+#   pnpm --filter @grocer/api exec wrangler r2 bucket create grocer-images
+# ---------------------------------------------------------------------------
+[[r2_buckets]]
+binding = "IMAGES"
+bucket_name = "grocer-images"
+
+# ---------------------------------------------------------------------------
+# Vectorize index — stores OpenAI text-embedding-3-small vectors so that
+# near-duplicate item names (e.g. "tomato" vs "tomatoes") resolve to the
+# same cached product image instead of regenerating.
+#
+# Create once with:
+#   pnpm --filter @grocer/api exec wrangler vectorize create grocer-image-embeddings \
+#     --dimensions 1536 --metric cosine
+# ---------------------------------------------------------------------------
+[[vectorize]]
+binding = "IMAGE_INDEX"
+index_name = "grocer-image-embeddings"
+
+# ---------------------------------------------------------------------------
+# Non-secret vars. Secrets (APNS_PRIVATE_KEY, OPENAI_API_KEY) are set with
+# `wrangler secret put` and, for local dev, via .dev.vars (see .dev.vars.example).
 # ---------------------------------------------------------------------------
 [vars]
 APNS_ENVIRONMENT = "sandbox"          # "sandbox" | "production"

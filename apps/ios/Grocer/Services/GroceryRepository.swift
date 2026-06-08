@@ -31,11 +31,17 @@ final class GroceryRepository {
     private(set) var lists: [GroceryList] = []
     private(set) var items: [GroceryItem] = []
     private(set) var sessions: [ShoppingSession] = []
+    private(set) var events: [ItemEvent] = []
 
     private(set) var selectedHouseholdId: String?
 
     enum SyncState: Equatable { case idle, syncing, offline, error(String) }
     private(set) var syncState: SyncState = .idle
+    private(set) var subscriptionStatus = CloudSubscriptionRegistrationResult(
+        privateZoneRegistered: false,
+        sharedDatabaseRegistered: false,
+        errors: []
+    )
     private(set) var usingCloudKit = false
     private(set) var hasCompletedInitialLoad = false
 
@@ -44,7 +50,15 @@ final class GroceryRepository {
     private let liveActivity = LiveActivityManager.shared
     private let notifications = PushNotificationCoordinator.shared
     private let settings = SettingsStore.shared
+    private let shoppingTripInactivityLimit: TimeInterval = 60 * 60
     private var remoteRefreshTask: Task<Void, Never>?
+    private var foregroundRefreshTask: Task<Void, Never>?
+    private var refreshInFlight = false
+    private var lastActivationRefreshAt: Date?
+    private var cloudWriteTask: Task<Void, Never>?
+    private var pendingItemSaves: [String: GroceryItem] = [:]
+    private var pendingItemDeletes = Set<String>()
+    private var pendingItemWriteVersions: [String: Int] = [:]
 
     // MARK: - Current selection
 
@@ -130,6 +144,11 @@ final class GroceryRepository {
 
     var activeSession: ShoppingSession? { activeSession(for: currentList?.id) }
 
+    func isStartedByCurrentUser(_ session: ShoppingSession) -> Bool {
+        let starter = Self.sanitizeRecordName(session.startedByMemberId)
+        return starter == currentMemberId || session.startedByMemberId == settings.deviceId
+    }
+
     func pendingItems(forList listId: String?) -> [GroceryItem] {
         guard let listId else { return [] }
         return items.filter { $0.listId == listId && $0.status == .needed }
@@ -142,6 +161,13 @@ final class GroceryRepository {
         guard let listId = currentList?.id else { return [] }
         return items.filter { $0.listId == listId && ($0.status == .removed || $0.status == .found || $0.status == .replaced) }
             .sorted { ($0.completedAt ?? $0.updatedAt) > ($1.completedAt ?? $1.updatedAt) }
+    }
+
+    var currentAuditEvents: [ItemEvent] {
+        guard let householdId = currentHousehold?.id else { return [] }
+        return events
+            .filter { $0.householdId == householdId }
+            .sorted { $0.createdAt > $1.createdAt }
     }
 
     /// Distinct item names from this list that aren't currently pending — for "add again" UI.
@@ -181,6 +207,50 @@ final class GroceryRepository {
             skipped: scoped.filter { $0.status == .skipped }.count,
             remaining: scoped.filter { $0.status == .needed }.count
         )
+    }
+
+    private func expireInactiveShoppingTrips(now: Date = Date()) async {
+        let expired = sessions.filter { session in
+            guard session.status == .active else { return false }
+            return now.timeIntervalSince(lastActivityDate(for: session)) >= shoppingTripInactivityLimit
+        }
+
+        for session in expired {
+            guard sessions.contains(where: { $0.id == session.id && $0.status == .active }) else { continue }
+            print("[Repo] auto-ending inactive shopping session \(session.id)")
+            await cancelShopping(session)
+        }
+    }
+
+    private func lastActivityDate(for session: ShoppingSession) -> Date {
+        var latest = max(session.startedAt, session.updatedAt)
+        if let endedAt = session.endedAt {
+            latest = max(latest, endedAt)
+        }
+
+        let sessionItemIds = Set(items
+            .filter { $0.householdId == session.householdId && $0.listId == session.listId }
+            .map(\.id))
+
+        for event in events where event.householdId == session.householdId && event.createdAt >= session.startedAt {
+            let matchesSession = event.sessionId == session.id
+            let matchesSessionItem = event.itemId.map { sessionItemIds.contains($0) } ?? false
+            if matchesSession || matchesSessionItem {
+                latest = max(latest, event.createdAt)
+            }
+        }
+
+        for item in items where item.householdId == session.householdId && item.listId == session.listId {
+            guard item.activeSessionId == session.id || item.createdAt >= session.startedAt || item.updatedAt >= session.startedAt else {
+                continue
+            }
+            latest = max(latest, item.createdAt, item.updatedAt)
+            if let completedAt = item.completedAt {
+                latest = max(latest, completedAt)
+            }
+        }
+
+        return latest
     }
 
     // MARK: - Bootstrap
@@ -234,7 +304,7 @@ final class GroceryRepository {
             ensureValidSelection()
             syncState = .idle
             print("[Repo] ✅ bootstrap succeeded — \(households.count) group(s), sync=idle")
-            await cloud.registerSubscriptions()
+            await registerForRealtimeSync()
         } catch {
             print("[Repo] ❌ bootstrap failed: \(error)")
             if households.isEmpty {
@@ -244,7 +314,7 @@ final class GroceryRepository {
                     ensureValidSelection()
                     syncState = .idle
                     print("[Repo] ✅ fallback group created OK")
-                    await cloud.registerSubscriptions()
+                    await registerForRealtimeSync()
                 } catch {
                     print("[Repo] ❌ fallback group creation also failed: \(error)")
                     syncState = .error("Sync failed: \(Self.shortError(error))")
@@ -265,15 +335,103 @@ final class GroceryRepository {
         }
         print("[Repo] refresh → fetching snapshot…")
         let snapshot = try await cloud.fetchSnapshot()
-        households = snapshot.households
-        members = snapshot.members
-        lists = snapshot.lists
-        items = snapshot.items
-        sessions = snapshot.sessions
-        print("[Repo] refresh → \(households.count) households, \(members.count) members, \(lists.count) lists, \(items.count) items")
+        applySnapshot(snapshot)
+        print("[Repo] refresh → \(households.count) households, \(members.count) members, \(lists.count) lists, \(items.count) items, \(events.count) events")
         ensureValidSelection()
         ensureCurrentUserMemberRecords()
         syncPersonalProfileCache()
+        await expireInactiveShoppingTrips()
+        await backfillParentReferencesIfNeeded()
+    }
+
+    /// One-time backfill for groups created before parent-reference support.
+    ///
+    /// `CKShare(rootRecord:)` only shares the root record and descendants whose
+    /// `parent` references chain up to it. Records saved by older builds have no
+    /// parent, so participants who join can't see the list or items. Here the
+    /// *owner* re-saves every child record of the groups it owns, which adds the
+    /// missing `parent` link (set in `setHouseholdParent`) and makes the data
+    /// visible to everyone the group is shared with. Guarded by a flag so it
+    /// runs only once.
+    private func backfillParentReferencesIfNeeded() async {
+        guard usingCloudKit else { return }
+        let key = "grocer.migration.parentRefs.v2"
+        guard !UserDefaults.standard.bool(forKey: key) else { return }
+
+        let ownedHouseholdIds = households
+            .filter { $0.ownerMemberId == currentMemberId
+                && ($0.recordOwnerName ?? CKCurrentUserDefaultName) == CKCurrentUserDefaultName }
+            .map(\.id)
+        guard !ownedHouseholdIds.isEmpty else {
+            UserDefaults.standard.set(true, forKey: key)
+            return
+        }
+
+        print("[Repo] backfilling parent refs for \(ownedHouseholdIds.count) owned group(s)…")
+        for hid in ownedHouseholdIds {
+            for list in lists where list.householdId == hid {
+                await fetchAndSave(list, type: CK.RecordType.list, id: list.id, householdId: hid)
+            }
+            for item in items where item.householdId == hid {
+                await fetchAndSave(item, type: CK.RecordType.item, id: item.id, householdId: hid)
+            }
+            for session in sessions where session.householdId == hid {
+                await fetchAndSave(session, type: CK.RecordType.session, id: session.id, householdId: hid)
+            }
+            for event in events where event.householdId == hid {
+                await fetchAndSave(event, type: CK.RecordType.event, id: event.id, householdId: hid)
+            }
+            for member in members where member.householdId == hid {
+                await saveMemberBestEffort(member)
+            }
+        }
+        UserDefaults.standard.set(true, forKey: key)
+        print("[Repo] ✅ parent-ref backfill complete")
+    }
+
+    /// User-initiated pull-to-refresh. CloudKit silent pushes can be delayed
+    /// (and are unreliable on the Simulator), so this gives an explicit way to
+    /// pull the latest shared changes on demand.
+    func manualRefresh() async {
+        await refreshSnapshot(context: "Refresh failed", registerSubscriptions: true, showSyncing: true)
+    }
+
+    /// Refresh after the app becomes active. This is intentionally light-touch:
+    /// subscriptions should do the real work, while foreground activation repairs
+    /// any delayed silent pushes.
+    func refreshAfterActivation() async {
+        await refreshWhileForeground(force: true)
+    }
+
+    func startForegroundRefreshLoop() {
+        foregroundRefreshTask?.cancel()
+        foregroundRefreshTask = Task { [weak self] in
+            await self?.refreshWhileForeground(force: true)
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(4))
+                await self?.refreshWhileForeground(force: false)
+            }
+        }
+    }
+
+    func stopForegroundRefreshLoop() {
+        foregroundRefreshTask?.cancel()
+        foregroundRefreshTask = nil
+    }
+
+    private func refreshWhileForeground(force: Bool) async {
+        guard hasCompletedInitialLoad else { return }
+        let now = Date()
+        if !force, let lastActivationRefreshAt,
+           now.timeIntervalSince(lastActivationRefreshAt) < 5 {
+            return
+        }
+        lastActivationRefreshAt = now
+        if usingCloudKit {
+            await refreshSnapshot(context: "Foreground refresh failed", registerSubscriptions: false, showSyncing: false)
+        } else {
+            await expireInactiveShoppingTrips(now: now)
+        }
     }
 
     /// Called when CloudKit delivers a silent push after a subscription fires.
@@ -285,17 +443,36 @@ final class GroceryRepository {
             try? await Task.sleep(for: .milliseconds(500))
             guard !Task.isCancelled else { return }
             print("[Repo] remote notification → refreshing…")
-            syncState = .syncing
-            do {
-                try await refresh()
-                syncState = .idle
-                print("[Repo] ✅ remote refresh succeeded")
-            } catch {
-                print("[Repo] ❌ remote refresh failed: \(error)")
-                syncState = .offline
-            }
+            await refreshSnapshot(context: "Remote refresh failed", registerSubscriptions: true, showSyncing: true)
         }
         await remoteRefreshTask?.value
+    }
+
+    private func refreshSnapshot(context: String, registerSubscriptions: Bool, showSyncing: Bool) async {
+        guard usingCloudKit else { return }
+        guard !refreshInFlight else { return }
+        refreshInFlight = true
+        defer { refreshInFlight = false }
+
+        if showSyncing { syncState = .syncing }
+        do {
+            try await refresh()
+            syncState = .idle
+            if registerSubscriptions {
+                await registerForRealtimeSync()
+            }
+            print("[Repo] ✅ \(context.replacingOccurrences(of: " failed", with: "")) succeeded")
+        } catch {
+            print("[Repo] ❌ \(context): \(error)")
+            recordSyncFailure(error, context: context)
+        }
+    }
+
+    private func registerForRealtimeSync(force: Bool = false) async {
+        guard usingCloudKit else { return }
+        subscriptionStatus = await cloud.registerSubscriptions(force: force)
+        guard !subscriptionStatus.isFullyRegistered else { return }
+        syncState = .error("CloudKit subscriptions failed. Pull to refresh still works.")
     }
 
     private func ensureValidSelection() {
@@ -407,8 +584,10 @@ final class GroceryRepository {
             house.apply(to: houseRecord)
             let memberRecord = CKRecord(recordType: CK.RecordType.member, recordID: recordID(for: member))
             member.apply(to: memberRecord)
+            setHouseholdParent(memberRecord, householdId: house.id)
             let listRecord = CKRecord(recordType: CK.RecordType.list, recordID: cloud.makeRecordID(list.id))
             list.apply(to: listRecord)
+            setHouseholdParent(listRecord, householdId: house.id)
 
             _ = try await cloud.saveToPrivateZone([houseRecord, memberRecord, listRecord])
             syncState = .idle
@@ -419,6 +598,10 @@ final class GroceryRepository {
 
     /// Update the current group's appearance (name, store, icon, theme).
     func updateGroup(name: String, store: String?, icon: String, theme: ListColorTheme) {
+        guard isOwnerOfCurrentGroup else {
+            syncState = .error("Only the group owner can edit group details.")
+            return
+        }
         guard var house = currentHousehold else { return }
         house.name = name
         house.storeName = store?.nilIfBlank
@@ -430,6 +613,10 @@ final class GroceryRepository {
     }
 
     func renameGroup(_ name: String) {
+        guard isOwnerOfCurrentGroup else {
+            syncState = .error("Only the group owner can rename this group.")
+            return
+        }
         guard var house = currentHousehold else { return }
         house.name = name
         house.updatedAt = Date()
@@ -440,11 +627,29 @@ final class GroceryRepository {
     // MARK: - Member management
 
     func removeMember(_ member: HouseholdMember) {
+        guard isOwnerOfCurrentGroup else {
+            syncState = .error("Only the group owner can remove members.")
+            return
+        }
+        guard let household = households.first(where: { $0.id == member.householdId }) else { return }
+        guard member.role != .owner else { return }
         members.removeAll { $0.id == member.id && $0.householdId == member.householdId }
         guard usingCloudKit else { return }
-        Task { try? await cloud.delete(recordID: recordID(for: member)) }
-        // Fully revoking a CKShare participant also requires removing them from
-        // the share (see docs/CLOUDKIT.md); record removal hides them for MVP.
+        Task {
+            do {
+                let names = Set([member.id, member.iCloudUserRecordName].compactMap { $0?.nilIfBlank })
+                _ = try await cloud.revokeParticipant(
+                    matching: names,
+                    from: householdRecordID(household)
+                )
+                await deleteBestEffort(recordID: recordID(for: member), context: "Remove member failed")
+                try? await refresh()
+            } catch {
+                print("[Repo] ❌ remove member failed: \(error)")
+                recordSyncFailure(error, context: "Remove member failed")
+                try? await refresh()
+            }
+        }
     }
 
     func isCurrentUser(_ member: HouseholdMember) -> Bool {
@@ -480,11 +685,12 @@ final class GroceryRepository {
         households.removeAll { $0.id == house.id }
         lists.removeAll { $0.householdId == house.id }
         items.removeAll { $0.householdId == house.id }
+        events.removeAll { $0.householdId == house.id }
         if let me { members.removeAll { $0.id == me.id && $0.householdId == house.id } }
         selectedHouseholdId = households.first?.id
         ensureValidSelection()
         if usingCloudKit, let me {
-            Task { try? await cloud.delete(recordID: recordID(for: me)) }
+            Task { await deleteBestEffort(recordID: recordID(for: me), context: "Leave group failed") }
         }
     }
 
@@ -510,9 +716,12 @@ final class GroceryRepository {
         )
         items.append(item)
         persist(item)
-        logEvent(.itemAdded, itemId: item.id, metadata: ["name": item.name])
         if let session = activeSession(for: list.id) {
+            logEvent(.itemAdded, householdId: item.householdId, itemId: item.id, sessionId: session.id,
+                     metadata: ["name": item.name])
             pushLiveActivityUpdate(for: session, lastItem: item, lastStatus: nil)
+        } else {
+            logEvent(.itemAdded, householdId: item.householdId, itemId: item.id, metadata: ["name": item.name])
         }
         return item
     }
@@ -522,7 +731,8 @@ final class GroceryRepository {
         updated.updatedAt = Date()
         replaceInWorkingSet(updated)
         persist(updated)
-        logEvent(.itemEdited, itemId: item.id)
+        logEvent(.itemEdited, householdId: item.householdId, itemId: item.id,
+                 sessionId: activeSession(for: item.listId)?.id, metadata: ["name": updated.name])
     }
 
     func restoreItem(_ item: GroceryItem) {
@@ -533,12 +743,16 @@ final class GroceryRepository {
         updated.updatedAt = Date()
         replaceInWorkingSet(updated)
         persist(updated)
+        logEvent(.itemEdited, householdId: item.householdId, itemId: item.id,
+                 sessionId: activeSession(for: item.listId)?.id,
+                 metadata: ["name": updated.name, "status": updated.status.rawValue])
     }
 
     func delete(_ item: GroceryItem) {
         items.removeAll { $0.id == item.id }
-        logEvent(.itemRemoved, itemId: item.id, metadata: ["name": item.name])
-        Task { try? await cloud.delete(recordID: cloud.makeRecordID(item.id)) }
+        persistDeletion(item)
+        logEvent(.itemRemoved, householdId: item.householdId, itemId: item.id,
+                 sessionId: activeSession(for: item.listId)?.id, metadata: ["name": item.name])
     }
 
     // MARK: - Shopping status transitions
@@ -563,7 +777,11 @@ final class GroceryRepository {
         case .removed: eventType = .itemRemoved
         case .needed: eventType = .itemEdited
         }
-        logEvent(eventType, itemId: item.id, metadata: ["status": status.rawValue])
+        var metadata = ["name": updated.name, "status": status.rawValue]
+        if let replacement = replacement?.nilIfBlank {
+            metadata["replacement"] = replacement
+        }
+        logEvent(eventType, householdId: item.householdId, itemId: item.id, sessionId: session?.id, metadata: metadata)
         if let session { pushLiveActivityUpdate(for: session, lastItem: updated, lastStatus: status) }
     }
 
@@ -582,11 +800,12 @@ final class GroceryRepository {
             startedByMemberId: member?.id ?? settings.deviceId,
             startedByDisplayName: member?.displayName ?? settings.displayName,
             storeName: (storeName ?? groupStore)?.nilIfBlank,
-            startedAt: now, endedAt: nil, status: .active
+            startedAt: now, endedAt: nil, updatedAt: now, status: .active
         )
         sessions.append(session)
         persist(session)
-        logEvent(.sessionStarted, sessionId: session.id, metadata: ["store": session.storeName ?? ""])
+        logEvent(.sessionStarted, householdId: session.householdId, sessionId: session.id,
+                 metadata: ["store": session.storeName ?? ""])
 
         let content = contentState(for: session)
         let payload = startPayload(session: session, content: content)
@@ -605,6 +824,7 @@ final class GroceryRepository {
     func setStore(_ session: ShoppingSession, to storeName: String?) {
         var updated = session
         updated.storeName = storeName?.nilIfBlank
+        updated.updatedAt = Date()
         replaceSession(updated)
         persist(updated)
         pushLiveActivityUpdate(for: updated, lastItem: nil, lastStatus: nil)
@@ -612,11 +832,13 @@ final class GroceryRepository {
 
     func finishShopping(_ session: ShoppingSession, clearCompleted: Bool, keepOutOfStock: Bool) async {
         var ended = session
+        let now = Date()
         ended.status = .completed
-        ended.endedAt = Date()
+        ended.endedAt = now
+        ended.updatedAt = now
         replaceSession(ended)
         persist(ended)
-        logEvent(.sessionCompleted, sessionId: session.id)
+        logEvent(.sessionCompleted, householdId: session.householdId, sessionId: session.id)
 
         let progress = progress(for: session)
         let payload = endPayload(session: ended, status: "completed", progress: progress)
@@ -627,11 +849,13 @@ final class GroceryRepository {
 
     func cancelShopping(_ session: ShoppingSession) async {
         var cancelled = session
+        let now = Date()
         cancelled.status = .cancelled
-        cancelled.endedAt = Date()
+        cancelled.endedAt = now
+        cancelled.updatedAt = now
         replaceSession(cancelled)
         persist(cancelled)
-        logEvent(.sessionCancelled, sessionId: session.id)
+        logEvent(.sessionCancelled, householdId: session.householdId, sessionId: session.id)
 
         let progress = progress(for: session)
         let payload = endPayload(session: cancelled, status: "cancelled", progress: progress)
@@ -641,12 +865,16 @@ final class GroceryRepository {
 
     private func applyCleanup(session: ShoppingSession, clearCompleted: Bool, keepOutOfStock: Bool) {
         var changed: [GroceryItem] = []
+        var deleted: [GroceryItem] = []
         items = items.compactMap { item in
             guard item.listId == session.listId else { return item }
             var item = item
             switch item.status {
             case .found, .replaced:
-                if clearCompleted { return nil }
+                if clearCompleted {
+                    deleted.append(item)
+                    return nil
+                }
             case .outOfStock:
                 if !keepOutOfStock { item.status = .needed; item.completedAt = nil; changed.append(item) }
             case .skipped:
@@ -657,6 +885,7 @@ final class GroceryRepository {
             return item
         }
         changed.forEach { persist($0) }
+        deleted.forEach { persistDeletion($0) }
     }
 
     // MARK: - Live Activity payload helpers
@@ -740,13 +969,34 @@ final class GroceryRepository {
         return (share, container)
     }
 
+    @available(iOS 26.0, *)
+    func prepareOneTimeInviteURL() async throws -> URL {
+        print("[Repo] prepareOneTimeInviteURL starting…")
+        if let reason = sharingUnavailableReason {
+            print("[Repo] ❌ one-time invite unavailable: \(reason)")
+            throw CloudSharingUnavailable(reason)
+        }
+        guard usingCloudKit, let household = currentHousehold else {
+            print("[Repo] ❌ prepareOneTimeInviteURL: usingCloudKit=\(usingCloudKit), household=\(currentHousehold?.id ?? "nil")")
+            throw CloudKitUnavailable()
+        }
+        let recordID = cloud.makeRecordID(household.id)
+        print("[Repo] prepareOneTimeInviteURL: fetching household record \(recordID.recordName)…")
+        let householdRecord = try await cloud.privateRecord(id: recordID)
+        let url = try await cloud.oneTimeInviteURL(for: householdRecord)
+        print("[Repo] ✅ prepareOneTimeInviteURL done")
+        return url
+    }
+
     func acceptShare(_ metadata: CKShare.Metadata) async {
         do {
             try await cloud.accept(metadata)
             try await refresh()
+            await registerForRealtimeSync(force: true)
             await configureLiveActivity()
         } catch {
             print("[Repository] accept share failed: \(error)")
+            recordSyncFailure(error, context: "Accept share failed")
         }
     }
 
@@ -756,14 +1006,15 @@ final class GroceryRepository {
         print("[Repo] ── purgeAndRebootstrap START ──")
         guard usingCloudKit else {
             print("[Repo] not using CloudKit, clearing local state only")
-            households = []; members = []; lists = []; items = []; sessions = []
+            resetLocalSyncState()
+            households = []; members = []; lists = []; items = []; sessions = []; events = []
             hasCompletedInitialLoad = false
             await bootstrap()
             return
         }
         try await cloud.deleteZone()
-        cloud.clearSubscriptionRegistrationFlag()
-        households = []; members = []; lists = []; items = []; sessions = []
+        resetLocalSyncState()
+        households = []; members = []; lists = []; items = []; sessions = []; events = []
         selectedHouseholdId = nil
         settings.selectedHouseholdId = ""
         hasCompletedInitialLoad = false
@@ -782,13 +1033,60 @@ final class GroceryRepository {
         if let idx = sessions.firstIndex(where: { $0.id == session.id }) { sessions[idx] = session }
     }
 
+    private func applySnapshot(_ snapshot: CloudSnapshot) {
+        households = snapshot.households
+        members = snapshot.members
+        lists = snapshot.lists
+        items = mergePendingItemChanges(into: snapshot.items)
+        sessions = snapshot.sessions
+        events = snapshot.events
+    }
+
+    private func mergePendingItemChanges(into snapshotItems: [GroceryItem]) -> [GroceryItem] {
+        guard !pendingItemSaves.isEmpty || !pendingItemDeletes.isEmpty else {
+            return snapshotItems
+        }
+
+        var merged: [String: GroceryItem] = [:]
+        for item in snapshotItems {
+            if let existing = merged[item.id], existing.updatedAt > item.updatedAt {
+                continue
+            }
+            merged[item.id] = item
+        }
+
+        for id in pendingItemDeletes {
+            merged.removeValue(forKey: id)
+        }
+        for item in pendingItemSaves.values {
+            merged[item.id] = item
+        }
+        return Array(merged.values)
+    }
+
     private func persist(_ item: GroceryItem) {
         guard usingCloudKit else { return }
-        Task { await fetchAndSave(item, type: CK.RecordType.item, id: item.id) }
+        let version = nextItemWriteVersion(for: item.id)
+        pendingItemSaves[item.id] = item
+        pendingItemDeletes.remove(item.id)
+        enqueueCloudWrite { [weak self] in
+            await self?.savePendingItem(item, version: version)
+        }
     }
+
+    private func persistDeletion(_ item: GroceryItem) {
+        guard usingCloudKit else { return }
+        let version = nextItemWriteVersion(for: item.id)
+        pendingItemSaves.removeValue(forKey: item.id)
+        pendingItemDeletes.insert(item.id)
+        enqueueCloudWrite { [weak self] in
+            await self?.deletePendingItem(item, version: version)
+        }
+    }
+
     private func persist(_ session: ShoppingSession) {
         guard usingCloudKit else { return }
-        Task { await fetchAndSave(session, type: CK.RecordType.session, id: session.id) }
+        Task { await fetchAndSave(session, type: CK.RecordType.session, id: session.id, householdId: session.householdId) }
     }
     private func persist(_ member: HouseholdMember) {
         guard usingCloudKit else { return }
@@ -805,7 +1103,7 @@ final class GroceryRepository {
                 record = CKRecord(recordType: CK.RecordType.household, recordID: rid)
             } catch {
                 print("[Repo] ⚠️ household fetch deferred: \(error)")
-                syncState = .offline
+                recordSyncFailure(error, context: "Save group failed")
                 return
             }
             house.apply(to: record)
@@ -813,8 +1111,55 @@ final class GroceryRepository {
         }
     }
 
-    private func fetchAndSave<T: CloudKitApplicable>(_ model: T, type: String, id: String) async {
-        let rid = cloud.makeRecordID(id)
+    private func enqueueCloudWrite(_ operation: @escaping () async -> Void) {
+        let previous = cloudWriteTask
+        cloudWriteTask = Task {
+            await previous?.value
+            guard !Task.isCancelled else { return }
+            await operation()
+        }
+    }
+
+    private func nextItemWriteVersion(for id: String) -> Int {
+        let version = (pendingItemWriteVersions[id] ?? 0) + 1
+        pendingItemWriteVersions[id] = version
+        return version
+    }
+
+    private func savePendingItem(_ item: GroceryItem, version: Int) async {
+        guard pendingItemWriteVersions[item.id] == version,
+              pendingItemSaves[item.id] == item else {
+            return
+        }
+
+        let saved = await fetchAndSave(item, type: CK.RecordType.item, id: item.id, householdId: item.householdId)
+        guard pendingItemWriteVersions[item.id] == version else { return }
+        if saved {
+            pendingItemSaves.removeValue(forKey: item.id)
+            pendingItemWriteVersions.removeValue(forKey: item.id)
+        }
+    }
+
+    private func deletePendingItem(_ item: GroceryItem, version: Int) async {
+        guard pendingItemWriteVersions[item.id] == version,
+              pendingItemDeletes.contains(item.id) else {
+            return
+        }
+
+        let deleted = await deleteBestEffort(
+            recordID: childRecordID(item.id, householdId: item.householdId),
+            context: "Delete item failed"
+        )
+        guard pendingItemWriteVersions[item.id] == version else { return }
+        if deleted {
+            pendingItemDeletes.remove(item.id)
+            pendingItemWriteVersions.removeValue(forKey: item.id)
+        }
+    }
+
+    @discardableResult
+    private func fetchAndSave<T: CloudKitApplicable>(_ model: T, type: String, id: String, householdId: String? = nil) async -> Bool {
+        let rid = householdId.map { childRecordID(id, householdId: $0) } ?? cloud.makeRecordID(id)
         let record: CKRecord
         do {
             record = try await cloud.record(for: rid)
@@ -822,29 +1167,35 @@ final class GroceryRepository {
             record = CKRecord(recordType: type, recordID: rid)
         } catch {
             print("[Repo] ⚠️ fetch deferred for \(type) \(id): \(error)")
-            syncState = .offline
-            return
+            recordSyncFailure(error, context: "Save \(type) failed")
+            return false
         }
         model.apply(to: record)
-        await saveBestEffort(record)
+        if let householdId { setHouseholdParent(record, householdId: householdId) }
+        return await saveBestEffort(record)
     }
 
-    private func saveBestEffort(_ r: CKRecord, retried: Bool = false) async {
+    @discardableResult
+    private func saveBestEffort(_ r: CKRecord, retried: Bool = false) async -> Bool {
         do {
             try await cloud.save(r)
             if syncState != .idle { syncState = .idle }
+            return true
         } catch let error as CKError where error.code == .serverRecordChanged && !retried {
             do {
                 let serverRecord = try await cloud.record(for: r.recordID)
                 for key in r.allKeys() { serverRecord[key] = r[key] }
                 print("[Repo] ↻ retrying save for \(r.recordType) \(r.recordID.recordName) after conflict")
-                await saveBestEffort(serverRecord, retried: true)
+                return await saveBestEffort(serverRecord, retried: true)
             } catch {
                 print("[Repo] ⚠️ conflict retry fetch failed for \(r.recordType) \(r.recordID.recordName): \(error)")
+                recordSyncFailure(error, context: "Conflict retry failed")
+                return false
             }
         } catch {
-            syncState = .offline
             print("[Repo] ⚠️ saveBestEffort failed for \(r.recordType) \(r.recordID.recordName): \(error)")
+            recordSyncFailure(error, context: "iCloud save failed")
+            return false
         }
     }
 
@@ -857,31 +1208,79 @@ final class GroceryRepository {
             print("[Repo] member \(member.id) not on server yet, creating fresh record")
             record = CKRecord(recordType: CK.RecordType.member, recordID: recordID)
         } catch {
-            syncState = .offline
             print("[Repo] ⚠️ member fetch deferred: \(error)")
+            recordSyncFailure(error, context: "Save member failed")
             return
         }
 
         member.apply(to: record)
+        setHouseholdParent(record, householdId: member.householdId)
         await saveBestEffort(record)
     }
 
-    private func logEvent(_ type: ItemEventType, itemId: String? = nil, sessionId: String? = nil, metadata: [String: String] = [:]) {
+    @discardableResult
+    private func deleteBestEffort(recordID: CKRecord.ID, context: String) async -> Bool {
+        do {
+            try await cloud.delete(recordID: recordID)
+            if syncState != .idle { syncState = .idle }
+            return true
+        } catch let error as CKError where error.code == .unknownItem {
+            print("[Repo] delete ignored missing record \(recordID.recordName)")
+            if syncState != .idle { syncState = .idle }
+            return true
+        } catch {
+            print("[Repo] ⚠️ delete failed for \(recordID.recordName): \(error)")
+            recordSyncFailure(error, context: context)
+            return false
+        }
+    }
+
+    private func recordSyncFailure(_ error: Error, context: String) {
+        if Self.isConnectivityError(error) {
+            syncState = .offline
+        } else {
+            syncState = .error("\(context): \(Self.shortError(error))")
+        }
+    }
+
+    private func resetLocalSyncState() {
+        cloud.clearSubscriptionRegistrationFlag()
+        UserDefaults.standard.removeObject(forKey: "grocer.migration.parentRefs.v1")
+        UserDefaults.standard.removeObject(forKey: "grocer.migration.parentRefs.v2")
+        cloudWriteTask?.cancel()
+        cloudWriteTask = nil
+        pendingItemSaves.removeAll()
+        pendingItemDeletes.removeAll()
+        pendingItemWriteVersions.removeAll()
+        subscriptionStatus = CloudSubscriptionRegistrationResult(
+            privateZoneRegistered: false,
+            sharedDatabaseRegistered: false,
+            errors: []
+        )
+        lastActivationRefreshAt = nil
+    }
+
+    private func logEvent(_ type: ItemEventType, householdId: String? = nil, itemId: String? = nil,
+                          sessionId: String? = nil, metadata: [String: String] = [:]) {
         let member = currentMember
         let event = ItemEvent(
             id: cloud.makeRecordID().recordName,
-            householdId: currentHousehold?.id ?? "local",
+            householdId: householdId ?? currentHousehold?.id ?? "local",
             itemId: itemId, sessionId: sessionId, type: type,
             createdByMemberId: member?.id ?? settings.deviceId,
             createdByDisplayName: member?.displayName ?? settings.displayName,
             createdAt: Date(), metadata: metadata
         )
+        events.append(event)
         guard usingCloudKit else { return }
-        Task { await saveBestEffort(newRecord(event, type: CK.RecordType.event, id: event.id)) }
+        Task { await saveBestEffort(newRecord(event, type: CK.RecordType.event, id: event.id, householdId: event.householdId)) }
     }
 
-    private func newRecord<T: CloudKitApplicable>(_ model: T, type: String, id: String) -> CKRecord {
-        let r = CKRecord(recordType: type, recordID: cloud.makeRecordID(id)); model.apply(to: r); return r
+    private func newRecord<T: CloudKitApplicable>(_ model: T, type: String, id: String, householdId: String? = nil) -> CKRecord {
+        let rid = householdId.map { childRecordID(id, householdId: $0) } ?? cloud.makeRecordID(id)
+        let r = CKRecord(recordType: type, recordID: rid); model.apply(to: r)
+        if let householdId { setHouseholdParent(r, householdId: householdId) }
+        return r
     }
 
     private func householdRecordID(_ household: Household) -> CKRecord.ID {
@@ -891,6 +1290,43 @@ final class GroceryRepository {
                                zoneID: CKRecordZone.ID(zoneName: zoneName, ownerName: owner))
         }
         return cloud.makeRecordID(household.id)
+    }
+
+    /// The CloudKit zone a household's records live in. For groups the user
+    /// owns this is their local private zone; for groups they joined it's the
+    /// owner's zone (reached through the shared database). Falling back to the
+    /// local zone keeps owner-only flows working before any household loads.
+    private func zoneID(forHousehold householdId: String) -> CKRecordZone.ID {
+        if let household = households.first(where: { $0.id == householdId }),
+           let zoneName = household.recordZoneName {
+            return CKRecordZone.ID(zoneName: zoneName,
+                                   ownerName: household.recordOwnerName ?? CKCurrentUserDefaultName)
+        }
+        return cloud.localZoneID
+    }
+
+    /// Builds a record ID for a child record in its household's zone. Using the
+    /// household's zone (rather than always the local private zone) is what lets
+    /// a participant's edits land in the shared group so the owner and other
+    /// members actually receive them.
+    private func childRecordID(_ name: String, householdId: String) -> CKRecord.ID {
+        CKRecord.ID(recordName: name, zoneID: zoneID(forHousehold: householdId))
+    }
+
+    /// Links a child record to its Household root via a `parent` reference so
+    /// it belongs to the shared record hierarchy.
+    ///
+    /// `CKShare(rootRecord:)` only covers the root record and descendants whose
+    /// `parent` references chain up to it. Without this link a share participant
+    /// can neither see child records nor create new ones — the server rejects
+    /// participant creates with "CREATE operation not permitted" (CKError
+    /// 10/2007). Parent references must stay within a single zone, so we only
+    /// set it when the child and household share a zone.
+    private func setHouseholdParent(_ record: CKRecord, householdId: String) {
+        guard let household = households.first(where: { $0.id == householdId }) else { return }
+        let parentID = householdRecordID(household)
+        guard parentID.zoneID == record.recordID.zoneID else { return }
+        record.parent = CKRecord.Reference(recordID: parentID, action: .none)
     }
 
     /// Member record names must be unique per household since one user can
@@ -934,6 +1370,18 @@ final class GroceryRepository {
                                      role: .owner, joinedAt: now, recordZoneName: nil, recordOwnerName: nil)
         let lakeList = GroceryList(id: "list-lake", householdId: lake.id, name: DEFAULT_LIST_NAME,
                                    createdAt: now, updatedAt: now, archived: false)
+        let sampleSession = ShoppingSession(
+            id: "session-home-sample",
+            householdId: home.id,
+            listId: homeList.id,
+            startedByMemberId: alex.id,
+            startedByDisplayName: alex.displayName,
+            storeName: home.storeName,
+            startedAt: now.addingTimeInterval(-7200),
+            endedAt: now.addingTimeInterval(-5400),
+            updatedAt: now.addingTimeInterval(-5400),
+            status: .completed
+        )
 
         func item(_ id: String, _ name: String, _ qty: String?, _ cat: GroceryCategory,
                   list: GroceryList, by: HouseholdMember, _ notes: String? = nil) -> GroceryItem {
@@ -944,6 +1392,23 @@ final class GroceryRepository {
                         replacementPreference: nil, replacementItemName: nil,
                         createdAt: now.addingTimeInterval(Double.random(in: -50000 ... -100)),
                         updatedAt: now, completedAt: nil, activeSessionId: nil)
+        }
+
+        func event(_ id: String, _ type: ItemEventType, household: Household,
+                   itemId: String? = nil, sessionId: String? = nil,
+                   by member: HouseholdMember, offset: TimeInterval,
+                   metadata: [String: String] = [:]) -> ItemEvent {
+            ItemEvent(
+                id: "event-\(id)",
+                householdId: household.id,
+                itemId: itemId,
+                sessionId: sessionId,
+                type: type,
+                createdByMemberId: member.id,
+                createdByDisplayName: member.displayName,
+                createdAt: now.addingTimeInterval(offset),
+                metadata: metadata
+            )
         }
 
         households = [home, lake]
@@ -961,7 +1426,23 @@ final class GroceryRepository {
             item("9", "Charcoal", nil, .household, list: lakeList, by: lakeMe),
             item("10", "Hot Dogs", "2 packs", .meatSeafood, list: lakeList, by: lakeMe),
         ]
-        sessions = []
+        sessions = [sampleSession]
+        events = [
+            event("home-session-start", .sessionStarted, household: home,
+                  sessionId: sampleSession.id, by: alex, offset: -7200,
+                  metadata: ["store": sampleSession.storeName ?? ""]),
+            event("home-session-complete", .sessionCompleted, household: home,
+                  sessionId: sampleSession.id, by: alex, offset: -5400),
+            event("home-bananas-added", .itemAdded, household: home,
+                  itemId: "item-1", by: homeMe, offset: -3600,
+                  metadata: ["name": "Bananas"]),
+            event("home-strawberries-added", .itemAdded, household: home,
+                  itemId: "item-2", by: alex, offset: -3000,
+                  metadata: ["name": "Strawberries"]),
+            event("lake-sunscreen-added", .itemAdded, household: lake,
+                  itemId: "item-8", by: lakeMe, offset: -1800,
+                  metadata: ["name": "Sunscreen"]),
+        ]
         ensureValidSelection()
     }
 }
@@ -976,6 +1457,24 @@ extension GroceryRepository {
             return "CKError.\(ck.code.rawValue): \(ck.localizedDescription)"
         }
         return error.localizedDescription
+    }
+
+    /// True only for errors that genuinely mean the device can't reach iCloud.
+    ///
+    /// Best-effort persistence throws for many *non*-connectivity reasons —
+    /// throttling (`.requestRateLimited`, `.zoneBusy`, `.serviceUnavailable`),
+    /// write conflicts (`.serverRecordChanged`), partial batch failures, or a
+    /// missing shared database (`CloudKitUnavailable`). Treating those as
+    /// "offline" makes the banner flash even on full cellular, so only true
+    /// network errors should surface it.
+    static func isConnectivityError(_ error: Error) -> Bool {
+        guard let ck = error as? CKError else { return false }
+        switch ck.code {
+        case .networkUnavailable, .networkFailure:
+            return true
+        default:
+            return false
+        }
     }
 }
 

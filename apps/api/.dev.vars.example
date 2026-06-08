@@ -11,3 +11,6 @@ APNS_ENVIRONMENT="sandbox"
 APNS_TEAM_ID="ABCDE12345"
 APNS_KEY_ID="FGHIJ67890"
 APNS_BUNDLE_ID="org.narro.grocer"
+
+# OpenAI — used for product image generation (gpt-image-1)
+OPENAI_API_KEY="sk-REPLACE_WITH_YOUR_KEY"

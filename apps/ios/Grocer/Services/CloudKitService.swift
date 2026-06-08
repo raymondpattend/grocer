@@ -269,6 +269,11 @@ final class CloudKitService {
         CKRecord.ID(recordName: name, zoneID: zoneID)
     }
 
+    /// The local (owned) household zone in this user's private database. Records
+    /// for groups the user owns live here; records for groups they joined live
+    /// in the owner's zone, accessed via the shared database.
+    var localZoneID: CKRecordZone.ID { zoneID }
+
     func privateRecord(id: CKRecord.ID) async throws -> CKRecord {
         guard let privateDB else { throw CloudKitUnavailable() }
         return try await privateDB.record(for: id)
@@ -286,12 +291,13 @@ final class CloudKitService {
         print("[CK] share(for:) → household \(householdRecord.recordID.recordName)")
         if let ref = householdRecord.share,
            let existing = try? await privateDB.record(for: ref.recordID) as? CKShare {
+            existing.publicPermission = .none
             print("[CK] ✅ reusing existing CKShare")
-            return existing
+            return try await saveShare(existing)
         }
         let share = CKShare(rootRecord: householdRecord)
         share[CKShare.SystemFieldKey.title] = householdRecord[CK.Field.name] as? String ?? "Family Groceries"
-        share.publicPermission = .readWrite
+        share.publicPermission = .none
         if let iconData = Self.appIconPNGData() {
             share[CKShare.SystemFieldKey.thumbnailImageData] = iconData as CKRecordValue
         }
@@ -312,22 +318,111 @@ final class CloudKitService {
         return share
     }
 
+    @available(iOS 26.0, *)
+    func oneTimeInviteURL(for householdRecord: CKRecord) async throws -> URL {
+        let share = try await share(for: householdRecord)
+        share.publicPermission = .none
+
+        let participant = CKShare.Participant.oneTimeURLParticipant()
+        participant.permission = .readWrite
+        share.addParticipant(participant)
+
+        let savedShare = try await saveShare(share)
+        guard let url = savedShare.oneTimeURL(for: participant.participantID) else {
+            throw CloudInviteURLUnavailable()
+        }
+        print("[CK] ✅ one-time invite URL created for participant \(participant.participantID)")
+        return url
+    }
+
+    func revokeParticipant(
+        matching recordNames: Set<String>,
+        from householdRecordID: CKRecord.ID
+    ) async throws -> Bool {
+        guard let privateDB else { throw CloudKitUnavailable() }
+        let householdRecord = try await privateDB.record(for: householdRecordID)
+        guard let shareRef = householdRecord.share,
+              let share = try await privateDB.record(for: shareRef.recordID) as? CKShare else {
+            print("[CK] revokeParticipant: household has no share")
+            return false
+        }
+
+        share.publicPermission = .none
+        let normalizedTargets = Set(recordNames.flatMap { [$0, Self.sanitizeUserRecordName($0)] })
+        let participants = share.participants.filter { participant in
+            guard participant.role != .owner else { return false }
+            guard let recordName = participant.userIdentity.userRecordID?.recordName else { return false }
+            return normalizedTargets.contains(recordName)
+                || normalizedTargets.contains(Self.sanitizeUserRecordName(recordName))
+        }
+
+        guard !participants.isEmpty else {
+            print("[CK] revokeParticipant: no matching CKShare participant found")
+            _ = try await saveShare(share)
+            return false
+        }
+
+        for participant in participants {
+            print("[CK] revokeParticipant → removing \(participant.userIdentity.userRecordID?.recordName ?? "unknown")")
+            share.removeParticipant(participant)
+        }
+        _ = try await saveShare(share)
+        return true
+    }
+
+    @discardableResult
+    private func saveShare(_ share: CKShare) async throws -> CKShare {
+        guard let privateDB else { throw CloudKitUnavailable() }
+        let (saveResults, _) = try await privateDB.modifyRecords(saving: [share], deleting: [])
+        for (id, result) in saveResults {
+            switch result {
+            case .success:
+                print("[CK] ✅ share saved: \(id.recordName)")
+            case .failure(let error):
+                print("[CK] ❌ share save failed: \(id.recordName): \(error)")
+                throw error
+            }
+        }
+        if case .success(let savedShare) = saveResults[share.recordID], let savedShare = savedShare as? CKShare {
+            return savedShare
+        }
+        return share
+    }
+
+    private static func sanitizeUserRecordName(_ name: String) -> String {
+        var s = name
+        while s.hasPrefix("_") { s = String(s.dropFirst()) }
+        return s
+    }
+
     // MARK: - Subscriptions (real-time sync)
 
+    private static let subscriptionRegistrationVersion = 2
     private static let privateZoneSubscriptionID = "grocer-household-zone-sub"
     private static let sharedDatabaseSubscriptionID = "grocer-shared-db-sub"
     private static let subscriptionsRegisteredKey = "grocer.cloudkit.subscriptionsRegistered"
+    private static let subscriptionsRegisteredVersionKey = "grocer.cloudkit.subscriptionsRegisteredVersion"
 
     /// Registers CloudKit push subscriptions so record changes wake the app for a refresh.
-    /// Idempotent — skips if already registered this install unless `force` is true.
-    func registerSubscriptions(force: Bool = false) async {
+    /// Idempotent — skips only after this version has registered both scopes successfully.
+    func registerSubscriptions(force: Bool = false) async -> CloudSubscriptionRegistrationResult {
         guard let privateDB, let sharedDB else {
             print("[CK] registerSubscriptions skipped (CloudKit unavailable)")
-            return
+            return CloudSubscriptionRegistrationResult(
+                privateZoneRegistered: false,
+                sharedDatabaseRegistered: false,
+                errors: ["CloudKit unavailable"]
+            )
         }
-        if !force, UserDefaults.standard.bool(forKey: Self.subscriptionsRegisteredKey) {
+        let registeredVersion = UserDefaults.standard.integer(forKey: Self.subscriptionsRegisteredVersionKey)
+        if !force, registeredVersion >= Self.subscriptionRegistrationVersion {
             print("[CK] registerSubscriptions skipped (already registered)")
-            return
+            await registerForRemoteNotifications()
+            return CloudSubscriptionRegistrationResult(
+                privateZoneRegistered: true,
+                sharedDatabaseRegistered: true,
+                errors: []
+            )
         }
 
         print("[CK] registerSubscriptions → creating zone + shared DB subscriptions…")
@@ -342,29 +437,74 @@ final class CloudKitService {
         sharedInfo.shouldSendContentAvailable = true
         sharedSub.notificationInfo = sharedInfo
 
+        var privateZoneRegistered = false
+        var sharedDatabaseRegistered = false
+        var errors: [String] = []
+
         do {
-            _ = try await privateDB.modifySubscriptions(saving: [zoneSub], deleting: [])
+            let (saveResults, _) = try await privateDB.modifySubscriptions(saving: [zoneSub], deleting: [])
+            try Self.validateSubscriptionSaveResults(saveResults, context: "private zone")
+            privateZoneRegistered = true
             print("[CK] ✅ private zone subscription registered")
         } catch {
             print("[CK] ❌ private zone subscription failed: \(error)")
+            errors.append("Private zone: \(Self.describe(error))")
         }
 
         do {
-            _ = try await sharedDB.modifySubscriptions(saving: [sharedSub], deleting: [])
+            let (saveResults, _) = try await sharedDB.modifySubscriptions(saving: [sharedSub], deleting: [])
+            try Self.validateSubscriptionSaveResults(saveResults, context: "shared database")
+            sharedDatabaseRegistered = true
             print("[CK] ✅ shared database subscription registered")
         } catch {
             print("[CK] ❌ shared database subscription failed: \(error)")
+            errors.append("Shared DB: \(Self.describe(error))")
         }
 
-        UserDefaults.standard.set(true, forKey: Self.subscriptionsRegisteredKey)
+        if privateZoneRegistered && sharedDatabaseRegistered {
+            UserDefaults.standard.set(true, forKey: Self.subscriptionsRegisteredKey)
+            UserDefaults.standard.set(Self.subscriptionRegistrationVersion, forKey: Self.subscriptionsRegisteredVersionKey)
+        } else {
+            UserDefaults.standard.set(false, forKey: Self.subscriptionsRegisteredKey)
+            UserDefaults.standard.removeObject(forKey: Self.subscriptionsRegisteredVersionKey)
+        }
 
+        await registerForRemoteNotifications()
+        return CloudSubscriptionRegistrationResult(
+            privateZoneRegistered: privateZoneRegistered,
+            sharedDatabaseRegistered: sharedDatabaseRegistered,
+            errors: errors
+        )
+    }
+
+    func clearSubscriptionRegistrationFlag() {
+        UserDefaults.standard.set(false, forKey: Self.subscriptionsRegisteredKey)
+        UserDefaults.standard.removeObject(forKey: Self.subscriptionsRegisteredVersionKey)
+    }
+
+    private func registerForRemoteNotifications() async {
         await MainActor.run {
             UIApplication.shared.registerForRemoteNotifications()
         }
     }
 
-    func clearSubscriptionRegistrationFlag() {
-        UserDefaults.standard.set(false, forKey: Self.subscriptionsRegisteredKey)
+    private static func validateSubscriptionSaveResults(
+        _ results: [CKSubscription.ID: Result<CKSubscription, Error>],
+        context: String
+    ) throws {
+        for (id, result) in results {
+            if case .failure(let error) = result {
+                print("[CK] ❌ \(context) subscription \(id) failed: \(error)")
+                throw error
+            }
+        }
+    }
+
+    private static func describe(_ error: Error) -> String {
+        if let ck = error as? CKError {
+            return "CKError.\(ck.code.rawValue): \(ck.localizedDescription)"
+        }
+        return error.localizedDescription
     }
 
     // MARK: - Zone management
@@ -400,6 +540,28 @@ final class CloudKitService {
 
 struct CloudKitUnavailable: LocalizedError {
     var errorDescription: String? { "iCloud is not available on this device." }
+}
+
+struct CloudInviteURLUnavailable: LocalizedError {
+    var errorDescription: String? {
+        "CloudKit couldn't create an invite link for this group. Please try inviting again."
+    }
+}
+
+struct CloudSubscriptionRegistrationResult: Equatable {
+    var privateZoneRegistered: Bool
+    var sharedDatabaseRegistered: Bool
+    var errors: [String]
+
+    var isFullyRegistered: Bool {
+        privateZoneRegistered && sharedDatabaseRegistered
+    }
+
+    var statusText: String {
+        if isFullyRegistered { return "Subscribed" }
+        if errors.isEmpty { return "Not subscribed" }
+        return errors.joined(separator: " · ")
+    }
 }
 
 /// Accumulated records from a CloudKit fetch, decoded into domain models.

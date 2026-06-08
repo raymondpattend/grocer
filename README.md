@@ -170,9 +170,9 @@ backend can target start/update/end events. Full detail in
   writer conflict resolution is intentionally simple (latest-write-wins on text,
   item events preserved). See *Conflict Handling* in the spec.
 - The on-device categorizer and the API categorizer are keyword-based (no ML).
-- No CloudKit subscriptions/push for grocery changes yet — the app refreshes on
-  launch and relies on Live Activity pushes for in-trip awareness. Pull-to-add
-  works live within a session via the API update calls.
+- CloudKit subscriptions wake the app for grocery changes, then the app refreshes
+  its CloudKit snapshot. Silent pushes can be delayed by iOS, so the app also
+  refreshes on launch, foreground activation, and pull-to-refresh.
 - APNs requires a paid Apple Developer account; the local in-app Live Activity
   works in the simulator without it.
 - The CloudKit share controller uses the iOS 16 preparation-handler API (works,

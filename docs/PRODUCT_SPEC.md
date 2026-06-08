@@ -52,6 +52,8 @@ Household · Personal Care · Pet · Other. (User can change an item's category.
 - **End**: mark Completed → summary → cleanup. Found/replaced items clear when
   chosen; out-of-stock items stay by default; skipped items return to the list;
   Live Activity ends via APNs.
+- **Inactive trips**: active sessions automatically cancel after 60 minutes
+  without session, item, or audit-event activity.
 
 ## Offline & conflicts
 

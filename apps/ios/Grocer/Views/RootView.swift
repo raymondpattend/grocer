@@ -1,15 +1,66 @@
 import SwiftUI
+import UIKit
 
 /// Top-level navigation. Defaults to the planning list; the shopper can drill
 /// into the focused Shopping Session screen when one is active.
 struct RootView: View {
     @Environment(GroceryRepository.self) private var repo
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         NavigationStack {
             GroceryListView()
         }
+        .background(KeyboardWarmer())
+        .onAppear {
+            repo.startForegroundRefreshLoop()
+        }
+        .onDisappear {
+            repo.stopForegroundRefreshLoop()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                repo.startForegroundRefreshLoop()
+                Task { await repo.refreshAfterActivation() }
+            } else {
+                repo.stopForegroundRefreshLoop()
+            }
+        }
     }
+}
+
+/// Forces iOS to initialize its keyboard infrastructure at app launch so the
+/// first TextField focus doesn't stall while the system cold-starts the
+/// keyboard process.
+///
+/// A short delay lets the window hierarchy settle before we trigger the
+/// warm-up. `becomeFirstResponder` is followed by resign on the *next* run-loop
+/// pass so the keyboard process fully spins up before we tear it down.
+private struct KeyboardWarmer: UIViewRepresentable {
+    func makeUIView(context: Context) -> UIView {
+        let container = UIView(frame: .zero)
+        container.isUserInteractionEnabled = false
+        container.alpha = 0
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            guard let window = container.window else { return }
+            let field = UITextField(frame: CGRect(x: -1, y: -1, width: 1, height: 1))
+            field.autocorrectionType = .no
+            field.spellCheckingType = .no
+            field.inputAssistantItem.leadingBarButtonGroups = []
+            field.inputAssistantItem.trailingBarButtonGroups = []
+            window.addSubview(field)
+            field.becomeFirstResponder()
+            DispatchQueue.main.async {
+                field.resignFirstResponder()
+                field.removeFromSuperview()
+            }
+        }
+
+        return container
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {}
 }
 
 // MARK: - Shared small components
@@ -20,10 +71,8 @@ struct SyncStatusBar: View {
 
     var body: some View {
         switch state {
-        case .idle:
+        case .idle, .syncing:
             EmptyView()
-        case .syncing:
-            label("Syncing…", systemImage: "arrow.triangle.2.circlepath", tint: .secondary)
         case .offline:
             label("Offline — changes will sync later", systemImage: "icloud.slash", tint: .orange)
         case .error(let message):
@@ -57,83 +106,78 @@ struct CategoryHeader: View {
 
 /// Shimmer placeholder shown while the initial iCloud fetch is in progress,
 /// preventing "No groups yet" from flashing before data arrives.
+/// Matches the card-based ScrollView layout of the real list.
 struct GroceryListSkeleton: View {
-    @State private var shimmer = false
-
     var body: some View {
-        Section {
-            skeletonRow(titleWidth: 100)
-        }
+        VStack(spacing: 0) {
+            // Quick-add skeleton
+            skeletonQuickAdd
+                .padding(.horizontal, 16)
+                .padding(.bottom, 16)
 
-        Section {
-            ForEach(0..<3, id: \.self) { _ in
-                skeletonItemRow()
+            // Category group 1 (3 items)
+            skeletonGroup(headerWidth: 72, itemCount: 3)
+                .padding(.bottom, 12)
+
+            // Category group 2 (2 items)
+            skeletonGroup(headerWidth: 56, itemCount: 2)
+                .padding(.bottom, 12)
+        }
+    }
+
+    private var skeletonQuickAdd: some View {
+        HStack(spacing: 10) {
+            ShimmerCircle()
+                .frame(width: 24, height: 24)
+            ShimmerRect(cornerRadius: 4)
+                .frame(height: 16)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func skeletonGroup(headerWidth: CGFloat, itemCount: Int) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ShimmerRect(cornerRadius: 3)
+                .frame(width: headerWidth, height: 12)
+                .padding(.horizontal, 20)
+                .padding(.bottom, 8)
+                .padding(.top, 4)
+
+            VStack(spacing: 0) {
+                ForEach(0..<itemCount, id: \.self) { index in
+                    skeletonItemRow
+                    if index < itemCount - 1 {
+                        Divider().padding(.leading, 76)
+                    }
+                }
             }
-        } header: {
-            skeletonPill(width: 80)
+            .background(Color(.secondarySystemGroupedBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .padding(.horizontal, 16)
         }
+    }
 
-        Section {
-            ForEach(0..<2, id: \.self) { _ in
-                skeletonItemRow()
+    private var skeletonItemRow: some View {
+        HStack(spacing: 12) {
+            ShimmerRect(cornerRadius: 10)
+                .frame(width: 52, height: 52)
+
+            VStack(alignment: .leading, spacing: 6) {
+                ShimmerRect(cornerRadius: 4)
+                    .frame(width: 110, height: 14)
+                ShimmerRect(cornerRadius: 3)
+                    .frame(width: 70, height: 10)
             }
-        } header: {
-            skeletonPill(width: 60)
+
+            Spacer()
+
+            ShimmerCircle()
+                .frame(width: 28, height: 28)
         }
-    }
-
-    private func skeletonItemRow() -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            RoundedRectangle(cornerRadius: 4)
-                .fill(.quaternary)
-                .frame(width: .random(in: 90...160), height: 14)
-            RoundedRectangle(cornerRadius: 3)
-                .fill(.quaternary)
-                .frame(width: .random(in: 100...180), height: 10)
-        }
-        .padding(.vertical, 4)
-        .shimmering(active: shimmer)
-        .onAppear { shimmer = true }
-    }
-
-    private func skeletonRow(titleWidth: CGFloat) -> some View {
-        HStack {
-            Circle()
-                .fill(.quaternary)
-                .frame(width: 22, height: 22)
-            RoundedRectangle(cornerRadius: 4)
-                .fill(.quaternary)
-                .frame(width: titleWidth, height: 14)
-        }
-        .shimmering(active: shimmer)
-        .onAppear { shimmer = true }
-    }
-
-    private func skeletonPill(width: CGFloat) -> some View {
-        RoundedRectangle(cornerRadius: 3)
-            .fill(.quaternary)
-            .frame(width: width, height: 12)
-            .shimmering(active: shimmer)
-            .onAppear { shimmer = true }
-    }
-}
-
-private struct ShimmerModifier: ViewModifier {
-    let active: Bool
-    @State private var phase: CGFloat = 0
-
-    func body(content: Content) -> some View {
-        content
-            .opacity(active ? 0.4 + 0.3 * sin(phase) : 1)
-            .animation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true),
-                       value: phase)
-            .onAppear { if active { phase = .pi } }
-            .onChange(of: active) { _, on in if on { phase = .pi } }
-    }
-}
-
-private extension View {
-    func shimmering(active: Bool) -> some View {
-        modifier(ShimmerModifier(active: active))
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
     }
 }

@@ -138,11 +138,21 @@ final class LiveActivityManager {
             sessionId: session.id
         )
 
+        // The Simulator can't register for APNs, so requesting `.token` fails
+        // and no activity ever appears. Start a local-only activity there (push
+        // fan-out to family devices is a no-op on Simulator anyway); real
+        // hardware keeps `.token` so update/end pushes can target it.
+        #if targetEnvironment(simulator)
+        let pushType: PushType? = nil
+        #else
+        let pushType: PushType? = .token
+        #endif
+
         do {
             currentActivity = try Activity.request(
                 attributes: attributes,
                 content: .init(state: content, staleDate: nil),
-                pushType: .token
+                pushType: pushType
             )
             currentSessionId = session.id
         } catch {

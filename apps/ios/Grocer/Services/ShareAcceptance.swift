@@ -165,9 +165,15 @@ final class PushNotificationCoordinator {
     }
 }
 
-/// App delegate receives CloudKit share callbacks and APNs registration events.
-/// Implementing it here (rather than a custom scene delegate) avoids
-/// interfering with SwiftUI's automatic window/scene creation.
+/// App delegate receives APNs registration events and wires up the scene
+/// delegate that handles CloudKit share acceptance.
+///
+/// Note: in a SwiftUI (scene-based) app, iOS delivers CloudKit share
+/// acceptance to `UIWindowSceneDelegate.windowScene(_:userDidAcceptCloudKitShareWith:)`,
+/// **not** to `UIApplicationDelegate.application(_:userDidAcceptCloudKitShareWith:)`.
+/// The latter is only invoked for pre-scene apps and silently never fires here,
+/// which is why tapping "Join" on an invite link did nothing. We therefore
+/// provide a scene delegate (see `ShareSceneDelegate`) for that callback.
 final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
@@ -176,10 +182,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     }
 
     func application(_ application: UIApplication,
-                     userDidAcceptCloudKitShareWith cloudKitShareMetadata: CKShare.Metadata) {
-        Task { @MainActor in
-            ShareCoordinator.shared.handle(cloudKitShareMetadata)
-        }
+                     configurationForConnecting connectingSceneSession: UISceneSession,
+                     options: UIScene.ConnectionOptions) -> UISceneConfiguration {
+        let configuration = UISceneConfiguration(name: nil, sessionRole: connectingSceneSession.role)
+        configuration.delegateClass = ShareSceneDelegate.self
+        return configuration
     }
 
     func application(_ application: UIApplication,
@@ -213,6 +220,33 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
                                 willPresent notification: UNNotification,
                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         completionHandler([.banner, .list, .sound])
+    }
+}
+
+/// Scene delegate whose sole job is to receive CloudKit share acceptance.
+///
+/// We deliberately do not implement `scene(_:willConnectTo:)` or create a
+/// window — SwiftUI's `WindowGroup` continues to manage the UI. Adding this
+/// delegate only opts us into the scene-level CloudKit callback, which is the
+/// one iOS actually delivers for SwiftUI apps. On a cold launch from an invite
+/// link the metadata is also surfaced via the connection options, so we handle
+/// both paths and let `ShareCoordinator` buffer until the repository is ready.
+final class ShareSceneDelegate: NSObject, UIWindowSceneDelegate {
+    func scene(_ scene: UIScene,
+               willConnectTo session: UISceneSession,
+               options connectionOptions: UIScene.ConnectionOptions) {
+        if let metadata = connectionOptions.cloudKitShareMetadata {
+            Task { @MainActor in
+                ShareCoordinator.shared.handle(metadata)
+            }
+        }
+    }
+
+    func windowScene(_ windowScene: UIWindowScene,
+                     userDidAcceptCloudKitShareWith cloudKitShareMetadata: CKShare.Metadata) {
+        Task { @MainActor in
+            ShareCoordinator.shared.handle(cloudKitShareMetadata)
+        }
     }
 }
 

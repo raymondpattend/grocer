@@ -1,19 +1,27 @@
 import CloudKit
 import UIKit
 
-/// Presents the standard iOS share sheet with a CloudKit share URL so the
-/// household owner can invite family members. Anyone with the link can join.
+/// Presents CloudKit's sharing UI so family members are explicit private
+/// participants. That matters for removal: public share URLs can be reused by
+/// anyone who still has the link, but private participants can be revoked.
 @MainActor
 enum ShareSheetPresenter {
-    static func present(share: CKShare, container: CKContainer) {
-        guard let url = share.url else {
-            print("[CloudSharing] share has no URL")
-            return
-        }
-        let groupName = GroceryRepository.current?.currentHousehold?.name ?? "groceries"
-        let text = "Join my \(groupName) group on Grocer!"
-        let controller = UIActivityViewController(activityItems: [text, url], applicationActivities: nil)
+    private static let delegate = CloudSharingDelegate()
 
+    static func presentInvite(url: URL) {
+        let controller = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        controller.setValue("Join my Grocer group", forKey: "subject")
+        present(controller)
+    }
+
+    static func present(share: CKShare, container: CKContainer) {
+        let controller = UICloudSharingController(share: share, container: container)
+        controller.delegate = delegate
+        controller.availablePermissions = [.allowPrivate, .allowReadWrite]
+        present(controller)
+    }
+
+    private static func present(_ controller: UIViewController) {
         guard let top = topViewController() else { return }
 
         if let pop = controller.popoverPresentationController {
@@ -32,5 +40,23 @@ enum ShareSheetPresenter {
             ?? scene?.windows.first?.rootViewController else { return nil }
         while let presented = top.presentedViewController { top = presented }
         return top
+    }
+}
+
+private final class CloudSharingDelegate: NSObject, UICloudSharingControllerDelegate {
+    func cloudSharingController(_ csc: UICloudSharingController, failedToSaveShareWithError error: Error) {
+        print("[CloudSharing] failed to save share: \(error)")
+    }
+
+    func itemTitle(for csc: UICloudSharingController) -> String? {
+        GroceryRepository.current?.currentHousehold?.name ?? "Grocer"
+    }
+
+    func cloudSharingControllerDidSaveShare(_ csc: UICloudSharingController) {
+        print("[CloudSharing] share saved")
+    }
+
+    func cloudSharingControllerDidStopSharing(_ csc: UICloudSharingController) {
+        print("[CloudSharing] stopped sharing")
     }
 }

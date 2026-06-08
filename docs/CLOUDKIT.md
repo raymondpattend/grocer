@@ -90,7 +90,7 @@ A group *is* the grocery list — it carries the store, icon, and color theme.
 | `startedByMemberId` | String |
 | `startedByDisplayName` | String |
 | `storeName` | String |
-| `startedAt` / `endedAt` | Date/Time |
+| `startedAt` / `endedAt` / `updatedAt` | Date/Time |
 | `status` | String (Queryable) |
 
 ### ItemEvent
@@ -132,6 +132,8 @@ by zone + record type, so per-type recordName queryability is required.
 - Participant writes are routed to the shared zone's database; for MVP the owner
   is the primary writer. Conflict handling is latest-write-wins on text fields,
   with item events preserved (see the spec).
-- For production, consider adding `CKDatabaseSubscription` / record zone
-  subscriptions + silent pushes so grocery changes sync without a manual refresh.
-  The MVP refreshes on launch and uses Live Activity pushes for in-trip updates.
+- The app registers a private record-zone subscription for groups the current
+  user owns and a shared-database subscription for groups the user joined. A
+  silent push wakes the app, then the repository refreshes its CloudKit snapshot.
+  iOS may delay silent pushes, so launch, foreground activation, and
+  pull-to-refresh also fetch the latest snapshot.

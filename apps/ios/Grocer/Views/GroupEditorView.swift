@@ -84,7 +84,7 @@ struct GroupEditorView: View {
             ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
             ToolbarItem(placement: .confirmationAction) {
                 Button("Save", action: save).bold()
-                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || isSaving)
+                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || isSaving || (isEditing && !repo.isOwnerOfCurrentGroup))
             }
         }
         .onAppear(perform: load)
@@ -110,6 +110,10 @@ struct GroupEditorView: View {
         let trimmedName = name.trimmingCharacters(in: .whitespaces)
         let store = storeName.trimmingCharacters(in: .whitespaces)
         if isEditing {
+            guard repo.isOwnerOfCurrentGroup else {
+                saveError = "Only the group owner can edit group details."
+                return
+            }
             repo.updateGroup(name: trimmedName, store: store, icon: icon, theme: theme)
             dismiss()
             return

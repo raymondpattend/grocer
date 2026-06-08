@@ -1,6 +1,8 @@
 /** Bindings and vars available to the Worker. Configured in wrangler.toml + secrets. */
 export interface Env {
   DB: D1Database;
+  IMAGES: R2Bucket;
+  IMAGE_INDEX: VectorizeIndex;
 
   // APNs configuration
   APNS_ENVIRONMENT: "sandbox" | "production";
@@ -12,4 +14,7 @@ export interface Env {
   // iOS remote config
   IOS_MIN_BUILD: string;
   IOS_LATEST_BUILD: string;
+
+  // OpenAI — used for product image generation + embeddings
+  OPENAI_API_KEY: string;
 }

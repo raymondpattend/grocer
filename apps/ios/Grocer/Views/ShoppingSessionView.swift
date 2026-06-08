@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 /// Focused shopping mode — swipe-driven, one-handed item marking.
 struct ShoppingSessionView: View {
@@ -9,11 +10,13 @@ struct ShoppingSessionView: View {
 
     @State private var replacingItem: GroceryItem?
     @State private var editingItem: GroceryItem?
+    @State private var selectedItem: GroceryItem?
     @State private var showCompleted = true
     @State private var showFinish = false
     @State private var showAddItem = false
     @State private var editingStore = false
     @State private var storeText = ""
+    @State private var now = Date()
 
     /// Live session from the repo — always up to date.
     private var session: ShoppingSession? {
@@ -41,37 +44,39 @@ struct ShoppingSessionView: View {
         }
         .navigationTitle("Shopping")
         .navigationBarTitleDisplayMode(.inline)
+        .onChange(of: session?.status) { _, status in
+            handleSessionEnded(status)
+        }
+    }
+
+    /// When the shopper ends the trip, a spectator (someone who didn't start it)
+    /// has no Finish flow of their own, so the screen would otherwise sit on a
+    /// stale, no-longer-active session. Kick them back to the main list and
+    /// close any sheets they had open. The shopper is excluded — they end the
+    /// trip through the summary flow and dismiss themselves.
+    private func handleSessionEnded(_ status: SessionStatus?) {
+        guard let session, let status, status != .active else { return }
+        guard !repo.isStartedByCurrentUser(session) else { return }
+        selectedItem = nil
+        editingItem = nil
+        replacingItem = nil
+        showAddItem = false
+        editingStore = false
+        showFinish = false
+        onExit()
     }
 
     @ViewBuilder
     private func sessionContent(_ session: ShoppingSession) -> some View {
+        let canManageTrip = repo.isStartedByCurrentUser(session)
+
         List {
-            progressHeader(session)
+            progressHeader(session, canManageTrip: canManageTrip)
 
             ForEach(pendingGroups(session), id: \.category) { group in
                 Section {
                     ForEach(group.items) { item in
-                        ShopItemRow(item: item, tint: tint)
-                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                Button { repo.mark(item, as: .found) } label: {
-                                    Label("Found", systemImage: "checkmark")
-                                }
-                                .tint(.green)
-                            }
-                            .swipeActions(edge: .leading, allowsFullSwipe: false) {
-                                Button { replacingItem = item } label: {
-                                    Label("Replace", systemImage: "arrow.triangle.2.circlepath")
-                                }
-                                .tint(.blue)
-                                Button { repo.mark(item, as: .skipped) } label: {
-                                    Label("Skip", systemImage: "arrow.uturn.forward")
-                                }
-                                .tint(.orange)
-                                Button { repo.mark(item, as: .outOfStock) } label: {
-                                    Label("Out", systemImage: "xmark")
-                                }
-                                .tint(.red)
-                            }
+                        shopItemButton(item, canManageTrip: canManageTrip)
                     }
                 } header: {
                     CategoryHeader(category: group.category)
@@ -83,27 +88,7 @@ struct ShoppingSessionView: View {
             if !addedDuringTrip.isEmpty {
                 Section {
                     ForEach(addedDuringTrip) { item in
-                        ShopItemRow(item: item, tint: tint)
-                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                Button { repo.mark(item, as: .found) } label: {
-                                    Label("Found", systemImage: "checkmark")
-                                }
-                                .tint(.green)
-                            }
-                            .swipeActions(edge: .leading, allowsFullSwipe: false) {
-                                Button { replacingItem = item } label: {
-                                    Label("Replace", systemImage: "arrow.triangle.2.circlepath")
-                                }
-                                .tint(.blue)
-                                Button { repo.mark(item, as: .skipped) } label: {
-                                    Label("Skip", systemImage: "arrow.uturn.forward")
-                                }
-                                .tint(.orange)
-                                Button { repo.mark(item, as: .outOfStock) } label: {
-                                    Label("Out", systemImage: "xmark")
-                                }
-                                .tint(.red)
-                            }
+                        shopItemButton(item, canManageTrip: canManageTrip)
                     }
                 } header: {
                     Label("Added During Trip", systemImage: "sparkles")
@@ -113,19 +98,45 @@ struct ShoppingSessionView: View {
                 }
             }
 
-            completedSection(session)
+            completedSection(session, canManageTrip: canManageTrip)
         }
         .listStyle(.insetGrouped)
+        .animation(.default, value: progress.remaining)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 SyncStatusBar(state: repo.syncState)
-                finishButton
+                if canManageTrip {
+                    finishButton
+                }
             }
         }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button { showAddItem = true } label: { Image(systemName: "plus") }
             }
+        }
+        .sheet(item: $selectedItem) { item in
+            ShoppingItemDetailView(item: item, tint: tint, canManageTrip: canManageTrip) { action in
+                selectedItem = nil
+                switch action {
+                case .found:
+                    repo.mark(item, as: .found)
+                case .replace:
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        replacingItem = item
+                    }
+                case .skip:
+                    repo.mark(item, as: .skipped)
+                case .outOfStock:
+                    repo.mark(item, as: .outOfStock)
+                case .edit:
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        editingItem = item
+                    }
+                }
+            }
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
         }
         .sheet(item: $replacingItem) { item in
             ReplacementSheet(item: item)
@@ -151,6 +162,45 @@ struct ShoppingSessionView: View {
         } message: {
             Text("Where are you shopping for this trip?")
         }
+        .onReceive(Timer.publish(every: 30, on: .main, in: .common).autoconnect()) { _ in
+            now = Date()
+        }
+    }
+
+    private func shopItemButton(_ item: GroceryItem, canManageTrip: Bool) -> some View {
+        Button { selectedItem = item } label: {
+            ShopItemRow(item: item, member: repo.currentMembers.first { $0.id == item.requestedByMemberId }, tint: tint)
+        }
+        .buttonStyle(.plain)
+        .swipeActions(edge: .trailing, allowsFullSwipe: canManageTrip) {
+            if canManageTrip {
+                Button { repo.mark(item, as: .found) } label: {
+                    Label("Found", systemImage: "checkmark")
+                }
+                .tint(.green)
+            } else {
+                Button { editingItem = item } label: {
+                    Label("Edit", systemImage: "pencil")
+                }
+                .tint(tint)
+            }
+        }
+        .swipeActions(edge: .leading, allowsFullSwipe: false) {
+            if canManageTrip {
+                Button { replacingItem = item } label: {
+                    Label("Replace", systemImage: "arrow.triangle.2.circlepath")
+                }
+                .tint(.blue)
+                Button { repo.mark(item, as: .skipped) } label: {
+                    Label("Skip", systemImage: "arrow.uturn.forward")
+                }
+                .tint(.orange)
+                Button { repo.mark(item, as: .outOfStock) } label: {
+                    Label("Out", systemImage: "xmark")
+                }
+                .tint(.red)
+            }
+        }
     }
 
     private func originalItemIds(_ session: ShoppingSession) -> Set<String> {
@@ -166,28 +216,36 @@ struct ShoppingSessionView: View {
 
     // MARK: - Progress header
 
-    private func progressHeader(_ session: ShoppingSession) -> some View {
+    private func progressHeader(_ session: ShoppingSession, canManageTrip: Bool) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 VStack(alignment: .leading) {
-                    Button {
-                        storeText = session.storeName ?? ""
-                        editingStore = true
-                    } label: {
-                        HStack(spacing: 6) {
-                            Text(session.storeName ?? "Set store").font(.title2.bold())
-                                .foregroundStyle(session.storeName == nil ? .secondary : .primary)
-                            Image(systemName: "pencil").font(.caption).foregroundStyle(.secondary)
+                    if canManageTrip {
+                        Button {
+                            storeText = session.storeName ?? ""
+                            editingStore = true
+                        } label: {
+                            HStack(spacing: 6) {
+                                Text(session.storeName ?? "Set store").font(.title2.bold())
+                                    .foregroundStyle(session.storeName == nil ? .secondary : .primary)
+                                Image(systemName: "pencil").font(.caption).foregroundStyle(.secondary)
+                            }
                         }
+                        .buttonStyle(.plain)
+                    } else {
+                        Text(session.storeName ?? "Store not set")
+                            .font(.title2.bold())
+                            .foregroundStyle(session.storeName == nil ? .secondary : .primary)
                     }
-                    .buttonStyle(.plain)
-                    Text("\(session.startedByDisplayName) · started \(session.startedAt.formatted(.relative(presentation: .named)))")
+                    Text("\(session.startedByDisplayName) · started \(session.startedAt, format: .relative(presentation: .named))")
                         .font(.caption).foregroundStyle(.secondary)
+                        .id(now)
                 }
                 Spacer()
             }
             ProgressView(value: Double(progress.total - progress.remaining), total: Double(max(progress.total, 1)))
                 .tint(tint)
+                .animation(.easeInOut(duration: 0.4), value: progress.remaining)
             HStack(spacing: 16) {
                 stat("\(progress.remaining)", "left")
                 stat("\(progress.found)", "found")
@@ -195,13 +253,16 @@ struct ShoppingSessionView: View {
                 if progress.outOfStock > 0 { stat("\(progress.outOfStock)", "unavailable") }
             }
             .font(.subheadline)
+            .contentTransition(.numericText())
 
-            HStack(spacing: 4) {
-                Image(systemName: "hand.draw").font(.caption2)
-                Text("Swipe right → Found · Swipe left for more")
-                    .font(.caption2)
+            if canManageTrip {
+                HStack(spacing: 4) {
+                    Image(systemName: "hand.draw").font(.caption2)
+                    Text("Swipe right → Found · Swipe left for more")
+                        .font(.caption2)
+                }
+                .foregroundStyle(.tertiary)
             }
-            .foregroundStyle(.tertiary)
         }
         .padding(.vertical, 4)
         .listRowSeparator(.hidden)
@@ -217,7 +278,7 @@ struct ShoppingSessionView: View {
     // MARK: - Completed section (tappable disclosure)
 
     @ViewBuilder
-    private func completedSection(_ session: ShoppingSession) -> some View {
+    private func completedSection(_ session: ShoppingSession, canManageTrip: Bool) -> some View {
         let handled = repo.handledItems(session: session)
         if !handled.isEmpty {
             Section {
@@ -240,7 +301,7 @@ struct ShoppingSessionView: View {
 
                 if showCompleted {
                     ForEach(handled) { item in
-                        CompletedItemRow(item: item) {
+                        CompletedItemRow(item: item, canManageTrip: canManageTrip) {
                             repo.mark(item, as: .needed)
                         } onEdit: {
                             editingItem = item
@@ -272,15 +333,12 @@ struct ShoppingSessionView: View {
 
 struct ShopItemRow: View {
     let item: GroceryItem
+    var member: HouseholdMember?
     var tint: Color = .green
 
     var body: some View {
         HStack(spacing: 12) {
-            if item.priority == .high {
-                Image(systemName: "exclamationmark.circle.fill")
-                    .foregroundStyle(.red)
-                    .font(.body)
-            }
+            ProductImageView(itemName: item.name, size: 44)
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(item.name)
@@ -289,12 +347,17 @@ struct ShopItemRow: View {
                     Text(detail)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
             }
 
-            Spacer()
+            Spacer(minLength: 4)
 
-            if item.priority == .low {
+            if item.priority == .high {
+                Image(systemName: "exclamationmark.circle.fill")
+                    .foregroundStyle(.red)
+                    .font(.subheadline)
+            } else if item.priority == .low {
                 Text("low")
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(.secondary)
@@ -302,6 +365,8 @@ struct ShopItemRow: View {
                     .padding(.vertical, 2)
                     .background(.quaternary, in: Capsule())
             }
+
+            MemberAvatarView(member: member, size: 26)
         }
         .padding(.vertical, 4)
         .contentShape(Rectangle())
@@ -316,6 +381,7 @@ struct ShopItemRow: View {
 
 private struct CompletedItemRow: View {
     let item: GroceryItem
+    let canManageTrip: Bool
     let onUndo: () -> Void
     let onEdit: () -> Void
 
@@ -337,8 +403,10 @@ private struct CompletedItemRow: View {
             Spacer()
 
             Menu {
-                Button { onUndo() } label: {
-                    Label("Put Back on List", systemImage: "arrow.uturn.backward")
+                if canManageTrip {
+                    Button { onUndo() } label: {
+                        Label("Put Back on List", systemImage: "arrow.uturn.backward")
+                    }
                 }
                 Button { onEdit() } label: {
                     Label("Edit Item", systemImage: "pencil")
@@ -377,6 +445,199 @@ private struct CompletedItemRow: View {
         case .replaced: return "Replaced with \(item.replacementItemName ?? "alternative")"
         default: return item.status.rawValue
         }
+    }
+}
+
+// MARK: - Shopping item detail (tap-to-open sheet)
+
+struct ShoppingItemDetailView: View {
+    @Environment(GroceryRepository.self) private var repo
+
+    let item: GroceryItem
+    var tint: Color = .green
+    var canManageTrip = true
+    let onAction: (Action) -> Void
+
+    enum Action { case found, replace, skip, outOfStock, edit }
+
+    private var member: HouseholdMember? {
+        repo.currentMembers.first { $0.id == item.requestedByMemberId }
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                heroSection
+                detailsSection
+                addedBySection
+                actionButtons
+            }
+        }
+        .background(Color(.systemGroupedBackground))
+    }
+
+    // MARK: - Hero
+
+    private var heroSection: some View {
+        VStack(spacing: 12) {
+            ProductImageView(itemName: item.name, size: 120)
+                .padding(.top, 28)
+
+            Text(item.name)
+                .font(.title2.bold())
+                .multilineTextAlignment(.center)
+
+            HStack(spacing: 6) {
+                Label(item.category.rawValue, systemImage: item.category.systemImage)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(tint)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(tint.opacity(0.12), in: Capsule())
+
+                if let qty = item.quantity {
+                    Text(qty)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Color(.systemGray5), in: Capsule())
+                }
+
+                if item.priority != .normal {
+                    Label(item.priority.rawValue, systemImage: item.priority.systemImage)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(item.priority == .high ? .red : .secondary)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(
+                            (item.priority == .high ? Color.red : Color(.systemGray5)).opacity(0.12),
+                            in: Capsule()
+                        )
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.bottom, 20)
+        .background(Color(.secondarySystemGroupedBackground))
+    }
+
+    // MARK: - Details
+
+    private var detailsSection: some View {
+        VStack(spacing: 0) {
+            if item.notes != nil || item.replacementPreference != nil {
+                VStack(alignment: .leading, spacing: 12) {
+                    if let notes = item.notes {
+                        detailRow(label: "Notes", systemImage: "note.text", value: notes)
+                    }
+                    if let pref = item.replacementPreference {
+                        detailRow(label: "If unavailable", systemImage: "arrow.triangle.2.circlepath", value: pref)
+                    }
+                }
+                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(.secondarySystemGroupedBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .padding(.horizontal, 16)
+                .padding(.top, 16)
+            }
+        }
+    }
+
+    private func detailRow(label: String, systemImage: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Label(label, systemImage: systemImage)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.body)
+        }
+    }
+
+    // MARK: - Added by
+
+    private var addedBySection: some View {
+        HStack(spacing: 12) {
+            MemberAvatarView(member: member, size: 36)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Added by \(item.requestedByDisplayName)")
+                    .font(.subheadline.weight(.medium))
+                Text(item.createdAt, format: .dateTime.month(.abbreviated).day().hour().minute())
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .padding(.horizontal, 16)
+        .padding(.top, 12)
+    }
+
+    // MARK: - Actions
+
+    private var actionButtons: some View {
+        VStack(spacing: 10) {
+            if canManageTrip {
+                Button { onAction(.found) } label: {
+                    Label("Mark Found", systemImage: "checkmark.circle.fill")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.green)
+                .controlSize(.large)
+
+                HStack(spacing: 10) {
+                    Button { onAction(.replace) } label: {
+                        Label("Replace", systemImage: "arrow.triangle.2.circlepath")
+                            .font(.subheadline.weight(.semibold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 4)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.blue)
+                    .controlSize(.regular)
+
+                    Button { onAction(.skip) } label: {
+                        Label("Skip", systemImage: "arrow.uturn.forward")
+                            .font(.subheadline.weight(.semibold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 4)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.orange)
+                    .controlSize(.regular)
+
+                    Button { onAction(.outOfStock) } label: {
+                        Label("Out", systemImage: "xmark")
+                            .font(.subheadline.weight(.semibold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 4)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.red)
+                    .controlSize(.regular)
+                }
+            }
+
+            Button { onAction(.edit) } label: {
+                Label("Edit Item", systemImage: "pencil")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 4)
+            }
+            .buttonStyle(.bordered)
+            .tint(tint)
+            .controlSize(.regular)
+        }
+        .padding(16)
     }
 }
 
