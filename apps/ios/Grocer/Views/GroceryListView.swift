@@ -6,15 +6,12 @@ import SwiftUI
 struct GroceryListView: View {
     @Environment(GroceryRepository.self) private var repo
 
-    @State private var quickAddText = ""
-    @State private var showingAddItem = false
-    @State private var showingAuditLog = false
+    @State private var showingAddSearch = false
     @State private var showingSettings = false
     @State private var sessionForNav: ShoppingSession?
     @State private var showNewGroup = false
     @State private var showEditGroup = false
     @State private var showStartTrip = false
-    @FocusState private var quickAddFocused: Bool
 
     private var tint: Color { repo.currentHousehold?.tint ?? .green }
 
@@ -30,10 +27,6 @@ struct GroceryListView: View {
                 }
 
                 if repo.currentList != nil {
-                    quickAddRow
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 16)
-
                     ForEach(repo.pendingItems.groupedByCategory(), id: \.category) { group in
                         VStack(alignment: .leading, spacing: 0) {
                             CategoryHeader(category: group.category)
@@ -96,7 +89,6 @@ struct GroceryListView: View {
         }
         .background(Color(.systemGroupedBackground))
         .refreshable { await repo.manualRefresh() }
-        .animation(.default, value: repo.pendingItems.map(\.id))
         .navigationTitle(repo.currentHousehold?.name ?? "Grocer")
         .navigationBarTitleDisplayMode(.large)
         .tint(tint)
@@ -115,16 +107,14 @@ struct GroceryListView: View {
         .toolbar {
             ToolbarItem(placement: .topBarLeading) { groupMenu }
             ToolbarItemGroup(placement: .topBarTrailing) {
-                Button { showingAddItem = true } label: { Image(systemName: "plus") }
+                Button { showingAddSearch = true } label: { Image(systemName: "plus") }
                     .disabled(repo.currentList == nil)
-                Button { showingAuditLog = true } label: { Image(systemName: "clock.arrow.circlepath") }
-                    .disabled(repo.currentHousehold == nil)
-                    .accessibilityLabel("Audit Log")
                 Button { showingSettings = true } label: { Image(systemName: "gearshape") }
             }
         }
-        .sheet(isPresented: $showingAddItem) { NavigationStack { AddItemView() } }
-        .sheet(isPresented: $showingAuditLog) { NavigationStack { AuditLogView() } }
+        .fullScreenCover(isPresented: $showingAddSearch) {
+            AddItemSearchView(tint: tint)
+        }
         .sheet(isPresented: $showingSettings) { NavigationStack { SettingsView() } }
         .sheet(isPresented: $showNewGroup) { NavigationStack { GroupEditorView(group: nil) } }
         .sheet(isPresented: $showEditGroup) { NavigationStack { GroupEditorView(group: repo.currentHousehold) } }
@@ -171,38 +161,6 @@ struct GroceryListView: View {
         }
     }
 
-    // MARK: - Quick add
-
-    private var quickAddRow: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "plus.circle.fill")
-                .font(.title3)
-                .foregroundStyle(tint)
-            TextField("Add item…", text: $quickAddText)
-                .focused($quickAddFocused)
-                .submitLabel(.done)
-                .onSubmit(submitQuickAdd)
-            if !quickAddText.isEmpty {
-                Button("Add", action: submitQuickAdd)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(tint)
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .background(Color(.secondarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-    }
-
-    private func submitQuickAdd() {
-        let name = quickAddText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return }
-        repo.addItem(name: name, quantity: nil, category: CategoryGuess.guess(for: name),
-                     notes: nil, replacementPreference: nil)
-        quickAddText = ""
-        quickAddFocused = true
-    }
-
     private var startShoppingButton: some View {
         Button {
             showStartTrip = true
@@ -210,11 +168,10 @@ struct GroceryListView: View {
             Label("Start Shopping", systemImage: "cart.fill")
                 .font(.headline).frame(maxWidth: .infinity).padding(.vertical, 6)
         }
-        .buttonStyle(.borderedProminent)
+        .grocerGlassButton(prominent: true)
         .tint(tint)
         .controlSize(.large)
         .padding()
-        .background(.bar)
         .disabled(repo.pendingItems.isEmpty)
     }
 }

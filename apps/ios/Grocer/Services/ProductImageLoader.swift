@@ -30,15 +30,62 @@ final class ProductImageLoader {
         return result
     }
 
+    /// Streaming variant: yields progressively-sharper partial images as the
+    /// server generates them (via OpenAI's `partial_images` SSE), then the final
+    /// image. Memory/disk-cached images are yielded immediately as a single
+    /// frame. The final frame is written to both caches.
+    ///
+    /// Consume with `for await frame in loader.imageStream(for: name)` — the
+    /// last frame is the finished image. The stream finishes with no frames if
+    /// loading failed.
+    func imageStream(for itemName: String) -> AsyncStream<(image: UIImage, isFinal: Bool)> {
+        let key = itemName.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        return AsyncStream { continuation in
+            guard !key.isEmpty else { continuation.finish(); return }
+
+            // Fast path: already in memory.
+            if let cached = memoryCache[key] {
+                continuation.yield((cached, true))
+                continuation.finish()
+                return
+            }
+
+            let task = Task {
+                // Disk cache (off the main thread).
+                if let img = await Self.loadFromDisk(key: key) {
+                    continuation.yield((img, true))
+                    self.memoryCache[key] = img
+                    continuation.finish()
+                    return
+                }
+
+                // Network: relay partials as they arrive, return the final.
+                let final = await Self.streamFromNetwork(key: key) { partial in
+                    continuation.yield((partial, false))
+                }
+                let resolved: UIImage?
+                if let final {
+                    resolved = final
+                } else if Task.isCancelled {
+                    resolved = nil
+                } else {
+                    resolved = await self.image(for: key)
+                }
+                if let resolved {
+                    continuation.yield((resolved, true))
+                    self.memoryCache[key] = resolved
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
     // MARK: - Off-main-thread loading
 
     nonisolated private static func load(key: String) async -> UIImage? {
-        let file = cacheFile(for: key)
-
         // Disk cache (read + decode off the main thread).
-        if let data = try? Data(contentsOf: file), let img = UIImage(data: data) {
-            return img
-        }
+        if let img = await loadFromDisk(key: key) { return img }
 
         // Network fetch.
         guard let encoded = key.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
@@ -47,12 +94,97 @@ final class ProductImageLoader {
             let (data, response) = try await URLSession.shared.data(from: url)
             guard let http = response as? HTTPURLResponse, http.statusCode == 200,
                   let img = UIImage(data: data) else { return nil }
-            try? data.write(to: file, options: .atomic)
+            try? data.write(to: cacheFile(for: key), options: .atomic)
             return img
         } catch {
             print("[ProductImageLoader] fetch failed for \(key): \(error)")
             return nil
         }
+    }
+
+    nonisolated private static func loadFromDisk(key: String) async -> UIImage? {
+        let file = cacheFile(for: key)
+        if let data = try? Data(contentsOf: file), let img = UIImage(data: data) {
+            return img
+        }
+        return nil
+    }
+
+    /// Opens `?stream=1`. The server returns either a plain `image/png` (a cache
+    /// hit — no streaming) or an SSE stream of `partial`/`complete` events whose
+    /// `data:` payload is `{"b64_json": "..."}`. Partial frames are delivered via
+    /// `onPartial`; the finished image is returned and written to disk.
+    nonisolated private static func streamFromNetwork(
+        key: String,
+        onPartial: @escaping @Sendable (UIImage) -> Void
+    ) async -> UIImage? {
+        guard let encoded = key.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              let url = URL(string: APIClient.baseURLString + "/product-image?name=\(encoded)&stream=1") else { return nil }
+        do {
+            let (bytes, response) = try await URLSession.shared.bytes(from: url)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return nil }
+
+            // Cache hit served as a plain PNG — no SSE to parse.
+            let contentType = (http.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
+            if contentType.hasPrefix("image/") {
+                var data = Data()
+                for try await b in bytes { data.append(b) }
+                guard let img = UIImage(data: data) else { return nil }
+                try? data.write(to: cacheFile(for: key), options: .atomic)
+                return img
+            }
+
+            // SSE: accumulate `event:`/`data:` lines, dispatch on each blank line.
+            var event = ""
+            var dataBuf = ""
+            var finalData: Data?
+
+            func flushEvent() {
+                guard let payload = decodeSSEImage(dataBuf) else {
+                    event = ""
+                    dataBuf = ""
+                    return
+                }
+                if event == "partial", let img = UIImage(data: payload) {
+                    onPartial(img)
+                } else if event == "complete" {
+                    finalData = payload
+                }
+                event = ""
+                dataBuf = ""
+            }
+
+            for try await line in bytes.lines {
+                let normalizedLine = line.trimmingCharacters(in: .newlines)
+                if normalizedLine.isEmpty {
+                    flushEvent()
+                    continue
+                }
+                if normalizedLine.hasPrefix("event:") {
+                    event = String(normalizedLine.dropFirst(6)).trimmingCharacters(in: .whitespacesAndNewlines)
+                } else if normalizedLine.hasPrefix("data:") {
+                    dataBuf += String(normalizedLine.dropFirst(5)).trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+            }
+            if !event.isEmpty || !dataBuf.isEmpty { flushEvent() }
+
+            guard let finalData, let img = UIImage(data: finalData) else { return nil }
+            try? finalData.write(to: cacheFile(for: key), options: .atomic)
+            return img
+        } catch {
+            print("[ProductImageLoader] stream failed for \(key): \(error)")
+            return nil
+        }
+    }
+
+    /// Decodes an SSE `data:` JSON payload (`{"b64_json": "..."}`) into PNG bytes.
+    nonisolated private static func decodeSSEImage(_ json: String) -> Data? {
+        struct Frame: Decodable { let b64_json: String? }
+        guard !json.isEmpty, let jsonData = json.data(using: .utf8),
+              let frame = try? JSONDecoder().decode(Frame.self, from: jsonData),
+              let b64 = frame.b64_json,
+              let bytes = Data(base64Encoded: b64) else { return nil }
+        return bytes
     }
 
     nonisolated private static func cacheFile(for name: String) -> URL {
@@ -74,6 +206,10 @@ struct ProductImageView: View {
 
     @State private var image: UIImage?
     @State private var isLoading = true
+
+    private var imageKey: String {
+        itemName.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     var body: some View {
         Group {
@@ -98,9 +234,13 @@ struct ProductImageView: View {
                     }
             }
         }
-        .task {
-            let loader = ProductImageLoader.shared
-            image = await loader.image(for: itemName)
+        .task(id: imageKey) {
+            image = nil
+            isLoading = true
+            for await frame in ProductImageLoader.shared.imageStream(for: itemName) {
+                withAnimation(.easeIn(duration: 0.2)) { image = frame.image }
+                isLoading = !frame.isFinal
+            }
             isLoading = false
         }
     }

@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS device_tokens (
   notification_token_valid INTEGER NOT NULL DEFAULT 0, -- boolean (0/1)
   created_at           TEXT NOT NULL,
   updated_at           TEXT NOT NULL,
-  PRIMARY KEY (device_id)
+  PRIMARY KEY (device_id, household_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_device_tokens_household

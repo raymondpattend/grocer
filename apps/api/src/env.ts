@@ -16,6 +16,7 @@ export interface Env {
   IOS_MIN_BUILD: string;
   IOS_LATEST_BUILD: string;
 
-  // OpenAI — used for product image generation + embeddings
+  // OpenAI — used for product image generation, embeddings, and list parsing
   OPENAI_API_KEY: string;
+  OPENAI_PARSE_MODEL?: string;
 }

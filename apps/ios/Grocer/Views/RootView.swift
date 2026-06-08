@@ -1,15 +1,27 @@
+import PhotosUI
 import SwiftUI
 import UIKit
 
 /// Top-level navigation. Defaults to the planning list; the shopper can drill
 /// into the focused Shopping Session screen when one is active.
 struct RootView: View {
+    /// Flip to `true` while debugging to show onboarding even after groups exist.
+    static var forceShowOnboardingForDebug = false
+
     @Environment(GroceryRepository.self) private var repo
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        NavigationStack {
-            GroceryListView()
+        Group {
+            if shouldShowOnboarding {
+                NavigationStack {
+                    OnboardingView()
+                }
+            } else {
+                NavigationStack {
+                    GroceryListView()
+                }
+            }
         }
         .background(KeyboardWarmer())
         .onAppear {
@@ -26,6 +38,10 @@ struct RootView: View {
                 repo.stopForegroundRefreshLoop()
             }
         }
+    }
+
+    private var shouldShowOnboarding: Bool {
+        Self.forceShowOnboardingForDebug || (repo.hasCompletedInitialLoad && repo.households.isEmpty)
     }
 }
 
@@ -63,6 +79,320 @@ private struct KeyboardWarmer: UIViewRepresentable {
     func updateUIView(_ uiView: UIView, context: Context) {}
 }
 
+// MARK: - Onboarding
+
+private struct OnboardingView: View {
+    @Environment(GroceryRepository.self) private var repo
+    @Environment(SettingsStore.self) private var settings
+
+    @State private var displayName = ""
+    @State private var selectedProfilePhoto: PhotosPickerItem?
+    @State private var hasConfirmedProfile = false
+    @State private var showCreateGroup = false
+    @State private var showJoinHelp = false
+
+    private var trimmedDisplayName: String {
+        displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var canSaveProfile: Bool {
+        !trimmedDisplayName.isEmpty
+    }
+
+    private var profileIsDirty: Bool {
+        trimmedDisplayName != repo.displayName && !trimmedDisplayName.isEmpty
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                header
+                profilePanel
+                if hasConfirmedProfile {
+                    groupChoicePanel
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
+                }
+            }
+            .padding(20)
+            .frame(maxWidth: 560)
+            .frame(maxWidth: .infinity)
+        }
+        .background(Color(.systemGroupedBackground))
+        .navigationTitle("Welcome")
+        .navigationBarTitleDisplayMode(.inline)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            SyncStatusBar(state: repo.syncState)
+        }
+        .onAppear(perform: loadProfile)
+        .onChange(of: selectedProfilePhoto) { _, newItem in
+            loadProfilePhoto(newItem)
+        }
+        .sheet(isPresented: $showCreateGroup) {
+            NavigationStack {
+                GroupEditorView(group: nil)
+            }
+        }
+        .sheet(isPresented: $showJoinHelp) {
+            JoinExistingGroupHelpView()
+        }
+        .animation(.default, value: hasConfirmedProfile)
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            appIcon
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Set Up Grocer")
+                    .font(.largeTitle.bold())
+                Text("Add the profile your group will see.")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.top, 18)
+    }
+
+    private var appIcon: some View {
+        Group {
+            if let image = UIImage(named: "AppIcon") {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            } else {
+                Image(systemName: "cart.fill")
+                    .font(.system(size: 36, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(.green, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+        }
+        .frame(width: 72, height: 72)
+        .shadow(color: .black.opacity(0.12), radius: 12, y: 6)
+        .accessibilityHidden(true)
+    }
+
+    private var profilePanel: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Profile")
+                .font(.headline)
+
+            HStack(alignment: .center, spacing: 16) {
+                PhotosPicker(selection: $selectedProfilePhoto, matching: .images) {
+                    ZStack(alignment: .bottomTrailing) {
+                        OnboardingProfilePicture(imageData: settings.profileImageData, size: 88)
+                        Image(systemName: "camera.fill")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 28, height: 28)
+                            .background(.green, in: Circle())
+                            .overlay {
+                                Circle().stroke(Color(.secondarySystemGroupedBackground), lineWidth: 2)
+                            }
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Choose profile photo")
+
+                VStack(alignment: .leading, spacing: 8) {
+                    TextField("Your name", text: $displayName)
+                        .textContentType(.name)
+                        .textInputAutocapitalization(.words)
+                        .submitLabel(.done)
+                        .font(.title3.weight(.semibold))
+                        .onSubmit(saveProfile)
+                        .padding(.horizontal, 12)
+                        .frame(height: 48)
+                        .background(Color(.tertiarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+                    Text("Choose a photo and enter your name.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if hasConfirmedProfile {
+                HStack(spacing: 10) {
+                    Label(profileIsDirty ? "Unsaved changes" : "Profile saved",
+                          systemImage: profileIsDirty ? "pencil.circle" : "checkmark.circle.fill")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(profileIsDirty ? .orange : .green)
+
+                    Spacer()
+
+                    if profileIsDirty {
+                        Button("Save", action: saveProfile)
+                            .font(.subheadline.weight(.semibold))
+                            .disabled(!canSaveProfile)
+                    }
+                }
+            } else {
+                Button(action: saveProfile) {
+                    Label("Continue", systemImage: "arrow.right.circle.fill")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .tint(.green)
+                .disabled(!canSaveProfile)
+            }
+        }
+        .padding(18)
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private var groupChoicePanel: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Group")
+                .font(.headline)
+
+            VStack(spacing: 12) {
+                Button {
+                    saveProfile()
+                    showCreateGroup = true
+                } label: {
+                    Label("Create Group", systemImage: "person.2.badge.plus")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .tint(.green)
+                .disabled(!canSaveProfile || !repo.hasCompletedInitialLoad)
+
+                Button {
+                    saveProfile()
+                    showJoinHelp = true
+                } label: {
+                    Label("Learn How to Join", systemImage: "link")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .disabled(!canSaveProfile)
+            }
+        }
+        .padding(18)
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private func loadProfile() {
+        guard displayName.isEmpty else { return }
+        let savedName = settings.displayName == "Me" ? "" : settings.displayName
+        displayName = savedName
+        hasConfirmedProfile = !savedName.isEmpty
+    }
+
+    private func saveProfile() {
+        guard canSaveProfile else { return }
+        repo.updateDisplayName(trimmedDisplayName)
+        displayName = trimmedDisplayName
+        hasConfirmedProfile = true
+    }
+
+    private func loadProfilePhoto(_ item: PhotosPickerItem?) {
+        guard let item else { return }
+        Task {
+            let imageData: Data?
+            if let data = try? await item.loadTransferable(type: Data.self),
+               let image = UIImage(data: data) {
+                imageData = image.onboardingProfileImageData()
+            } else {
+                imageData = nil
+            }
+
+            await MainActor.run {
+                if let imageData {
+                    repo.updateProfileImageData(imageData)
+                }
+                selectedProfilePhoto = nil
+            }
+        }
+    }
+}
+
+private struct OnboardingProfilePicture: View {
+    let imageData: Data?
+    let size: CGFloat
+
+    var body: some View {
+        Group {
+            if let imageData, let image = UIImage(data: imageData) {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Image(systemName: "person.crop.circle.fill")
+                    .resizable()
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(.secondary)
+                    .padding(size * 0.08)
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
+        .overlay {
+            Circle().stroke(.quaternary, lineWidth: 1)
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+private struct JoinExistingGroupHelpView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Label("Ask a group owner to send an invite from Settings.", systemImage: "person.crop.circle.badge.plus")
+                    Label("Open the invite link on this iPhone.", systemImage: "link")
+                    Label("Grocer will add the shared group after iCloud accepts it.", systemImage: "icloud.and.arrow.down")
+                }
+            }
+            .navigationTitle("Join a Group")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+private extension UIImage {
+    func onboardingProfileImageData(maxPixelSize: CGFloat = 512,
+                                    compressionQuality: CGFloat = 0.82) -> Data? {
+        guard size.width > 0, size.height > 0 else { return nil }
+
+        let targetSize = CGSize(width: maxPixelSize, height: maxPixelSize)
+        let scale = max(targetSize.width / size.width, targetSize.height / size.height)
+        let scaledSize = CGSize(width: size.width * scale, height: size.height * scale)
+        let drawRect = CGRect(
+            x: (targetSize.width - scaledSize.width) / 2,
+            y: (targetSize.height - scaledSize.height) / 2,
+            width: scaledSize.width,
+            height: scaledSize.height
+        )
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+
+        return UIGraphicsImageRenderer(size: targetSize, format: format)
+            .jpegData(withCompressionQuality: compressionQuality) { context in
+                UIColor.systemBackground.setFill()
+                context.fill(CGRect(origin: .zero, size: targetSize))
+                draw(in: drawRect)
+            }
+    }
+}
+
 // MARK: - Shared small components
 
 /// Small sync status pill shown when offline / syncing.
@@ -73,11 +403,10 @@ struct SyncStatusBar: View {
         switch state {
         case .idle, .syncing:
             EmptyView()
-        case .offline:
-            label("Offline — changes will sync later", systemImage: "icloud.slash", tint: .orange)
-        case .error(let message):
-            label(message, systemImage: "exclamationmark.icloud", tint: .orange)
+        case .offline, .error:
+            label("Offline — changes will sync later", systemImage: "icloud.slash", tint: .gray)
         }
+        // Errors are not handled here because they are often unreliable or inaccurate
     }
 
     private func label(_ text: String, systemImage: String, tint: Color) -> some View {

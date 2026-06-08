@@ -60,6 +60,21 @@ actor APIClient {
         return res?.items ?? []
     }
 
+    // MARK: - Product images
+
+    /// Best-effort: ask the API to pre-generate product images for the given
+    /// item names so they're a cache hit by the time they scroll into view.
+    /// Fire-and-forget — the server returns immediately and generates in the
+    /// background.
+    func prewarmImages(_ names: [String]) async {
+        let trimmed = names
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !trimmed.isEmpty else { return }
+        struct Req: Encodable { let names: [String] }
+        let _: OkResponse? = await post("/product-image/prewarm", body: Req(names: trimmed))
+    }
+
     // MARK: - Feedback
 
     func sendFeedback(message: String, email: String?, appVersion: String?, device: String?) async -> Bool {

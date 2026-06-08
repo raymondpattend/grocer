@@ -60,8 +60,7 @@ export async function upsertDeviceToken(
          CASE WHEN ?4 IS NULL THEN 0 ELSE 1 END,
          CASE WHEN ?5 IS NULL THEN 0 ELSE 1 END,
          ?10, ?10)
-       ON CONFLICT(device_id) DO UPDATE SET
-         household_id = ?2,
+       ON CONFLICT(device_id, household_id) DO UPDATE SET
          member_id = ?3,
          push_to_start_token = COALESCE(?4, device_tokens.push_to_start_token),
          push_notification_token = COALESCE(?5, device_tokens.push_notification_token),
@@ -96,17 +95,23 @@ export async function upsertDeviceToken(
 export async function eligibleStartTokens(
   db: D1Database,
   householdId: string,
+  excludeDeviceId?: string,
 ): Promise<DeviceTokenRow[]> {
-  const { results } = await db
-    .prepare(
-      `SELECT * FROM device_tokens
-        WHERE household_id = ?1
+  const where = excludeDeviceId
+    ? `WHERE household_id = ?1
+          AND device_id <> ?2
           AND live_activities_enabled = 1
           AND token_valid = 1
-          AND push_to_start_token IS NOT NULL`,
-    )
-    .bind(householdId)
-    .all<DeviceTokenRow>();
+          AND push_to_start_token IS NOT NULL`
+    : `WHERE household_id = ?1
+          AND live_activities_enabled = 1
+          AND token_valid = 1
+          AND push_to_start_token IS NOT NULL`;
+
+  const stmt = db.prepare(`SELECT * FROM device_tokens ${where}`);
+  const { results } = excludeDeviceId
+    ? await stmt.bind(householdId, excludeDeviceId).all<DeviceTokenRow>()
+    : await stmt.bind(householdId).all<DeviceTokenRow>();
   return results ?? [];
 }
 

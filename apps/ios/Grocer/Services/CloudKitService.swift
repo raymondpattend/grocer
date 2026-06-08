@@ -21,7 +21,7 @@ import UIKit
 /// capability + container and run against CloudKit. To run UI-only / local mode
 /// (e.g. an unsigned build with no entitlements), build with
 /// `GR_CLOUDKIT_ENABLED=NO`; `container` is then nil and the repository falls
-/// back to local sample data instead of crashing.
+/// back to the local empty onboarding state instead of crashing.
 final class CloudKitService {
     static let shared = CloudKitService()
 
@@ -816,10 +816,21 @@ struct CloudSnapshot: Codable {
     }
 
     private static func upserting<T>(_ incoming: [T], into existing: [T], key: (T) -> String) -> [T] {
-        var merged: [String: T] = [:]
-        for value in existing { merged[key(value)] = value }
-        for value in incoming { merged[key(value)] = value }
-        return Array(merged.values)
+        var merged = existing
+        var indexesByKey: [String: Int] = [:]
+        for (index, value) in existing.enumerated() {
+            indexesByKey[key(value)] = index
+        }
+        for value in incoming {
+            let recordKey = key(value)
+            if let index = indexesByKey[recordKey] {
+                merged[index] = value
+            } else {
+                indexesByKey[recordKey] = merged.count
+                merged.append(value)
+            }
+        }
+        return merged
     }
 }
 

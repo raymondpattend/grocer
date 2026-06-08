@@ -33,19 +33,25 @@ struct ItemDetailView: View {
 
             Section {
                 Button {
-                    repo.mark(item, as: .found)
+                    moveItem {
+                        repo.mark(item, as: .found)
+                    }
                     dismiss()
                 } label: {
                     Label("Mark as Bought", systemImage: "checkmark.circle")
                 }
                 Button {
-                    repo.mark(item, as: .removed)
+                    moveItem {
+                        repo.mark(item, as: .removed)
+                    }
                     dismiss()
                 } label: {
                     Label("Mark as Not Needed", systemImage: "minus.circle")
                 }
                 Button(role: .destructive) {
-                    repo.delete(item)
+                    moveItem {
+                        repo.delete(item)
+                    }
                     dismiss()
                 } label: {
                     Label("Delete", systemImage: "trash")
@@ -67,6 +73,10 @@ struct ItemDetailView: View {
                 }
             }
         }
+    }
+
+    private func moveItem(_ action: () -> Void) {
+        withAnimation(.spring(response: 0.28, dampingFraction: 0.86), action)
     }
 }
 

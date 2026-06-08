@@ -25,16 +25,19 @@ struct ItemActionSheet: View {
 
                 Section {
                     actionRow("Mark Found", systemImage: "checkmark.circle.fill", tint: .green) {
-                        repo.mark(item, as: .found); dismiss()
+                        moveItem { repo.mark(item, as: .found) }
+                        dismiss()
                     }
                     actionRow("Replace", systemImage: "arrow.triangle.2.circlepath.circle.fill", tint: .blue) {
                         dismiss(); onReplace()
                     }
                     actionRow("Out of Stock", systemImage: "xmark.circle.fill", tint: .red) {
-                        repo.mark(item, as: .outOfStock); dismiss()
+                        moveItem { repo.mark(item, as: .outOfStock) }
+                        dismiss()
                     }
                     actionRow("Skip", systemImage: "arrow.uturn.forward.circle.fill", tint: .orange) {
-                        repo.mark(item, as: .skipped); dismiss()
+                        moveItem { repo.mark(item, as: .skipped) }
+                        dismiss()
                     }
                 }
 
@@ -77,6 +80,10 @@ struct ItemActionSheet: View {
                 .foregroundStyle(.white, tint)
         }
     }
+
+    private func moveItem(_ action: () -> Void) {
+        withAnimation(.spring(response: 0.28, dampingFraction: 0.86), action)
+    }
 }
 
 /// Replacement picker shown when an item is unavailable.
@@ -101,7 +108,7 @@ struct ReplacementSheet: View {
                 Section("\(item.name) unavailable — replace with") {
                     ForEach(suggestions, id: \.self) { option in
                         Button {
-                            repo.mark(item, as: .replaced, replacement: option)
+                            moveItem { repo.mark(item, as: .replaced, replacement: option) }
                             dismiss()
                         } label: {
                             Label(option, systemImage: "cart.badge.plus")
@@ -112,7 +119,7 @@ struct ReplacementSheet: View {
                     HStack {
                         TextField("Replacement item", text: $customReplacement)
                         Button("Use") {
-                            repo.mark(item, as: .replaced, replacement: customReplacement)
+                            moveItem { repo.mark(item, as: .replaced, replacement: customReplacement) }
                             dismiss()
                         }
                         .disabled(customReplacement.trimmingCharacters(in: .whitespaces).isEmpty)
@@ -120,7 +127,7 @@ struct ReplacementSheet: View {
                 }
                 Section {
                     Button("No replacement — mark Out of Stock", role: .destructive) {
-                        repo.mark(item, as: .outOfStock)
+                        moveItem { repo.mark(item, as: .outOfStock) }
                         dismiss()
                     }
                 }
@@ -131,6 +138,10 @@ struct ReplacementSheet: View {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
             }
         }
+    }
+
+    private func moveItem(_ action: () -> Void) {
+        withAnimation(.spring(response: 0.28, dampingFraction: 0.86), action)
     }
 }
 

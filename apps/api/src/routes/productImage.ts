@@ -143,7 +143,16 @@ productImageRoute.get("/product-image", async (c) => {
     }
   }
 
-  // 3. Coalesce concurrent generation requests for the same normalized key
+  // 3. Cold path — the image must be generated. Clients can opt into a
+  // Server-Sent Events stream (`?stream=1`) that relays OpenAI's partial images
+  // so the UI renders a progressively-sharpening preview instead of waiting
+  // ~10s for the finished PNG. Cache/R2/vector hits above always return a plain
+  // `image/png`, so a streaming client must branch on the response Content-Type.
+  if (c.req.query("stream") === "1") {
+    return generateAndStream(c, c.env, name, exactKey, cacheKey, queryVec, hasVectorize);
+  }
+
+  // Non-stream path: coalesce concurrent generation requests for the same key.
   const existing = inFlight.get(key);
   if (existing) {
     console.log(`Coalescing duplicate request for "${name}"`);
@@ -168,14 +177,108 @@ productImageRoute.get("/product-image", async (c) => {
   }
 });
 
-async function generateAndCache(
+/**
+ * POST /product-image/prewarm  { "names": ["Bananas", "Whole milk", ...] }
+ *
+ * Best-effort: kicks off generation for any names not already cached and returns
+ * immediately (202). By the time the user scrolls to the item, the image is a
+ * cache hit. Used for add-time prewarming and bulk parse-list imports.
+ */
+productImageRoute.post("/product-image/prewarm", async (c) => {
+  let body: { names?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ ok: false, error: "Invalid JSON body" }, 400);
+  }
+
+  const names = Array.isArray(body.names)
+    ? body.names.filter((n): n is string => typeof n === "string")
+    : [];
+  if (names.length === 0) {
+    return c.json({ ok: false, error: "Missing or empty 'names' array" }, 400);
+  }
+
+  c.executionCtx.waitUntil(prewarmProductImages(c.env, names));
+  return c.json({ ok: true, queued: names.length }, 202);
+});
+
+export async function prewarmProductImages(
   env: Env,
-  name: string,
-  exactKey: string,
-  queryVec: number[] | undefined,
-  hasVectorize: boolean,
-): Promise<Uint8Array | null> {
-  const prompt =
+  itemNames: string[],
+  limit = 8,
+): Promise<void> {
+  if (!env.OPENAI_API_KEY) return;
+
+  const seen = new Set<string>();
+  const names = itemNames
+    .map((name) => name.trim())
+    .filter((name) => {
+      const key = normalize(name);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, limit);
+
+  await Promise.all(
+    names.map(async (name) => {
+      try {
+        await ensureProductImage(env, name);
+      } catch (err) {
+        console.warn(`Image prewarm skipped for "${name}":`, err);
+      }
+    }),
+  );
+}
+
+async function ensureProductImage(env: Env, name: string): Promise<void> {
+  const key = normalize(name);
+  if (!key) return;
+
+  const exactKey = r2Key(name);
+  const exactHit = await env.IMAGES.get(exactKey);
+  if (exactHit) return;
+
+  const hasVectorize = typeof env.IMAGE_INDEX?.query === "function";
+  let queryVec: number[] | undefined;
+
+  if (hasVectorize) {
+    try {
+      queryVec = await embed(env.OPENAI_API_KEY, name);
+      const matches = await env.IMAGE_INDEX.query(queryVec, {
+        topK: 1,
+        returnMetadata: "all",
+      });
+
+      const best = matches.matches?.[0];
+      const cachedKey = best && best.score >= SIMILARITY_THRESHOLD
+        ? (best.metadata as Record<string, string>)?.r2Key
+        : undefined;
+      if (cachedKey && await env.IMAGES.get(cachedKey)) return;
+    } catch (err) {
+      console.warn("Vector prewarm search skipped:", err);
+    }
+  }
+
+  const existing = inFlight.get(key);
+  if (existing) {
+    await existing;
+    return;
+  }
+
+  const generation = generateAndCache(env, name, exactKey, queryVec, hasVectorize);
+  inFlight.set(key, generation);
+  try {
+    await generation;
+  } finally {
+    inFlight.delete(key);
+  }
+}
+
+/** The product-image generation prompt, shared by the streaming + buffered paths. */
+function buildPrompt(name: string): string {
+  return (
     `A minimalist, modern app icon featuring ${name}, isolated on a fully ` +
     `transparent background with no backdrop, no rounded square, and no ` +
     `surrounding shape or container. The food item is rendered as a clean, ` +
@@ -184,8 +287,96 @@ async function generateAndCache(
     `by ${name}'s natural colors, with slightly darker accent tones for depth ` +
     `and dimension. Keep the design playful, polished, and instantly ` +
     `recognizable, with no text, no outlines, no realistic textures, no ` +
-    `shadows, and a clean iOS-style aesthetic.`;
+    `shadows, and a clean iOS-style aesthetic.`
+  );
+}
 
+function b64ToBytes(b64: string): Uint8Array {
+  return Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0));
+}
+
+type OpenAIImageStreamEvent = {
+  type?: string;
+  b64_json?: string;
+  partial_image_index?: number;
+};
+
+export function parseOpenAIImageStreamFrame(
+  frame: string,
+): OpenAIImageStreamEvent | null {
+  const data = frame
+    .replace(/\r/g, "")
+    .split("\n")
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trim())
+    .join("\n")
+    .trim();
+  if (!data || data === "[DONE]") return null;
+
+  try {
+    return JSON.parse(data) as OpenAIImageStreamEvent;
+  } catch {
+    return null;
+  }
+}
+
+function takeSSEFrame(buffer: string): [frame: string, rest: string] | null {
+  const match = /\r?\n\r?\n/.exec(buffer);
+  if (!match) return null;
+  return [
+    buffer.slice(0, match.index),
+    buffer.slice(match.index + match[0].length),
+  ];
+}
+
+export function parseOpenAIImageStreamFrames(
+  buffer: string,
+): { events: OpenAIImageStreamEvent[]; rest: string } {
+  const events: OpenAIImageStreamEvent[] = [];
+  let rest = buffer;
+  let next: [frame: string, rest: string] | null;
+
+  while ((next = takeSSEFrame(rest))) {
+    const [frame, nextRest] = next;
+    rest = nextRest;
+    const event = parseOpenAIImageStreamFrame(frame);
+    if (event) events.push(event);
+  }
+
+  return { events, rest };
+}
+
+/** Persists a finished image to R2 + Vectorize so future requests are cache hits. */
+async function persistImage(
+  env: Env,
+  name: string,
+  exactKey: string,
+  raw: Uint8Array,
+  queryVec: number[] | undefined,
+  hasVectorize: boolean,
+): Promise<void> {
+  await env.IMAGES.put(exactKey, raw, {
+    httpMetadata: { contentType: "image/png" },
+  });
+
+  if (hasVectorize && queryVec) {
+    await env.IMAGE_INDEX.upsert([
+      {
+        id: normalize(name),
+        values: queryVec,
+        metadata: { r2Key: exactKey, originalName: name },
+      },
+    ]);
+  }
+}
+
+async function generateAndCache(
+  env: Env,
+  name: string,
+  exactKey: string,
+  queryVec: number[] | undefined,
+  hasVectorize: boolean,
+): Promise<Uint8Array | null> {
   const openaiRes = await fetch(
     "https://api.openai.com/v1/images/generations",
     {
@@ -196,7 +387,7 @@ async function generateAndCache(
       },
       body: JSON.stringify({
         model: "gpt-image-1.5",
-        prompt,
+        prompt: buildPrompt(name),
         n: 1,
         size: "1024x1024",
         quality: "low",
@@ -221,22 +412,133 @@ async function generateAndCache(
     return null;
   }
 
-  const raw = Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0));
+  const raw = b64ToBytes(b64);
+  await persistImage(env, name, exactKey, raw, queryVec, hasVectorize);
+  return raw;
+}
 
-  await env.IMAGES.put(exactKey, raw, {
-    httpMetadata: { contentType: "image/png" },
+/**
+ * Cold-path generation that relays OpenAI's `partial_images` stream to the
+ * client as Server-Sent Events. Three event types are emitted:
+ *
+ *   event: partial   data: {"index":0,"b64_json":"..."}   (progressive preview)
+ *   event: complete  data: {"b64_json":"..."}             (final image)
+ *   event: error     data: {"message":"..."}
+ *
+ * The finished image is persisted to R2/Vectorize and warmed into the edge
+ * cache via `waitUntil`, so the next request for this name is an instant hit.
+ *
+ * Streaming requests deliberately bypass the `inFlight` coalescing map: the SSE
+ * body can only be consumed once, so it cannot be shared between callers.
+ * Concurrent cold streams for the same name are rare (one per uncached view).
+ */
+function generateAndStream(
+  c: { executionCtx: ExecutionContext },
+  env: Env,
+  name: string,
+  exactKey: string,
+  cacheKey: Request,
+  queryVec: number[] | undefined,
+  hasVectorize: boolean,
+): Response {
+  const sse = (event: string, data: unknown) =>
+    new TextEncoder().encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      let finalB64: string | null = null;
+      try {
+        const openaiRes = await fetch(
+          "https://api.openai.com/v1/images/generations",
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${env.OPENAI_API_KEY}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              model: "gpt-image-1.5",
+              prompt: buildPrompt(name),
+              n: 1,
+              size: "1024x1024",
+              quality: "low",
+              background: "transparent",
+              stream: true,
+              partial_images: 2,
+            }),
+          },
+        );
+
+        if (!openaiRes.ok || !openaiRes.body) {
+          const text = openaiRes.body ? await openaiRes.text() : "(no body)";
+          console.error("OpenAI stream failed:", openaiRes.status, text);
+          controller.enqueue(sse("error", { message: "Image generation failed" }));
+          return;
+        }
+
+        const reader = openaiRes.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        const emitImageEvent = (evt: OpenAIImageStreamEvent | null) => {
+          if (!evt) return;
+          if (evt.type === "image_generation.partial_image" && evt.b64_json) {
+            controller.enqueue(
+              sse("partial", {
+                index: evt.partial_image_index ?? 0,
+                b64_json: evt.b64_json,
+              }),
+            );
+          } else if (evt.type === "image_generation.completed" && evt.b64_json) {
+            finalB64 = evt.b64_json;
+            controller.enqueue(sse("complete", { b64_json: evt.b64_json }));
+          }
+        };
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          // OpenAI delimits SSE frames with a blank line.
+          const parsed = parseOpenAIImageStreamFrames(buffer);
+          buffer = parsed.rest;
+          for (const event of parsed.events) {
+            emitImageEvent(event);
+          }
+        }
+        buffer += decoder.decode();
+        if (buffer.trim()) {
+          emitImageEvent(parseOpenAIImageStreamFrame(buffer));
+        }
+
+        if (!finalB64) {
+          controller.enqueue(sse("error", { message: "No image produced" }));
+        }
+      } catch (err) {
+        console.error("Streaming generation error:", err);
+        controller.enqueue(sse("error", { message: "Image generation failed" }));
+      } finally {
+        controller.close();
+      }
+
+      // Persist + warm the edge cache off the critical path.
+      if (finalB64) {
+        const raw = b64ToBytes(finalB64);
+        c.executionCtx.waitUntil(
+          (async () => {
+            await persistImage(env, name, exactKey, raw, queryVec, hasVectorize);
+            await caches.default.put(cacheKey, imageResponse(raw));
+          })(),
+        );
+      }
+    },
   });
 
-  if (hasVectorize && queryVec) {
-    const vectorId = normalize(name);
-    await env.IMAGE_INDEX.upsert([
-      {
-        id: vectorId,
-        values: queryVec,
-        metadata: { r2Key: exactKey, originalName: name },
-      },
-    ]);
-  }
-
-  return raw;
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "X-Accel-Buffering": "no",
+    },
+  });
 }

@@ -1,6 +1,9 @@
+import AVFoundation
 import CloudKit
 import UIKit
 import UserNotifications
+
+private let shoppingTripItemAddedNotificationKind = "shoppingTripItemAdded"
 
 /// Bridges UIKit's CloudKit-share acceptance callback into the SwiftUI world.
 ///
@@ -38,7 +41,7 @@ final class ShareCoordinator {
 /// shopping trip start/end messages.
 ///
 /// Token delivery from iOS (`didRegisterForRemoteNotificationsWithDeviceToken`)
-/// can arrive before `configure(householdId:memberId:)` is called (common on
+/// can arrive before `configure(householdMemberships:)` is called (common on
 /// subsequent launches where the device is already registered). We hold the
 /// token and flush the registration as soon as both pieces are available.
 @MainActor
@@ -48,8 +51,7 @@ final class PushNotificationCoordinator {
     private let api = APIClient.shared
     private let settings = SettingsStore.shared
 
-    private var householdId: String?
-    private var memberId: String?
+    private var memberIdsByHouseholdId: [String: String] = [:]
     private var deviceToken: String?
     /// True once we've called `configure` at least once — prevents silently
     /// skipping registration when the token arrives before configure.
@@ -58,13 +60,20 @@ final class PushNotificationCoordinator {
     private var hasPendingToken: Bool = false
 
     func configure(householdId: String, memberId: String) {
-        self.householdId = householdId
-        self.memberId = memberId
+        configure(householdMemberships: [householdId: memberId])
+    }
+
+    func configure(householdMemberships: [String: String]) {
+        let removedMemberships = memberIdsByHouseholdId.filter { householdMemberships[$0.key] == nil }
+        let changed = memberIdsByHouseholdId != householdMemberships
+        self.memberIdsByHouseholdId = householdMemberships
         self.isConfigured = true
         let hadPendingToken = hasPendingToken
         hasPendingToken = false
 
-        Task {
+        guard changed || hadPendingToken else { return }
+        Task { [removedMemberships] in
+            await unregisterNotifications(for: removedMemberships)
             await syncRegistration(
                 requestAuthorizationIfNeeded: settings.notificationsEnabled,
                 forceRegisterForRemoteNotifications: true,
@@ -114,7 +123,8 @@ final class PushNotificationCoordinator {
         forceRegisterForRemoteNotifications: Bool = true,
         logContext: String = ""
     ) async {
-        guard let householdId, let memberId else {
+        let memberships = memberIdsByHouseholdId
+        guard !memberships.isEmpty else {
             print("[Notifications] syncRegistration(\(logContext)) skipped — not configured")
             return
         }
@@ -128,20 +138,39 @@ final class PushNotificationCoordinator {
         }
 
         let tokenToSend = allowed ? deviceToken : nil
-        print("[Notifications] syncRegistration(\(logContext)): allowed=\(allowed), hasToken=\(tokenToSend != nil), household=\(householdId.prefix(8))…")
+        print("[Notifications] syncRegistration(\(logContext)): allowed=\(allowed), hasToken=\(tokenToSend != nil), households=\(memberships.count)")
 
-        await api.registerPushToStart(
-            RegisterTokenPayload(
-                householdId: householdId,
-                memberId: memberId,
-                deviceId: settings.deviceId,
-                pushToStartToken: nil,
-                pushNotificationToken: tokenToSend,
-                familyLiveActivitiesEnabled: settings.familyLiveActivitiesEnabled,
-                notificationsEnabled: allowed,
-                appVersion: settings.appVersion
+        for (householdId, memberId) in memberships {
+            await api.registerPushToStart(
+                RegisterTokenPayload(
+                    householdId: householdId,
+                    memberId: memberId,
+                    deviceId: settings.deviceId,
+                    pushToStartToken: nil,
+                    pushNotificationToken: tokenToSend,
+                    familyLiveActivitiesEnabled: settings.familyLiveActivitiesEnabled,
+                    notificationsEnabled: allowed,
+                    appVersion: settings.appVersion
+                )
             )
-        )
+        }
+    }
+
+    private func unregisterNotifications(for memberships: [String: String]) async {
+        for (householdId, memberId) in memberships {
+            await api.registerPushToStart(
+                RegisterTokenPayload(
+                    householdId: householdId,
+                    memberId: memberId,
+                    deviceId: settings.deviceId,
+                    pushToStartToken: nil,
+                    pushNotificationToken: nil,
+                    familyLiveActivitiesEnabled: false,
+                    notificationsEnabled: false,
+                    appVersion: settings.appVersion
+                )
+            )
+        }
     }
 
     private func notificationsAllowed(requestAuthorizationIfNeeded: Bool) async -> Bool {
@@ -162,6 +191,145 @@ final class PushNotificationCoordinator {
             print("[Notifications] authorization status: \(settings.authorizationStatus.rawValue)")
             return false
         }
+    }
+}
+
+/// Alerts the active shopper when someone else adds an item during their trip.
+///
+/// Foreground alerts are intentionally sound-only and use an ambient audio
+/// session so the hardware silent switch still mutes them. Background alerts use
+/// a local notification because CloudKit sync arrives through a silent push.
+@MainActor
+final class ShoppingTripItemAddedAlertCoordinator: NSObject, AVAudioPlayerDelegate {
+    static let shared = ShoppingTripItemAddedAlertCoordinator()
+
+    private let settings = SettingsStore.shared
+    private lazy var chimeData = Self.makeChimeWAV()
+    private var activePlayers: [AVAudioPlayer] = []
+
+    func alert(item: GroceryItem, session: ShoppingSession) {
+        guard settings.notificationsEnabled else { return }
+
+        if UIApplication.shared.applicationState == .active {
+            playForegroundSound()
+        } else {
+            scheduleNotification(item: item, session: session)
+        }
+    }
+
+    private func playForegroundSound() {
+        do {
+            let audioSession = AVAudioSession.sharedInstance()
+            try audioSession.setCategory(.ambient, mode: .default, options: [.mixWithOthers])
+            try audioSession.setActive(true, options: [])
+
+            let player = try AVAudioPlayer(data: chimeData)
+            player.delegate = self
+            player.volume = 0.75
+            player.prepareToPlay()
+            activePlayers.append(player)
+            player.play()
+        } catch {
+            print("[TripItemAlert] foreground sound failed: \(error)")
+        }
+    }
+
+    private func scheduleNotification(item: GroceryItem, session: ShoppingSession) {
+        Task {
+            let center = UNUserNotificationCenter.current()
+            let notificationSettings = await center.notificationSettings()
+            guard Self.canDeliverNotifications(notificationSettings.authorizationStatus) else {
+                print("[TripItemAlert] notification skipped; authorization=\(notificationSettings.authorizationStatus.rawValue)")
+                return
+            }
+
+            let content = UNMutableNotificationContent()
+            content.title = "Added to your trip"
+            content.body = "\(item.requestedByDisplayName.trimmedNonEmpty ?? "Someone") added \(itemDisplayName(item)) to your shopping trip."
+            content.sound = .default
+            content.threadIdentifier = "shopping-trip-\(session.householdId)"
+            content.userInfo = [
+                "kind": shoppingTripItemAddedNotificationKind,
+                "householdId": session.householdId,
+                "sessionId": session.id,
+                "itemId": item.id,
+            ]
+
+            let request = UNNotificationRequest(
+                identifier: "shopping-trip-item-added-\(item.id)",
+                content: content,
+                trigger: nil
+            )
+
+            do {
+                try await center.add(request)
+            } catch {
+                print("[TripItemAlert] notification failed: \(error)")
+            }
+        }
+    }
+
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        Task { @MainActor in
+            activePlayers.removeAll { $0 === player }
+        }
+    }
+
+    nonisolated func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+        Task { @MainActor in
+            activePlayers.removeAll { $0 === player }
+        }
+    }
+
+    private static func canDeliverNotifications(_ status: UNAuthorizationStatus) -> Bool {
+        switch status {
+        case .authorized, .provisional, .ephemeral:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func itemDisplayName(_ item: GroceryItem) -> String {
+        let name = item.name.trimmedNonEmpty ?? "an item"
+        guard let quantity = item.quantity?.trimmedNonEmpty else { return name }
+        return "\(quantity) \(name)"
+    }
+
+    private static func makeChimeWAV() -> Data {
+        let sampleRate = 44_100
+        let duration = 0.34
+        let sampleCount = Int(Double(sampleRate) * duration)
+        var pcm = Data(capacity: sampleCount * 2)
+
+        for index in 0..<sampleCount {
+            let t = Double(index) / Double(sampleRate)
+            let attack = min(t / 0.025, 1)
+            let release = min((duration - t) / 0.14, 1)
+            let envelope = max(0, min(attack, release))
+            let tone = (sin(2 * .pi * 880 * t) * 0.65) + (sin(2 * .pi * 1_320 * t) * 0.35)
+            let clamped = max(-1, min(1, tone * envelope * 0.45))
+            pcm.appendLittleEndian(Int16(clamped * Double(Int16.max)))
+        }
+
+        let byteRate = UInt32(sampleRate * 2)
+        let blockAlign: UInt16 = 2
+        var wav = Data()
+        wav.append(Data("RIFF".utf8))
+        wav.appendLittleEndian(UInt32(36 + pcm.count))
+        wav.append(Data("WAVE".utf8))
+        wav.append(Data("fmt ".utf8))
+        wav.appendLittleEndian(UInt32(16))
+        wav.appendLittleEndian(UInt16(1))
+        wav.appendLittleEndian(UInt16(1))
+        wav.appendLittleEndian(UInt32(sampleRate))
+        wav.appendLittleEndian(byteRate)
+        wav.appendLittleEndian(blockAlign)
+        wav.appendLittleEndian(UInt16(16))
+        wav.append(Data("data".utf8))
+        wav.appendLittleEndian(UInt32(pcm.count))
+        wav.append(pcm)
+        return wav
     }
 }
 
@@ -219,6 +387,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 willPresent notification: UNNotification,
                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        if notification.request.content.userInfo["kind"] as? String == shoppingTripItemAddedNotificationKind {
+            completionHandler([.sound])
+            return
+        }
+
         completionHandler([.banner, .list, .sound])
     }
 }
@@ -252,4 +425,18 @@ final class ShareSceneDelegate: NSObject, UIWindowSceneDelegate {
 
 private extension Data {
     var hexString: String { map { String(format: "%02x", $0) }.joined() }
+
+    mutating func appendLittleEndian<T: FixedWidthInteger>(_ value: T) {
+        var littleEndian = value.littleEndian
+        Swift.withUnsafeBytes(of: &littleEndian) { bytes in
+            append(contentsOf: bytes)
+        }
+    }
+}
+
+private extension String {
+    var trimmedNonEmpty: String? {
+        let value = trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
 }

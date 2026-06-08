@@ -162,8 +162,8 @@ private final class LocalSyncStore {
 /// CloudKit is the source of truth. This repository keeps an in-memory working
 /// set (the cache the UI binds to), loads it from CloudKit on launch, and
 /// writes every mutation back best-effort. When CloudKit is unavailable (no
-/// iCloud account, schema not created, offline first run) it seeds local
-/// sample data so the app is fully usable, and sync resumes later.
+/// iCloud account, schema not created, offline first run), it keeps local state
+/// empty until the shopper creates or joins a group, and sync resumes later.
 ///
 /// A user can belong to multiple **groups**. A group *is* the grocery list: it
 /// carries the store, icon, and color theme, and holds a single implicit
@@ -204,6 +204,7 @@ final class GroceryRepository {
     private let api = APIClient.shared
     private let liveActivity = LiveActivityManager.shared
     private let notifications = PushNotificationCoordinator.shared
+    private let tripItemAlerts = ShoppingTripItemAddedAlertCoordinator.shared
     private let settings = SettingsStore.shared
     private let localStore = LocalSyncStore()
     private let shoppingTripInactivityLimit: TimeInterval = 60 * 60
@@ -214,6 +215,8 @@ final class GroceryRepository {
     private var cloudWriteTask: Task<Void, Never>?
     private var pendingCloudWrites: [String: PendingCloudWrite] = [:]
     private var nextCloudWriteRevision = 0
+    private var hasEstablishedTripItemAlertBaseline = false
+    private var alertedTripItemIds: Set<String> = []
 
     // MARK: - Current selection
 
@@ -229,7 +232,9 @@ final class GroceryRepository {
 
     var currentMembers: [HouseholdMember] {
         guard let hid = currentHousehold?.id else { return [] }
-        return members.filter { $0.householdId == hid }.sorted { $0.joinedAt < $1.joinedAt }
+        return members
+            .filter { $0.householdId == hid }
+            .sorted(by: HouseholdMember.stableDisplayOrder)
     }
 
     private var currentMemberId: String { Self.sanitizeRecordName(settings.memberIdOrDevice) }
@@ -243,9 +248,8 @@ final class GroceryRepository {
     }
 
     private var currentMember: HouseholdMember? {
-        currentMembers.first { $0.id == currentMemberId }
-            ?? currentMembers.first { $0.role == .owner }
-            ?? currentMembers.first
+        guard let household = currentHousehold else { return nil }
+        return member(for: household)
     }
 
     var isOwnerOfCurrentGroup: Bool {
@@ -307,7 +311,7 @@ final class GroceryRepository {
     func pendingItems(forList listId: String?) -> [GroceryItem] {
         guard let listId else { return [] }
         return items.filter { $0.listId == listId && $0.status == .needed }
-            .sorted { $0.createdAt < $1.createdAt }
+            .sorted(by: GroceryItem.listDisplayOrder)
     }
 
     var pendingItems: [GroceryItem] { pendingItems(forList: currentList?.id) }
@@ -315,38 +319,64 @@ final class GroceryRepository {
     var removedItems: [GroceryItem] {
         guard let listId = currentList?.id else { return [] }
         return items.filter { $0.listId == listId && $0.deletedAt == nil && ($0.status == .removed || $0.status == .found || $0.status == .replaced) }
-            .sorted { ($0.completedAt ?? $0.updatedAt) > ($1.completedAt ?? $1.updatedAt) }
+            .sorted(by: GroceryItem.handledDisplayOrder)
     }
 
     var currentAuditEvents: [ItemEvent] {
         guard let householdId = currentHousehold?.id else { return [] }
         return events
             .filter { $0.householdId == householdId }
-            .sorted { $0.createdAt > $1.createdAt }
+            .sorted(by: ItemEvent.recentDisplayOrder)
+    }
+
+    /// Distinct item suggestions from this group/list, latest first.
+    var currentItemSuggestions: [GroceryItemSuggestion] {
+        guard let listId = currentList?.id else { return [] }
+        let pendingKeys = Set(pendingItems.map { $0.name.itemSuggestionKey })
+        var seen = Set<String>()
+        return items
+            .filter { $0.listId == listId }
+            .sorted {
+                let lhsDate = Self.itemSuggestionDate(for: $0)
+                let rhsDate = Self.itemSuggestionDate(for: $1)
+                if lhsDate != rhsDate { return lhsDate > rhsDate }
+                return GroceryItem.listDisplayOrder($0, $1)
+            }
+            .compactMap { item in
+                let key = item.name.itemSuggestionKey
+                guard !key.isEmpty, !seen.contains(key) else { return nil }
+                seen.insert(key)
+                return GroceryItemSuggestion(
+                    name: item.name,
+                    quantity: item.quantity,
+                    category: item.category,
+                    isPending: pendingKeys.contains(key),
+                    lastUsedAt: Self.itemSuggestionDate(for: item)
+                )
+            }
     }
 
     /// Distinct item names from this list that aren't currently pending — for "add again" UI.
     var pastItemNames: [String] {
-        guard let listId = currentList?.id else { return [] }
-        let pendingNames = Set(pendingItems.map(\.name))
-        var seen = Set<String>()
-        return items
-            .filter { $0.listId == listId && $0.deletedAt == nil && !pendingNames.contains($0.name) && $0.status != .needed }
-            .sorted { ($0.completedAt ?? $0.updatedAt) > ($1.completedAt ?? $1.updatedAt) }
-            .compactMap { item in
-                let lower = item.name.lowercased()
-                guard !seen.contains(lower) else { return nil }
-                seen.insert(lower)
-                return item.name
-            }
+        currentItemSuggestions
+            .filter { !$0.isPending }
+            .map(\.name)
+    }
+
+    private static func itemSuggestionDate(for item: GroceryItem) -> Date {
+        item.completedAt ?? item.updatedAt
     }
 
     func addedDuringTrip(session: ShoppingSession) -> [GroceryItem] {
-        items.filter { $0.listId == session.listId && $0.status == .needed && $0.createdAt > session.startedAt }
+        items
+            .filter { $0.listId == session.listId && $0.status == .needed && $0.createdAt > session.startedAt }
+            .sorted(by: GroceryItem.listDisplayOrder)
     }
 
     func handledItems(session: ShoppingSession) -> [GroceryItem] {
-        items.filter { $0.activeSessionId == session.id && $0.status != .needed }
+        items
+            .filter { $0.activeSessionId == session.id && $0.status != .needed }
+            .sorted(by: GroceryItem.handledDisplayOrder)
     }
 
     func progress(for session: ShoppingSession) -> SessionProgress {
@@ -426,9 +456,7 @@ final class GroceryRepository {
         guard status == .available else {
             print("[Repo] ⚠️ iCloud not available (status=\(status.rawValue))")
             usingCloudKit = false
-            if households.isEmpty {
-                seedSampleData()
-            }
+            ensureValidSelection()
             syncState = .offline
             hasCompletedInitialLoad = true
             await configureLiveActivity()
@@ -456,8 +484,7 @@ final class GroceryRepository {
 
             print("[Repo] step 3: households=\(households.count), checking if empty…")
             if households.isEmpty {
-                print("[Repo] no households found, creating default group…")
-                try await createDefaultGroup()
+                print("[Repo] no households found; waiting for onboarding")
             }
             ensureValidSelection()
             syncState = .idle
@@ -467,17 +494,8 @@ final class GroceryRepository {
         } catch {
             print("[Repo] ❌ bootstrap failed: \(error)")
             if households.isEmpty {
-                print("[Repo] trying fallback: create default group despite error…")
-                do {
-                    try await createDefaultGroup()
-                    ensureValidSelection()
-                    syncState = .idle
-                    print("[Repo] ✅ fallback group created OK")
-                    await registerForRealtimeSync()
-                } catch {
-                    print("[Repo] ❌ fallback group creation also failed: \(error)")
-                    syncState = .error("Sync failed: \(Self.shortError(error))")
-                }
+                ensureValidSelection()
+                syncState = .error("Sync failed: \(Self.shortError(error))")
             } else {
                 syncState = .error("Sync failed: \(Self.shortError(error))")
             }
@@ -502,6 +520,7 @@ final class GroceryRepository {
         syncPersonalProfileCache()
         await expireInactiveShoppingTrips()
         await backfillParentReferencesIfNeeded()
+        await configureLiveActivity()
     }
 
     /// One-time backfill for groups created before parent-reference support.
@@ -642,9 +661,28 @@ final class GroceryRepository {
     }
 
     private func configureLiveActivity() async {
-        guard let household = currentHousehold, let member = currentMember else { return }
-        liveActivity.configure(householdId: household.id, memberId: member.id)
-        notifications.configure(householdId: household.id, memberId: member.id)
+        let memberships = householdMembershipsForPushRegistration()
+        liveActivity.configure(householdMemberships: memberships)
+        notifications.configure(householdMemberships: memberships)
+    }
+
+    private func householdMembershipsForPushRegistration() -> [String: String] {
+        var memberships: [String: String] = [:]
+        for household in households {
+            if let member = member(for: household) {
+                memberships[household.id] = member.id
+            }
+        }
+        return memberships
+    }
+
+    private func member(for household: Household) -> HouseholdMember? {
+        let householdMembers = members
+            .filter { $0.householdId == household.id }
+            .sorted(by: HouseholdMember.stableDisplayOrder)
+        return householdMembers.first { $0.id == currentMemberId }
+            ?? householdMembers.first { $0.role == .owner }
+            ?? householdMembers.first
     }
 
     private func syncPersonalProfileCache() {
@@ -681,14 +719,6 @@ final class GroceryRepository {
     }
 
     // MARK: - Group management (a group is the list)
-
-    private func createDefaultGroup() async throws {
-        if let userRecordName = await cloud.currentUserRecordName() {
-            settings.memberId = Self.sanitizeRecordName(userRecordName)
-        }
-        _ = try await makeGroup(name: "My Groceries", store: nil,
-                                icon: GROUP_ICON_CHOICES[0], theme: .default)
-    }
 
     @discardableResult
     func createGroup(name: String, store: String?, icon: String, theme: ListColorTheme) async -> Household? {
@@ -884,6 +914,8 @@ final class GroceryRepository {
         } else {
             logEvent(.itemAdded, householdId: item.householdId, itemId: item.id, metadata: ["name": item.name])
         }
+        // Prewarm the product image so it's a cache hit by the time it's viewed.
+        Task { await api.prewarmImages([item.name]) }
         return item
     }
 
@@ -1244,15 +1276,30 @@ final class GroceryRepository {
     }
 
     private func applySnapshot(_ snapshot: CloudSnapshot) {
-        households = snapshot.households
-        members = snapshot.members
-        lists = snapshot.lists
-        items = snapshot.items
-        sessions = snapshot.sessions
-        events = snapshot.events
+        // Only assign when the value actually changed. `@Observable` fires a
+        // mutation on every assignment regardless of equality, so writing an
+        // identical array here would needlessly re-render every observing view.
+        // With the ~5s foreground refresh loop that meant the toolbar group
+        // menu (and its liquid-glass material) visibly flashed each cycle.
+        assignIfChanged(&households, snapshot.households.sorted(by: Household.stableDisplayOrder))
+        assignIfChanged(&members, snapshot.members.sorted(by: HouseholdMember.stableDisplayOrder))
+        assignIfChanged(&lists, snapshot.lists.sorted(by: GroceryList.stableDisplayOrder))
+        assignIfChanged(&items, snapshot.items.sorted(by: GroceryItem.listDisplayOrder))
+        assignIfChanged(&sessions, snapshot.sessions.sorted(by: ShoppingSession.stableDisplayOrder))
+        assignIfChanged(&events, snapshot.events.sorted(by: ItemEvent.stableDisplayOrder))
+    }
+
+    /// Writes `newValue` to `storage` only when it differs, avoiding spurious
+    /// `@Observable` mutations (and the view re-renders they trigger).
+    private func assignIfChanged<T: Equatable>(_ storage: inout T, _ newValue: T) {
+        if storage != newValue { storage = newValue }
     }
 
     private func applySyncResult(_ result: CloudSyncResult) {
+        let previousItemIds = Set(items.map(\.id))
+        let localPendingItemIds = pendingCloudItemIds()
+        let shouldAlertForNewTripItems = hasCompletedInitialLoad && hasEstablishedTripItemAlertBaseline
+
         var snapshot = currentSnapshot()
         snapshot.removeRecords(in: result.fullZones)
         snapshot.upsert(contentsOf: result.snapshot)
@@ -1261,10 +1308,59 @@ final class GroceryRepository {
         }
         applyPendingWrites(to: &snapshot)
         applySnapshot(snapshot)
+
+        if shouldAlertForNewTripItems {
+            alertForNewActiveTripItems(
+                incomingItems: result.snapshot.items,
+                previousItemIds: previousItemIds,
+                localPendingItemIds: localPendingItemIds
+            )
+        }
+        hasEstablishedTripItemAlertBaseline = true
+    }
+
+    private func alertForNewActiveTripItems(incomingItems: [GroceryItem],
+                                            previousItemIds: Set<String>,
+                                            localPendingItemIds: Set<String>) {
+        guard !incomingItems.isEmpty else { return }
+
+        for item in incomingItems {
+            guard !previousItemIds.contains(item.id),
+                  !localPendingItemIds.contains(item.id),
+                  !alertedTripItemIds.contains(item.id),
+                  item.status == .needed,
+                  item.deletedAt == nil,
+                  !isRequestedByCurrentUser(item),
+                  let session = activeSession(for: item.listId),
+                  isStartedByCurrentUser(session),
+                  item.createdAt > session.startedAt else {
+                continue
+            }
+
+            alertedTripItemIds.insert(item.id)
+            tripItemAlerts.alert(item: item, session: session)
+        }
+    }
+
+    private func pendingCloudItemIds() -> Set<String> {
+        pendingCloudWrites.values.reduce(into: Set<String>()) { itemIds, write in
+            if case .item(let item) = write.record {
+                itemIds.insert(item.id)
+            }
+        }
+    }
+
+    private func isRequestedByCurrentUser(_ item: GroceryItem) -> Bool {
+        let requester = Self.sanitizeRecordName(item.requestedByMemberId)
+        return requester == currentMemberId || item.requestedByMemberId == settings.deviceId
     }
 
     private func applyPendingWrites(to snapshot: inout CloudSnapshot) {
-        for write in pendingCloudWrites.values {
+        let writes = pendingCloudWrites.values.sorted {
+            if $0.revision != $1.revision { return $0.revision < $1.revision }
+            return $0.enqueuedAt < $1.enqueuedAt
+        }
+        for write in writes {
             switch write.operation {
             case .save:
                 snapshot.upsert(contentsOf: write.record.snapshot)
@@ -1347,7 +1443,10 @@ final class GroceryRepository {
 
     private func flushOutbox() async {
         guard usingCloudKit, !pendingCloudWrites.isEmpty else { return }
-        let writes = pendingCloudWrites.values.sorted { $0.enqueuedAt < $1.enqueuedAt }
+        let writes = pendingCloudWrites.values.sorted {
+            if $0.revision != $1.revision { return $0.revision < $1.revision }
+            return $0.enqueuedAt < $1.enqueuedAt
+        }
         for write in writes {
             guard pendingCloudWrites[write.key] == write else { continue }
             let succeeded = await perform(write)
@@ -1591,111 +1690,6 @@ final class GroceryRepository {
         return CKRecord.ID(recordName: name, zoneID: zoneID)
     }
 
-    // MARK: - Sample data (CloudKit unavailable)
-
-    private func seedSampleData() {
-        let now = Date()
-        let meId = "sample-me"
-        settings.memberId = meId
-
-        // Group 1: Home (green, Meijer)
-        let home = Household(id: "group-home", name: "Home", ownerMemberId: meId,
-                             storeName: "Meijer", icon: "cart.fill", colorTheme: .green,
-                             createdAt: now, updatedAt: now, recordZoneName: nil, recordOwnerName: nil)
-        let homeMe = HouseholdMember(id: meId, householdId: home.id, displayName: settings.displayName,
-                                     profileImageData: settings.profileImageData, iCloudUserRecordName: nil,
-                                     role: .owner, joinedAt: now, recordZoneName: nil, recordOwnerName: nil)
-        let alex = HouseholdMember(id: "sample-alex", householdId: home.id, displayName: "Alex",
-                                   profileImageData: nil, iCloudUserRecordName: nil, role: .member,
-                                   joinedAt: now, recordZoneName: nil, recordOwnerName: nil)
-        let homeList = GroceryList(id: "list-home", householdId: home.id, name: DEFAULT_LIST_NAME,
-                                   createdAt: now, updatedAt: now, archived: false)
-
-        // Group 2: Lake House (teal, Local Market)
-        let lake = Household(id: "group-lake", name: "Lake House", ownerMemberId: meId,
-                             storeName: "Local Market", icon: "takeoutbag.and.cup.and.straw.fill",
-                             colorTheme: .teal, createdAt: now, updatedAt: now,
-                             recordZoneName: nil, recordOwnerName: nil)
-        let lakeMe = HouseholdMember(id: meId, householdId: lake.id, displayName: settings.displayName,
-                                     profileImageData: settings.profileImageData, iCloudUserRecordName: nil,
-                                     role: .owner, joinedAt: now, recordZoneName: nil, recordOwnerName: nil)
-        let lakeList = GroceryList(id: "list-lake", householdId: lake.id, name: DEFAULT_LIST_NAME,
-                                   createdAt: now, updatedAt: now, archived: false)
-        let sampleSession = ShoppingSession(
-            id: "session-home-sample",
-            householdId: home.id,
-            listId: homeList.id,
-            startedByMemberId: alex.id,
-            startedByDisplayName: alex.displayName,
-            storeName: home.storeName,
-            startedAt: now.addingTimeInterval(-7200),
-            endedAt: now.addingTimeInterval(-5400),
-            updatedAt: now.addingTimeInterval(-5400),
-            status: .completed
-        )
-
-        func item(_ id: String, _ name: String, _ qty: String?, _ cat: GroceryCategory,
-                  list: GroceryList, by: HouseholdMember, _ notes: String? = nil) -> GroceryItem {
-            GroceryItem(id: "item-\(id)", householdId: list.householdId, listId: list.id,
-                        name: name, quantity: qty, category: cat, notes: notes,
-                        requestedByMemberId: by.id, requestedByDisplayName: by.displayName,
-                        status: .needed, priority: .normal,
-                        replacementPreference: nil, replacementItemName: nil,
-                        createdAt: now.addingTimeInterval(Double.random(in: -50000 ... -100)),
-                        updatedAt: now, completedAt: nil, deletedAt: nil, activeSessionId: nil)
-        }
-
-        func event(_ id: String, _ type: ItemEventType, household: Household,
-                   itemId: String? = nil, sessionId: String? = nil,
-                   by member: HouseholdMember, offset: TimeInterval,
-                   metadata: [String: String] = [:]) -> ItemEvent {
-            ItemEvent(
-                id: "event-\(id)",
-                householdId: household.id,
-                itemId: itemId,
-                sessionId: sessionId,
-                type: type,
-                createdByMemberId: member.id,
-                createdByDisplayName: member.displayName,
-                createdAt: now.addingTimeInterval(offset),
-                metadata: metadata
-            )
-        }
-
-        households = [home, lake]
-        members = [homeMe, alex, lakeMe]
-        lists = [homeList, lakeList]
-        items = [
-            item("1", "Bananas", "1 bunch", .produce, list: homeList, by: homeMe),
-            item("2", "Strawberries", "Any brand", .produce, list: homeList, by: alex, "Organic if available"),
-            item("3", "Milk", "1 gallon", .dairy, list: homeList, by: homeMe, "2%"),
-            item("4", "Eggs", "1 dozen", .dairy, list: homeList, by: alex),
-            item("5", "Chicken Breast", "2 lbs", .meatSeafood, list: homeList, by: alex),
-            item("6", "Bread", nil, .bakery, list: homeList, by: homeMe),
-            item("7", "Paper Towels", "12 pack", .household, list: homeList, by: homeMe),
-            item("8", "Sunscreen", "SPF 50", .personalCare, list: lakeList, by: lakeMe),
-            item("9", "Charcoal", nil, .household, list: lakeList, by: lakeMe),
-            item("10", "Hot Dogs", "2 packs", .meatSeafood, list: lakeList, by: lakeMe),
-        ]
-        sessions = [sampleSession]
-        events = [
-            event("home-session-start", .sessionStarted, household: home,
-                  sessionId: sampleSession.id, by: alex, offset: -7200,
-                  metadata: ["store": sampleSession.storeName ?? ""]),
-            event("home-session-complete", .sessionCompleted, household: home,
-                  sessionId: sampleSession.id, by: alex, offset: -5400),
-            event("home-bananas-added", .itemAdded, household: home,
-                  itemId: "item-1", by: homeMe, offset: -3600,
-                  metadata: ["name": "Bananas"]),
-            event("home-strawberries-added", .itemAdded, household: home,
-                  itemId: "item-2", by: alex, offset: -3000,
-                  metadata: ["name": "Strawberries"]),
-            event("lake-sunscreen-added", .itemAdded, household: lake,
-                  itemId: "item-8", by: lakeMe, offset: -1800,
-                  metadata: ["name": "Sunscreen"]),
-        ]
-        ensureValidSelection()
-    }
 }
 
 struct SessionProgress: Equatable {
@@ -1743,6 +1737,10 @@ private extension String {
     var nilIfBlank: String? {
         let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    var itemSuggestionKey: String {
+        trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 }
 

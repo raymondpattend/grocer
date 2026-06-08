@@ -101,7 +101,6 @@ struct ShoppingSessionView: View {
             completedSection(session, canManageTrip: canManageTrip)
         }
         .listStyle(.insetGrouped)
-        .animation(.default, value: progress.remaining)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 SyncStatusBar(state: repo.syncState)
@@ -120,15 +119,15 @@ struct ShoppingSessionView: View {
                 selectedItem = nil
                 switch action {
                 case .found:
-                    repo.mark(item, as: .found)
+                    markItem(item, as: .found)
                 case .replace:
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                         replacingItem = item
                     }
                 case .skip:
-                    repo.mark(item, as: .skipped)
+                    markItem(item, as: .skipped)
                 case .outOfStock:
-                    repo.mark(item, as: .outOfStock)
+                    markItem(item, as: .outOfStock)
                 case .edit:
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                         editingItem = item
@@ -142,8 +141,8 @@ struct ShoppingSessionView: View {
             ReplacementSheet(item: item)
                 .presentationDetents([.medium])
         }
-        .sheet(isPresented: $showAddItem) {
-            NavigationStack { AddItemView() }
+        .fullScreenCover(isPresented: $showAddItem) {
+            AddItemSearchView(tint: tint)
         }
         .sheet(item: $editingItem) { item in
             NavigationStack {
@@ -174,7 +173,7 @@ struct ShoppingSessionView: View {
         .buttonStyle(.plain)
         .swipeActions(edge: .trailing, allowsFullSwipe: canManageTrip) {
             if canManageTrip {
-                Button { repo.mark(item, as: .found) } label: {
+                Button { markItem(item, as: .found) } label: {
                     Label("Found", systemImage: "checkmark")
                 }
                 .tint(.green)
@@ -191,11 +190,11 @@ struct ShoppingSessionView: View {
                     Label("Replace", systemImage: "arrow.triangle.2.circlepath")
                 }
                 .tint(.blue)
-                Button { repo.mark(item, as: .skipped) } label: {
+                Button { markItem(item, as: .skipped) } label: {
                     Label("Skip", systemImage: "arrow.uturn.forward")
                 }
                 .tint(.orange)
-                Button { repo.mark(item, as: .outOfStock) } label: {
+                Button { markItem(item, as: .outOfStock) } label: {
                     Label("Out", systemImage: "xmark")
                 }
                 .tint(.red)
@@ -210,8 +209,14 @@ struct ShoppingSessionView: View {
     private func pendingGroups(_ session: ShoppingSession) -> [(category: GroceryCategory, items: [GroceryItem])] {
         repo.pendingItems(forList: session.listId)
             .filter { $0.createdAt <= session.startedAt }
-            .sorted { $0.priority.sortOrder < $1.priority.sortOrder }
+            .sorted(by: GroceryItem.shoppingPriorityOrder)
             .groupedByCategory()
+    }
+
+    private func markItem(_ item: GroceryItem, as status: ItemStatus, replacement: String? = nil) {
+        withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+            repo.mark(item, as: status, replacement: replacement)
+        }
     }
 
     // MARK: - Progress header
@@ -302,7 +307,7 @@ struct ShoppingSessionView: View {
                 if showCompleted {
                     ForEach(handled) { item in
                         CompletedItemRow(item: item, canManageTrip: canManageTrip) {
-                            repo.mark(item, as: .needed)
+                            markItem(item, as: .needed)
                         } onEdit: {
                             editingItem = item
                         }

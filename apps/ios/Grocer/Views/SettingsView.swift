@@ -18,6 +18,8 @@ struct SettingsView: View {
     @State private var confirmPurge = false
     @State private var purging = false
     @State private var selectedProfilePhoto: PhotosPickerItem?
+    @State private var showInviteIntro = false
+    @State private var startShareAfterIntro = false
 
     var body: some View {
         Form {
@@ -26,7 +28,7 @@ struct SettingsView: View {
             membersSection
             liveActivitiesSection
             notificationsSection
-            diagnosticsSection
+            // diagnosticsSection
             actionsSection
         }
         .navigationTitle("Settings")
@@ -39,7 +41,7 @@ struct SettingsView: View {
                 }
             }
         }
-        .task { apiHealthy = await APIClient.shared.health() }
+        // .task { apiHealthy = await APIClient.shared.health() }
         .onAppear {
             displayName = repo.displayName
             syncGroupNameFromRepo()
@@ -71,9 +73,19 @@ struct SettingsView: View {
             Button("Delete Everything", role: .destructive) { purgeAllData() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This permanently deletes all groups, lists, and items from iCloud. A fresh default group will be created.")
+            Text("This permanently deletes all groups, lists, and items from iCloud. You can create or join a group again afterward.")
         }
         .sheet(isPresented: $showFeedback) { NavigationStack { FeedbackView() } }
+        .sheet(isPresented: $showInviteIntro, onDismiss: {
+            if startShareAfterIntro {
+                startShareAfterIntro = false
+                inviteMember()
+            }
+        }) {
+            InviteToGroupSheet {
+                startShareAfterIntro = true
+            }
+        }
     }
 
     private func canRemove(_ member: HouseholdMember) -> Bool {
@@ -144,7 +156,7 @@ struct SettingsView: View {
     private var membersSection: some View {
         Section {
             Button {
-                inviteMember()
+                showInviteIntro = true
             } label: {
                 HStack {
                     Label("Invite to Group", systemImage: "person.crop.circle.badge.plus")
@@ -187,7 +199,7 @@ struct SettingsView: View {
         } header: {
             Text("Notifications")
         } footer: {
-            Text("Get an alert when someone in this group starts or ends a shopping trip.")
+            Text("Get an alert when someone in this group starts or ends a shopping trip, or adds an item while you are shopping.")
         }
     }
 
@@ -210,7 +222,6 @@ struct SettingsView: View {
             LabeledContent("Members", value: "\(repo.members.count)")
             LabeledContent("Lists", value: "\(repo.lists.count)")
             LabeledContent("Items", value: "\(repo.items.count)")
-            LabeledContent("Events", value: "\(repo.currentAuditEvents.count)")
             LabeledContent("App version", value: settings.appVersion)
 
             Button("Force Refresh") {
@@ -453,6 +464,137 @@ private extension UIImage {
                 context.fill(CGRect(origin: .zero, size: targetSize))
                 draw(in: drawRect)
             }
+    }
+}
+
+struct InviteToGroupSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    /// Called when the user taps "Share Invite". The actual share flow is
+    /// kicked off by the presenter after this sheet dismisses.
+    let onShare: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Spacer()
+                closeButton
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 16)
+
+            hero
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 24)
+                .padding(.top, 8)
+
+            Spacer(minLength: 24)
+
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Group Sharing")
+                    .font(.largeTitle.bold())
+
+                Text("Add family and friends to share your grocery lists, see who’s shopping in real time, and get live updates when items are added or a trip wraps up.")
+
+                Text("It’s free, and saves you from ever texting “what do we still need?” again.")
+            }
+            .font(.body)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 24)
+
+            Text("Invites are single-use and expire after a short time. You can remove members at any time from Settings.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 24)
+                .padding(.top, 16)
+                .padding(.bottom, 8)
+        }
+        .safeAreaInset(edge: .bottom) {
+            Button {
+                onShare()
+                dismiss()
+            } label: {
+                Text("Share Invite")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .padding(.horizontal, 24)
+            .padding(.top, 12)
+            .padding(.bottom, 12)
+            .background(.ultraThinMaterial)
+        }
+    }
+
+    private var hero: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [Color.green.opacity(0.22), Color.blue.opacity(0.16)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+
+            VStack(spacing: 20) {
+                HStack(spacing: 36) {
+                    memberBubble(symbol: "carrot.fill", name: "Mom", status: "Shopping", tint: .green)
+                    memberBubble(symbol: "cart.fill", name: "Jenny", status: "Done", tint: .blue)
+                }
+                memberBubble(symbol: "list.bullet", name: "You", status: "Adding items", tint: .orange)
+            }
+            .padding(.vertical, 28)
+        }
+        .frame(height: 240)
+    }
+
+    private func memberBubble(symbol: String, name: String, status: String, tint: Color) -> some View {
+        VStack(spacing: 6) {
+            Image(systemName: symbol)
+                .font(.system(size: 24, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 54, height: 54)
+                .background(Circle().fill(tint.gradient))
+                .shadow(color: tint.opacity(0.35), radius: 5, y: 3)
+
+            Text(name)
+                .font(.caption.weight(.semibold))
+
+            Text(status)
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(Capsule().fill(tint))
+        }
+    }
+
+    private var closeButton: some View {
+        Button {
+            dismiss()
+        } label: {
+            Image(systemName: "xmark")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 32, height: 32)
+                .modifier(GlassCircleBackground())
+        }
+        .accessibilityLabel("Close")
+    }
+}
+
+/// Liquid glass circular background on iOS 26+, with a material fallback.
+private struct GlassCircleBackground: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.glassEffect(.regular.interactive(), in: .circle)
+        } else {
+            content.background(.ultraThinMaterial, in: Circle())
+        }
     }
 }
 

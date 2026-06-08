@@ -26,9 +26,9 @@ final class LiveActivityManager {
     /// Whether ActivityKit Live Activities are allowed by the user/system.
     private(set) var areActivitiesEnabled: Bool = false
 
-    /// Context needed to register tokens. Set once the household/member resolve.
-    private var householdId: String?
-    private var memberId: String?
+    /// Context needed to register tokens. A device can belong to multiple groups,
+    /// so the same push-to-start token needs one backend row per group.
+    private var memberIdsByHouseholdId: [String: String] = [:]
 
     /// The local activity the shopper started (if any). This in-memory
     /// reference is lost if iOS kills the app during a trip — `findRunningActivity`
@@ -37,12 +37,26 @@ final class LiveActivityManager {
     private var currentSessionId: String?
 
     private var observationTasks: [Task<Void, Never>] = []
+    private var observedActivityIds: Set<String> = []
 
     func configure(householdId: String, memberId: String) {
-        self.householdId = householdId
-        self.memberId = memberId
+        configure(householdMemberships: [householdId: memberId])
+    }
+
+    func configure(householdMemberships: [String: String]) {
+        let removedMemberships = memberIdsByHouseholdId.filter { householdMemberships[$0.key] == nil }
+        let changed = memberIdsByHouseholdId != householdMemberships
+        self.memberIdsByHouseholdId = householdMemberships
         areActivitiesEnabled = ActivityAuthorizationInfo().areActivitiesEnabled
+
+        guard changed || observationTasks.isEmpty else { return }
         startObservingTokens()
+
+        if !removedMemberships.isEmpty {
+            Task { [weak self, removedMemberships] in
+                await self?.unregisterPushToStart(for: removedMemberships)
+            }
+        }
     }
 
     // MARK: - Token observation
@@ -51,6 +65,7 @@ final class LiveActivityManager {
     private func startObservingTokens() {
         observationTasks.forEach { $0.cancel() }
         observationTasks.removeAll()
+        observedActivityIds.removeAll()
 
         // Push-to-start token (iOS 17.2+). Only register if the family setting is on.
         if #available(iOS 17.2, *) {
@@ -68,6 +83,10 @@ final class LiveActivityManager {
         }
 
         // Watch any already-running activities for their update tokens.
+        for activity in Activity<GroceryActivityAttributes>.activities {
+            observeUpdateToken(for: activity)
+        }
+
         let updates = Task { [weak self] in
             for await activity in Activity<GroceryActivityAttributes>.activityUpdates {
                 self?.observeUpdateToken(for: activity)
@@ -77,19 +96,40 @@ final class LiveActivityManager {
     }
 
     private func registerPushToStart(token: String?) async {
-        guard let householdId, let memberId else { return }
-        await api.registerPushToStart(
-            RegisterTokenPayload(
-                householdId: householdId,
-                memberId: memberId,
-                deviceId: settings.deviceId,
-                pushToStartToken: settings.familyLiveActivitiesEnabled ? token : nil,
-                pushNotificationToken: nil,
-                familyLiveActivitiesEnabled: settings.familyLiveActivitiesEnabled,
-                notificationsEnabled: nil,
-                appVersion: settings.appVersion
+        let memberships = memberIdsByHouseholdId
+        guard !memberships.isEmpty else { return }
+
+        for (householdId, memberId) in memberships {
+            await api.registerPushToStart(
+                RegisterTokenPayload(
+                    householdId: householdId,
+                    memberId: memberId,
+                    deviceId: settings.deviceId,
+                    pushToStartToken: settings.familyLiveActivitiesEnabled ? token : nil,
+                    pushNotificationToken: nil,
+                    familyLiveActivitiesEnabled: settings.familyLiveActivitiesEnabled,
+                    notificationsEnabled: nil,
+                    appVersion: settings.appVersion
+                )
             )
-        )
+        }
+    }
+
+    private func unregisterPushToStart(for memberships: [String: String]) async {
+        for (householdId, memberId) in memberships {
+            await api.registerPushToStart(
+                RegisterTokenPayload(
+                    householdId: householdId,
+                    memberId: memberId,
+                    deviceId: settings.deviceId,
+                    pushToStartToken: nil,
+                    pushNotificationToken: nil,
+                    familyLiveActivitiesEnabled: false,
+                    notificationsEnabled: nil,
+                    appVersion: settings.appVersion
+                )
+            )
+        }
     }
 
     /// Called when the family Live Activity setting changes — re-registers so the
@@ -103,17 +143,23 @@ final class LiveActivityManager {
     }
 
     private func observeUpdateToken(for activity: Activity<GroceryActivityAttributes>) {
+        guard observedActivityIds.insert(activity.id).inserted else { return }
+        let householdId = activity.attributes.householdId
         let sessionId = activity.attributes.sessionId
         let task = Task { [weak self] in
             for await tokenData in activity.pushTokenUpdates {
-                await self?.registerUpdateToken(token: tokenData.hexString, sessionId: sessionId)
+                await self?.registerUpdateToken(
+                    token: tokenData.hexString,
+                    householdId: householdId,
+                    sessionId: sessionId
+                )
             }
         }
         observationTasks.append(task)
     }
 
-    private func registerUpdateToken(token: String, sessionId: String) async {
-        guard let householdId, let memberId else { return }
+    private func registerUpdateToken(token: String, householdId: String, sessionId: String) async {
+        guard let memberId = memberIdsByHouseholdId[householdId] else { return }
         await api.registerUpdateToken(
             RegisterUpdateTokenPayload(
                 householdId: householdId,
@@ -149,12 +195,14 @@ final class LiveActivityManager {
         #endif
 
         do {
-            currentActivity = try Activity.request(
+            let activity = try Activity.request(
                 attributes: attributes,
                 content: .init(state: content, staleDate: nil),
                 pushType: pushType
             )
+            currentActivity = activity
             currentSessionId = session.id
+            observeUpdateToken(for: activity)
         } catch {
             print("[LiveActivity] start failed: \(error)")
         }

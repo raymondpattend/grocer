@@ -183,7 +183,17 @@ liveActivityRoute.post("/live-activity/start", async (c) => {
     startedAt: body.startedAt,
   });
 
-  const devices = await eligibleStartTokens(c.env.DB, body.householdId);
+  const devices = await eligibleStartTokens(
+    c.env.DB,
+    body.householdId,
+    body.sourceDeviceId,
+  );
+
+  console.log(
+    `[live-activity] start fanout household=${body.householdId} ` +
+      `session=${body.sessionId} excludeDevice=${body.sourceDeviceId ?? "none"} ` +
+      `eligibleDevices=${devices.length}`,
+  );
 
   let sent = 0;
   let failed = 0;

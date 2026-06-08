@@ -321,6 +321,13 @@ export function sendStart(
     content: args.content,
     attributesType: args.attributesType,
     attributes: args.attributes,
+    // Apple recommends a start push carry an alert so the system reliably
+    // presents/starts the activity even when the app isn't running.
+    alert: shoppingTripNotificationCopy({
+      event: "started",
+      shopperName: args.content.shopperName,
+      storeName: args.content.storeName,
+    }),
   });
   return postToApns(env, pushToStartToken, payload);
 }

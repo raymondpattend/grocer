@@ -168,6 +168,18 @@ struct GroceryItem: Identifiable, Codable, Hashable {
     var activeSessionId: String?
 }
 
+struct GroceryItemSuggestion: Identifiable, Hashable {
+    var name: String
+    var quantity: String?
+    var category: GroceryCategory
+    var isPending: Bool
+    var lastUsedAt: Date
+
+    var id: String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+}
+
 struct ShoppingSession: Identifiable, Codable, Hashable {
     var id: String
     var householdId: String
@@ -200,6 +212,75 @@ struct ItemEvent: Identifiable, Codable, Hashable {
 }
 
 // MARK: - Convenience
+
+private func stableDateOrder(_ lhsDate: Date, _ rhsDate: Date, lhsID: String, rhsID: String) -> Bool {
+    if lhsDate != rhsDate { return lhsDate < rhsDate }
+    return lhsID < rhsID
+}
+
+private func stableRecentDateOrder(_ lhsDate: Date, _ rhsDate: Date, lhsID: String, rhsID: String) -> Bool {
+    if lhsDate != rhsDate { return lhsDate > rhsDate }
+    return lhsID < rhsID
+}
+
+extension Household {
+    static func stableDisplayOrder(_ lhs: Household, _ rhs: Household) -> Bool {
+        stableDateOrder(lhs.createdAt, rhs.createdAt, lhsID: lhs.id, rhsID: rhs.id)
+    }
+}
+
+extension HouseholdMember {
+    static func stableDisplayOrder(_ lhs: HouseholdMember, _ rhs: HouseholdMember) -> Bool {
+        if lhs.joinedAt != rhs.joinedAt { return lhs.joinedAt < rhs.joinedAt }
+        let nameComparison = lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName)
+        if nameComparison != .orderedSame { return nameComparison == .orderedAscending }
+        return lhs.id < rhs.id
+    }
+}
+
+extension GroceryList {
+    static func stableDisplayOrder(_ lhs: GroceryList, _ rhs: GroceryList) -> Bool {
+        stableDateOrder(lhs.createdAt, rhs.createdAt, lhsID: lhs.id, rhsID: rhs.id)
+    }
+}
+
+extension GroceryItem {
+    static func listDisplayOrder(_ lhs: GroceryItem, _ rhs: GroceryItem) -> Bool {
+        stableDateOrder(lhs.createdAt, rhs.createdAt, lhsID: lhs.id, rhsID: rhs.id)
+    }
+
+    static func shoppingPriorityOrder(_ lhs: GroceryItem, _ rhs: GroceryItem) -> Bool {
+        if lhs.priority.sortOrder != rhs.priority.sortOrder {
+            return lhs.priority.sortOrder < rhs.priority.sortOrder
+        }
+        return listDisplayOrder(lhs, rhs)
+    }
+
+    static func handledDisplayOrder(_ lhs: GroceryItem, _ rhs: GroceryItem) -> Bool {
+        stableRecentDateOrder(
+            lhs.completedAt ?? lhs.updatedAt,
+            rhs.completedAt ?? rhs.updatedAt,
+            lhsID: lhs.id,
+            rhsID: rhs.id
+        )
+    }
+}
+
+extension ShoppingSession {
+    static func stableDisplayOrder(_ lhs: ShoppingSession, _ rhs: ShoppingSession) -> Bool {
+        stableDateOrder(lhs.startedAt, rhs.startedAt, lhsID: lhs.id, rhsID: rhs.id)
+    }
+}
+
+extension ItemEvent {
+    static func stableDisplayOrder(_ lhs: ItemEvent, _ rhs: ItemEvent) -> Bool {
+        stableDateOrder(lhs.createdAt, rhs.createdAt, lhsID: lhs.id, rhsID: rhs.id)
+    }
+
+    static func recentDisplayOrder(_ lhs: ItemEvent, _ rhs: ItemEvent) -> Bool {
+        stableRecentDateOrder(lhs.createdAt, rhs.createdAt, lhsID: lhs.id, rhsID: rhs.id)
+    }
+}
 
 extension Array where Element == GroceryItem {
     /// Pending items grouped by category in display order.

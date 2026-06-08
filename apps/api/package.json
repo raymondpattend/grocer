@@ -7,6 +7,7 @@
     "dev": "wrangler d1 migrations apply grocer --local && sh -c 'node scripts/apns-http2-bridge.mjs & bridge_pid=$!; trap \"kill $bridge_pid 2>/dev/null\" EXIT; wrangler dev --var APNS_HTTP2_BRIDGE_URL:http://127.0.0.1:${APNS_HTTP2_BRIDGE_PORT:-8791}'",
     "dev:worker": "wrangler d1 migrations apply grocer --local && wrangler dev",
     "apns:bridge": "node scripts/apns-http2-bridge.mjs",
+    "seed:images": "node scripts/seed-product-images.mjs",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit",
