@@ -44,10 +44,10 @@ index_name = "grocer-image-embeddings"
 # `wrangler secret put` and, for local dev, via .dev.vars (see .dev.vars.example).
 # ---------------------------------------------------------------------------
 [vars]
-APNS_ENVIRONMENT = "sandbox"          # "sandbox" | "production"
-APNS_TEAM_ID = "REPLACE_TEAM_ID"      # Apple Developer Team ID (10 chars)
-APNS_KEY_ID = "REPLACE_KEY_ID"        # APNs auth key ID (10 chars)
-APNS_BUNDLE_ID = "org.narro.grocer"   # iOS app bundle id (APNs topic base)
+APNS_ENVIRONMENT = "production"       # primary host; the other is auto-tried on BadDeviceToken
+APNS_TEAM_ID="LNY6LA39SW"
+APNS_KEY_ID="PCFC9F5R25"
+APNS_BUNDLE_ID="org.narro.grocer"
 IOS_MIN_BUILD = "1"
 IOS_LATEST_BUILD = "1"
 

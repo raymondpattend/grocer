@@ -57,11 +57,13 @@ Household · Personal Care · Pet · Other. (User can change an item's category.
 
 ## Offline & conflicts
 
-- Marking continues offline; changes cache locally and sync when CloudKit
-  returns. A small sync indicator shows "Offline — changes will sync later".
-- Latest-write-wins on item text; status changes always create item events; an
-  item deleted mid-trip is hidden from the active session; one active session per
-  household/list (a second start is blocked with the existing session shown).
+- Marking continues offline; changes are stored in a durable local outbox and
+  sync when CloudKit returns. A small sync indicator shows "Offline — changes
+  will sync later".
+- Latest-write-wins on mutable item fields; status changes always create item
+  events; removed items are soft-deleted and hidden from the active session; one
+  active session per household/list (a second start is blocked with the existing
+  session shown).
 
 ## Notifications
 

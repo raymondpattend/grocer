@@ -66,6 +66,7 @@ enum CK {
         static let replacementItemName = "replacementItemName"
         static let priority = "priority"
         static let completedAt = "completedAt"
+        static let deletedAt = "deletedAt"
         static let activeSessionId = "activeSessionId"
 
         // Session

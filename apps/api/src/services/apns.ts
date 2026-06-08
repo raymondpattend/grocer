@@ -161,28 +161,26 @@ function buildPayload(args: BuildPayloadArgs): Record<string, unknown> {
 // Sending
 // ---------------------------------------------------------------------------
 
-async function postToApns(
+async function sendToHost(
   env: Env,
+  host: string,
+  jwt: string,
   token: string,
   payload: Record<string, unknown>,
-  opts: {
-    priority?: 5 | 10;
-    pushType?: "alert" | "liveactivity";
-    topic?: string;
-  } = {},
+  opts: { priority: 5 | 10; pushType: "alert" | "liveactivity"; topic: string },
 ): Promise<ApnsResult> {
-  const jwt = await providerToken(env);
-  const url = `${APNS_HOST[env.APNS_ENVIRONMENT]}/3/device/${token}`;
-  const pushType = opts.pushType ?? "liveactivity";
-  const topic = opts.topic ?? `${env.APNS_BUNDLE_ID}.push-type.liveactivity`;
+  const bridgeUrl = env.APNS_HTTP2_BRIDGE_URL?.trim();
+  if (bridgeUrl) {
+    return sendViaHttp2Bridge(bridgeUrl, host, jwt, token, payload, opts);
+  }
 
-  const res = await fetch(url, {
+  const res = await fetch(`${host}/3/device/${token}`, {
     method: "POST",
     headers: {
       authorization: `bearer ${jwt}`,
-      "apns-topic": topic,
-      "apns-push-type": pushType,
-      "apns-priority": String(opts.priority ?? 10),
+      "apns-topic": opts.topic,
+      "apns-push-type": opts.pushType,
+      "apns-priority": String(opts.priority),
       "content-type": "application/json",
     },
     body: JSON.stringify(payload),
@@ -212,6 +210,100 @@ async function postToApns(
     reason === "Unregistered";
 
   return { ok: false, statusCode: res.status, apnsId, reason, tokenExpired, detail };
+}
+
+async function sendViaHttp2Bridge(
+  bridgeUrl: string,
+  host: string,
+  jwt: string,
+  token: string,
+  payload: Record<string, unknown>,
+  opts: { priority: 5 | 10; pushType: "alert" | "liveactivity"; topic: string },
+): Promise<ApnsResult> {
+  try {
+    const res = await fetch(`${bridgeUrl.replace(/\/+$/, "")}/send`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        host,
+        token,
+        payload,
+        headers: {
+          authorization: `bearer ${jwt}`,
+          "apns-topic": opts.topic,
+          "apns-push-type": opts.pushType,
+          "apns-priority": String(opts.priority),
+          "content-type": "application/json",
+        },
+      }),
+    });
+
+    const body = (await res.json().catch(() => null)) as Partial<ApnsResult> | null;
+    if (!res.ok || !body) {
+      return {
+        ok: false,
+        statusCode: res.status,
+        tokenExpired: false,
+        detail: body?.detail ?? `APNs HTTP/2 bridge returned HTTP ${res.status}`,
+      };
+    }
+
+    const reason = typeof body.reason === "string" ? body.reason : undefined;
+    return {
+      ok: body.ok === true,
+      statusCode: typeof body.statusCode === "number" ? body.statusCode : 0,
+      apnsId: typeof body.apnsId === "string" ? body.apnsId : undefined,
+      reason,
+      tokenExpired:
+        body.tokenExpired === true ||
+        body.statusCode === 410 ||
+        reason === "ExpiredToken" ||
+        reason === "BadDeviceToken" ||
+        reason === "Unregistered",
+      detail: typeof body.detail === "string" ? body.detail : undefined,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      statusCode: 0,
+      tokenExpired: false,
+      detail: `APNs HTTP/2 bridge request failed: ${String(err)}`,
+    };
+  }
+}
+
+async function postToApns(
+  env: Env,
+  token: string,
+  payload: Record<string, unknown>,
+  opts: {
+    priority?: 5 | 10;
+    pushType?: "alert" | "liveactivity";
+    topic?: string;
+  } = {},
+): Promise<ApnsResult> {
+  const jwt = await providerToken(env);
+  const resolved = {
+    priority: opts.priority ?? (10 as const),
+    pushType: opts.pushType ?? ("liveactivity" as const),
+    topic: opts.topic ?? `${env.APNS_BUNDLE_ID}.push-type.liveactivity`,
+  };
+
+  const primary = env.APNS_ENVIRONMENT;
+  const fallback = primary === "production" ? "sandbox" : "production";
+
+  let result = await sendToHost(env, APNS_HOST[primary], jwt, token, payload, resolved);
+
+  // `BadDeviceToken` means the token is well-formed but was minted for the OTHER
+  // APNs environment — e.g. a TestFlight/App Store (production) token hitting the
+  // sandbox host, or an Xcode-debug (sandbox) token hitting production. Retry the
+  // opposite host before giving up so a single backend serves both dev and
+  // distribution builds without permanently invalidating good tokens.
+  if (!result.ok && result.reason === "BadDeviceToken") {
+    result = await sendToHost(env, APNS_HOST[fallback], jwt, token, payload, resolved);
+  }
+
+  return result;
 }
 
 /** Send a push-to-START to a device's push-to-start token. */

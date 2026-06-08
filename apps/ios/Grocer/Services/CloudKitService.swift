@@ -103,37 +103,50 @@ final class CloudKitService {
     // MARK: - Fetch
 
     func fetchSnapshot() async throws -> CloudSnapshot {
-        var snapshot = CloudSnapshot()
-        print("[CK] fetchSnapshot starting…")
+        let result = try await fetchChanges(forceFull: true)
+        return result.snapshot
+    }
+
+    func fetchChanges(forceFull: Bool = false) async throws -> CloudSyncResult {
+        var result = CloudSyncResult()
+        print("[CK] fetchChanges starting (forceFull=\(forceFull))…")
         if let privateDB {
             print("[CK]   fetching from private DB, zone: \(zoneID)")
-            try await accumulate(from: privateDB, into: &snapshot, scope: [zoneID], label: "private")
+            try await accumulate(from: privateDB, into: &result, scope: [zoneID], label: "private", forceFull: forceFull)
         } else {
             print("[CK]   ⚠️ no privateDB, skipping")
         }
         if let sharedDB {
-            let zones = (try? await sharedDB.allRecordZones())?.map(\.zoneID) ?? []
+            let zones = (try? await performWithRetry("fetch shared zones") {
+                try await sharedDB.allRecordZones()
+            })?.map(\.zoneID) ?? []
             print("[CK]   fetching from shared DB, \(zones.count) zone(s): \(zones.map(\.zoneName))")
-            try await accumulate(from: sharedDB, into: &snapshot, scope: zones, label: "shared")
+            try await accumulate(from: sharedDB, into: &result, scope: zones, label: "shared", forceFull: forceFull)
         } else {
             print("[CK]   ⚠️ no sharedDB, skipping")
         }
-        print("[CK] ✅ fetchSnapshot done — \(snapshot.households.count) households, \(snapshot.members.count) members, \(snapshot.lists.count) lists, \(snapshot.items.count) items")
-        return snapshot
+        print("[CK] ✅ fetchChanges done — \(result.snapshot.households.count) households, \(result.snapshot.members.count) members, \(result.snapshot.lists.count) lists, \(result.snapshot.items.count) items, \(result.deletions.count) deletion(s), \(result.fullZones.count) full zone(s)")
+        return result
     }
 
-    private func accumulate(from db: CKDatabase, into snapshot: inout CloudSnapshot, scope zones: [CKRecordZone.ID], label: String) async throws {
+    private func accumulate(from db: CKDatabase, into result: inout CloudSyncResult, scope zones: [CKRecordZone.ID], label: String, forceFull: Bool) async throws {
         for zone in zones {
+            let zoneRef = CloudZoneRef(scope: label, zoneName: zone.zoneName, ownerName: zone.ownerName)
             do {
-                var changeToken: CKServerChangeToken?
+                var changeToken = forceFull ? nil : changeToken(for: zoneRef)
                 var moreComing = true
                 var totalRecords = 0
+                if changeToken == nil {
+                    result.markFullZone(zoneRef)
+                }
                 while moreComing {
-                    let changes = try await db.recordZoneChanges(inZoneWith: zone, since: changeToken)
-                    for (recordID, result) in changes.modificationResultsByID {
-                        switch result {
+                    let changes = try await performWithRetry("fetch \(label) zone \(zone.zoneName)") {
+                        try await db.recordZoneChanges(inZoneWith: zone, since: changeToken)
+                    }
+                    for (recordID, modificationResult) in changes.modificationResultsByID {
+                        switch modificationResult {
                         case .success(let modification):
-                            snapshot.absorb(modification.record)
+                            result.snapshot.absorb(modification.record)
                             totalRecords += 1
                         case .failure(let error):
                             print("[CK]   ⚠️ [\(label)] record \(recordID.recordName) change failed: \(error)")
@@ -141,27 +154,57 @@ final class CloudKitService {
                     }
                     if !changes.deletions.isEmpty {
                         print("[CK]   [\(label)] zone \(zone.zoneName): \(changes.deletions.count) deletions")
+                        for deletion in changes.deletions {
+                            result.deletions.append(CloudRecordDeletion(
+                                recordName: deletion.recordID.recordName,
+                                recordType: deletion.recordType,
+                                zone: zoneRef
+                            ))
+                        }
                     }
                     changeToken = changes.changeToken
                     moreComing = changes.moreComing
                 }
+                if let changeToken {
+                    saveChangeToken(changeToken, for: zoneRef)
+                }
                 print("[CK]   [\(label)] zone \(zone.zoneName): fetched \(totalRecords) record(s)")
             } catch let error as CKError where error.code == .zoneNotFound || error.code == .userDeletedZone {
                 print("[CK]   [\(label)] zone \(zone.zoneName): not found (empty, continuing)")
+                clearChangeToken(for: zoneRef)
+                result.markFullZone(zoneRef)
                 continue
             } catch let error as CKError where error.code == .changeTokenExpired {
                 print("[CK]   [\(label)] zone \(zone.zoneName): change token expired, retrying from nil…")
+                clearChangeToken(for: zoneRef)
+                result.markFullZone(zoneRef)
+                var changeToken: CKServerChangeToken?
                 var moreComing = true
                 var totalRecords = 0
                 while moreComing {
-                    let changes = try await db.recordZoneChanges(inZoneWith: zone, since: nil)
-                    for (_, result) in changes.modificationResultsByID {
-                        if case .success(let modification) = result {
-                            snapshot.absorb(modification.record)
+                    let changes = try await performWithRetry("refetch \(label) zone \(zone.zoneName)") {
+                        try await db.recordZoneChanges(inZoneWith: zone, since: changeToken)
+                    }
+                    for (_, modificationResult) in changes.modificationResultsByID {
+                        if case .success(let modification) = modificationResult {
+                            result.snapshot.absorb(modification.record)
                             totalRecords += 1
                         }
                     }
+                    if !changes.deletions.isEmpty {
+                        for deletion in changes.deletions {
+                            result.deletions.append(CloudRecordDeletion(
+                                recordName: deletion.recordID.recordName,
+                                recordType: deletion.recordType,
+                                zone: zoneRef
+                            ))
+                        }
+                    }
+                    changeToken = changes.changeToken
                     moreComing = changes.moreComing
+                }
+                if let changeToken {
+                    saveChangeToken(changeToken, for: zoneRef)
                 }
                 print("[CK]   [\(label)] zone \(zone.zoneName): refetched \(totalRecords) record(s)")
             } catch {
@@ -181,7 +224,9 @@ final class CloudKitService {
             throw CloudKitUnavailable()
         }
         print("[CK] save → \(record.recordType) \(record.recordID.recordName) to \(dbLabel) DB")
-        let (saveResults, _) = try await db.modifyRecords(saving: [record], deleting: [])
+        let (saveResults, _) = try await performWithRetry("save \(record.recordType) \(record.recordID.recordName)") {
+            try await db.modifyRecords(saving: [record], deleting: [])
+        }
         for (id, result) in saveResults {
             switch result {
             case .success:
@@ -202,7 +247,9 @@ final class CloudKitService {
         }
         let types = records.map { "\($0.recordType)(\($0.recordID.recordName.prefix(8))…)" }.joined(separator: ", ")
         print("[CK] save(batch) → \(records.count) records: \(types)")
-        let (saveResults, _) = try await db.modifyRecords(saving: records, deleting: [])
+        let (saveResults, _) = try await performWithRetry("save batch") {
+            try await db.modifyRecords(saving: records, deleting: [])
+        }
         var errors: [Error] = []
         for (id, result) in saveResults {
             switch result {
@@ -223,7 +270,9 @@ final class CloudKitService {
         }
         let types = records.map { "\($0.recordType)(\($0.recordID.recordName.prefix(8))…)" }.joined(separator: ", ")
         print("[CK] saveToPrivateZone → \(records.count) records: \(types)")
-        let (saveResults, _) = try await privateDB.modifyRecords(saving: records, deleting: [])
+        let (saveResults, _) = try await performWithRetry("save private batch") {
+            try await privateDB.modifyRecords(saving: records, deleting: [])
+        }
         var saved: [CKRecord.ID: CKRecord] = [:]
         var errors: [Error] = []
         for (id, result) in saveResults {
@@ -246,7 +295,9 @@ final class CloudKitService {
             throw CloudKitUnavailable()
         }
         print("[CK] delete → \(recordID.recordName)")
-        _ = try await db.modifyRecords(saving: [], deleting: [recordID])
+        _ = try await performWithRetry("delete \(recordID.recordName)") {
+            try await db.modifyRecords(saving: [], deleting: [recordID])
+        }
         print("[CK] ✅ deleted \(recordID.recordName)")
     }
 
@@ -256,7 +307,9 @@ final class CloudKitService {
             throw CloudKitUnavailable()
         }
         print("[CK] record(for:) → \(recordID.recordName) in zone \(recordID.zoneID.zoneName):\(recordID.zoneID.ownerName)")
-        let r = try await db.record(for: recordID)
+        let r = try await performWithRetry("fetch record \(recordID.recordName)") {
+            try await db.record(for: recordID)
+        }
         print("[CK] ✅ fetched \(r.recordType) \(recordID.recordName)")
         return r
     }
@@ -480,6 +533,7 @@ final class CloudKitService {
     func clearSubscriptionRegistrationFlag() {
         UserDefaults.standard.set(false, forKey: Self.subscriptionsRegisteredKey)
         UserDefaults.standard.removeObject(forKey: Self.subscriptionsRegisteredVersionKey)
+        clearAllChangeTokens()
     }
 
     private func registerForRemoteNotifications() async {
@@ -515,8 +569,87 @@ final class CloudKitService {
             throw CloudKitUnavailable()
         }
         print("[CK] deleteZone → deleting zone \(zoneID.zoneName)…")
-        _ = try await privateDB.modifyRecordZones(saving: [], deleting: [zoneID])
+        _ = try await performWithRetry("delete zone \(zoneID.zoneName)") {
+            try await privateDB.modifyRecordZones(saving: [], deleting: [self.zoneID])
+        }
+        clearAllChangeTokens()
         print("[CK] ✅ deleteZone succeeded — all records in zone removed")
+    }
+
+    // MARK: - Change tokens & retry
+
+    private static let changeTokenKeyPrefix = "grocer.cloudkit.changeToken"
+
+    private func changeToken(for zone: CloudZoneRef) -> CKServerChangeToken? {
+        guard let data = UserDefaults.standard.data(forKey: changeTokenKey(for: zone)) else { return nil }
+        return try? NSKeyedUnarchiver.unarchivedObject(ofClass: CKServerChangeToken.self, from: data)
+    }
+
+    private func saveChangeToken(_ token: CKServerChangeToken, for zone: CloudZoneRef) {
+        guard let data = try? NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: true) else {
+            print("[CK] ⚠️ failed to archive change token for \(zone.zoneName)")
+            return
+        }
+        UserDefaults.standard.set(data, forKey: changeTokenKey(for: zone))
+    }
+
+    private func clearChangeToken(for zone: CloudZoneRef) {
+        UserDefaults.standard.removeObject(forKey: changeTokenKey(for: zone))
+    }
+
+    private func clearAllChangeTokens() {
+        for key in UserDefaults.standard.dictionaryRepresentation().keys
+            where key.hasPrefix(Self.changeTokenKeyPrefix) {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
+    }
+
+    private func changeTokenKey(for zone: CloudZoneRef) -> String {
+        [Self.changeTokenKeyPrefix, zone.scope, zone.ownerName, zone.zoneName].joined(separator: ".")
+    }
+
+    private func performWithRetry<T>(
+        _ label: String,
+        maxAttempts: Int = 4,
+        operation: @escaping () async throws -> T
+    ) async throws -> T {
+        var attempt = 0
+        while true {
+            do {
+                return try await operation()
+            } catch {
+                attempt += 1
+                guard attempt < maxAttempts, Self.shouldRetry(error) else {
+                    throw error
+                }
+                let delay = Self.retryDelay(for: error, attempt: attempt)
+                print("[CK] retrying \(label) in \(String(format: "%.1f", delay))s after \(Self.describe(error))")
+                try? await Task.sleep(nanoseconds: UInt64(max(delay, 0) * 1_000_000_000))
+            }
+        }
+    }
+
+    private static func shouldRetry(_ error: Error) -> Bool {
+        guard let ck = error as? CKError else { return false }
+        switch ck.code {
+        case .networkUnavailable, .networkFailure, .requestRateLimited,
+             .serviceUnavailable, .zoneBusy, .partialFailure:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func retryDelay(for error: Error, attempt: Int) -> TimeInterval {
+        if let ck = error as? CKError,
+           let retryAfter = ck.errorUserInfo[CKErrorRetryAfterKey] as? TimeInterval {
+            return retryAfter
+        }
+        if let ck = error as? CKError,
+           let retryAfter = ck.errorUserInfo[CKErrorRetryAfterKey] as? NSNumber {
+            return retryAfter.doubleValue
+        }
+        return min(pow(2, Double(attempt - 1)), 8)
     }
 
     // MARK: - Debug helpers
@@ -565,13 +698,93 @@ struct CloudSubscriptionRegistrationResult: Equatable {
 }
 
 /// Accumulated records from a CloudKit fetch, decoded into domain models.
-struct CloudSnapshot {
+struct CloudZoneRef: Codable, Hashable {
+    var scope: String
+    var zoneName: String
+    var ownerName: String
+}
+
+struct CloudRecordDeletion: Codable, Hashable {
+    var recordName: String
+    var recordType: String
+    var zone: CloudZoneRef
+}
+
+struct CloudSyncResult {
+    var snapshot = CloudSnapshot()
+    var deletions: [CloudRecordDeletion] = []
+    var fullZones: Set<CloudZoneRef> = []
+
+    mutating func markFullZone(_ zone: CloudZoneRef) {
+        fullZones.insert(zone)
+    }
+}
+
+struct CloudSnapshot: Codable {
     var households: [Household] = []
     var members: [HouseholdMember] = []
     var lists: [GroceryList] = []
     var items: [GroceryItem] = []
     var sessions: [ShoppingSession] = []
     var events: [ItemEvent] = []
+
+    var isEmpty: Bool {
+        households.isEmpty && members.isEmpty && lists.isEmpty && items.isEmpty && sessions.isEmpty && events.isEmpty
+    }
+
+    mutating func upsert(contentsOf other: CloudSnapshot) {
+        households = Self.upserting(other.households, into: households)
+        members = Self.upserting(other.members, into: members, key: { "\($0.id)_\($0.householdId)" })
+        lists = Self.upserting(other.lists, into: lists)
+        items = Self.upserting(other.items, into: items)
+        sessions = Self.upserting(other.sessions, into: sessions)
+        events = Self.upserting(other.events, into: events)
+    }
+
+    mutating func remove(_ deletion: CloudRecordDeletion) {
+        switch deletion.recordType {
+        case CK.RecordType.household:
+            households.removeAll { $0.id == deletion.recordName }
+            lists.removeAll { $0.householdId == deletion.recordName }
+            items.removeAll { $0.householdId == deletion.recordName }
+            sessions.removeAll { $0.householdId == deletion.recordName }
+            events.removeAll { $0.householdId == deletion.recordName }
+            members.removeAll { $0.householdId == deletion.recordName }
+        case CK.RecordType.member:
+            members.removeAll { "\($0.id)_\($0.householdId)" == deletion.recordName || $0.id == deletion.recordName }
+        case CK.RecordType.list:
+            lists.removeAll { $0.id == deletion.recordName }
+            items.removeAll { $0.listId == deletion.recordName }
+            sessions.removeAll { $0.listId == deletion.recordName }
+        case CK.RecordType.item:
+            items.removeAll { $0.id == deletion.recordName }
+        case CK.RecordType.session:
+            sessions.removeAll { $0.id == deletion.recordName }
+        case CK.RecordType.event:
+            events.removeAll { $0.id == deletion.recordName }
+        default:
+            break
+        }
+    }
+
+    mutating func removeRecords(in zones: Set<CloudZoneRef>) {
+        guard !zones.isEmpty else { return }
+        let householdIds = Set(households
+            .filter { household in
+                guard let zone = household.zoneRef else { return false }
+                return zones.contains(zone)
+            }
+            .map(\.id))
+        households.removeAll { $0.zoneRef.map { zones.contains($0) } ?? false }
+        members.removeAll { member in
+            if householdIds.contains(member.householdId) { return true }
+            return member.zoneRef.map { zones.contains($0) } ?? false
+        }
+        lists.removeAll { householdIds.contains($0.householdId) }
+        items.removeAll { householdIds.contains($0.householdId) }
+        sessions.removeAll { householdIds.contains($0.householdId) }
+        events.removeAll { householdIds.contains($0.householdId) }
+    }
 
     mutating func absorb(_ record: CKRecord) {
         switch record.recordType {
@@ -596,5 +809,32 @@ struct CloudSnapshot {
         default:
             print("[CK] ⚠️ unknown record type: \(record.recordType) (\(record.recordID.recordName))")
         }
+    }
+
+    private static func upserting<T: Identifiable>(_ incoming: [T], into existing: [T]) -> [T] where T.ID == String {
+        upserting(incoming, into: existing, key: \.id)
+    }
+
+    private static func upserting<T>(_ incoming: [T], into existing: [T], key: (T) -> String) -> [T] {
+        var merged: [String: T] = [:]
+        for value in existing { merged[key(value)] = value }
+        for value in incoming { merged[key(value)] = value }
+        return Array(merged.values)
+    }
+}
+
+private extension Household {
+    var zoneRef: CloudZoneRef? {
+        guard let recordZoneName, let recordOwnerName else { return nil }
+        let scope = recordOwnerName == CKCurrentUserDefaultName ? "private" : "shared"
+        return CloudZoneRef(scope: scope, zoneName: recordZoneName, ownerName: recordOwnerName)
+    }
+}
+
+private extension HouseholdMember {
+    var zoneRef: CloudZoneRef? {
+        guard let recordZoneName, let recordOwnerName else { return nil }
+        let scope = recordOwnerName == CKCurrentUserDefaultName ? "private" : "shared"
+        return CloudZoneRef(scope: scope, zoneName: recordZoneName, ownerName: recordOwnerName)
     }
 }

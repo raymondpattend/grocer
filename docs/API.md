@@ -27,6 +27,12 @@ pnpm dev:api            # http://localhost:8787
 pnpm test:api           # unit tests (categorize/parse)
 ```
 
+For local APNs delivery, `pnpm dev:api` also starts
+`apps/api/scripts/apns-http2-bridge.mjs` and injects
+`APNS_HTTP2_BRIDGE_URL`. APNs requires HTTP/2, while local Wrangler/Miniflare
+fetch uses Node's HTTP/1.1 client. Production Workers continue to send directly
+to APNs.
+
 ## Deploy
 
 ```bash

@@ -10,6 +10,7 @@ export interface Env {
   APNS_KEY_ID: string;
   APNS_BUNDLE_ID: string;
   APNS_PRIVATE_KEY: string; // secret — PKCS#8 .p8 contents
+  APNS_HTTP2_BRIDGE_URL?: string; // local dev only — APNs requires HTTP/2
 
   // iOS remote config
   IOS_MIN_BUILD: string;

@@ -154,6 +154,7 @@ extension GroceryItem: CloudKitApplicable {
             createdAt: date(r, CK.Field.createdAt) ?? Date(),
             updatedAt: date(r, CK.Field.updatedAt) ?? Date(),
             completedAt: date(r, CK.Field.completedAt),
+            deletedAt: date(r, CK.Field.deletedAt),
             activeSessionId: string(r, CK.Field.activeSessionId)
         )
     }
@@ -174,6 +175,7 @@ extension GroceryItem: CloudKitApplicable {
         r[CK.Field.createdAt] = createdAt as CKRecordValue
         r[CK.Field.updatedAt] = updatedAt as CKRecordValue
         r[CK.Field.completedAt] = completedAt as CKRecordValue?
+        r[CK.Field.deletedAt] = deletedAt as CKRecordValue?
         r[CK.Field.activeSessionId] = activeSessionId as CKRecordValue?
     }
 }

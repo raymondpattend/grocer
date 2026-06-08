@@ -112,7 +112,7 @@ enum MemberRole: String, Codable, Hashable {
 
 /// A group is also the grocery list: it carries the store, icon, and color
 /// theme, and holds a single implicit `GroceryList` for its items.
-struct Household: Identifiable, Hashable {
+struct Household: Identifiable, Codable, Hashable {
     var id: String
     var name: String
     var ownerMemberId: String
@@ -125,7 +125,7 @@ struct Household: Identifiable, Hashable {
     var recordOwnerName: String?
 }
 
-struct HouseholdMember: Identifiable, Hashable {
+struct HouseholdMember: Identifiable, Codable, Hashable {
     var id: String
     var householdId: String
     var displayName: String
@@ -138,7 +138,7 @@ struct HouseholdMember: Identifiable, Hashable {
 }
 
 /// Internal 1:1 container for a group's items (not surfaced in the UI).
-struct GroceryList: Identifiable, Hashable {
+struct GroceryList: Identifiable, Codable, Hashable {
     var id: String
     var householdId: String
     var name: String
@@ -147,7 +147,7 @@ struct GroceryList: Identifiable, Hashable {
     var archived: Bool
 }
 
-struct GroceryItem: Identifiable, Hashable {
+struct GroceryItem: Identifiable, Codable, Hashable {
     var id: String
     var householdId: String
     var listId: String
@@ -164,10 +164,11 @@ struct GroceryItem: Identifiable, Hashable {
     var createdAt: Date
     var updatedAt: Date
     var completedAt: Date?
+    var deletedAt: Date?
     var activeSessionId: String?
 }
 
-struct ShoppingSession: Identifiable, Hashable {
+struct ShoppingSession: Identifiable, Codable, Hashable {
     var id: String
     var householdId: String
     var listId: String
@@ -180,13 +181,13 @@ struct ShoppingSession: Identifiable, Hashable {
     var status: SessionStatus
 }
 
-enum ItemEventType: String, Codable {
+enum ItemEventType: String, Codable, Hashable {
     case itemAdded, itemEdited, itemFound, itemReplaced, itemOutOfStock
     case itemSkipped, itemRemoved
     case sessionStarted, sessionCompleted, sessionCancelled
 }
 
-struct ItemEvent: Identifiable, Hashable {
+struct ItemEvent: Identifiable, Codable, Hashable {
     var id: String
     var householdId: String
     var itemId: String?

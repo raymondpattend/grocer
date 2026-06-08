@@ -79,7 +79,7 @@ A group *is* the grocery list — it carries the store, icon, and color theme.
 | `status` | String (Queryable) |
 | `replacementPreference` | String |
 | `replacementItemName` | String |
-| `createdAt` / `updatedAt` / `completedAt` | Date/Time |
+| `createdAt` / `updatedAt` / `completedAt` / `deletedAt` | Date/Time |
 | `activeSessionId` | String (Queryable) |
 
 ### ShoppingSession
@@ -129,11 +129,22 @@ by zone + record type, so per-type recordName queryability is required.
 
 - Requires a signed-in iCloud account on device. Without one, the app runs on
   local sample data (no sync, no sharing).
-- Participant writes are routed to the shared zone's database; for MVP the owner
-  is the primary writer. Conflict handling is latest-write-wins on text fields,
-  with item events preserved (see the spec).
+- Participant writes are routed to the shared zone's database. Conflict handling
+  is latest-write-wins on mutable fields, while item events are preserved for
+  audit/history.
+- The app persists a local CloudKit snapshot plus a durable pending-write outbox
+  in Application Support. Changes made while CloudKit is unavailable are applied
+  optimistically, survive relaunch, and flush when connectivity/account access
+  returns.
+- The app stores per-zone server change tokens and fetches incremental changes
+  after the initial snapshot. If CloudKit expires a token, the app falls back to a
+  full zone refetch and clears records for that zone before applying the fresh
+  contents.
+- Grocery item removal is a soft delete (`status = removed`, `deletedAt` set) so
+  concurrent add/remove/edit races converge through normal record updates instead
+  of disappearing until a forced refresh.
 - The app registers a private record-zone subscription for groups the current
   user owns and a shared-database subscription for groups the user joined. A
-  silent push wakes the app, then the repository refreshes its CloudKit snapshot.
+  silent push wakes the app, then the repository refreshes its CloudKit changes.
   iOS may delay silent pushes, so launch, foreground activation, and
-  pull-to-refresh also fetch the latest snapshot.
+  pull-to-refresh also fetch changes.

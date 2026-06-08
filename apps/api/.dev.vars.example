@@ -12,5 +12,10 @@ APNS_TEAM_ID="ABCDE12345"
 APNS_KEY_ID="FGHIJ67890"
 APNS_BUNDLE_ID="org.narro.grocer"
 
+# Local Wrangler/Miniflare fetch cannot speak APNs' required HTTP/2 transport.
+# `pnpm dev:api` starts this bridge automatically and injects the URL with
+# `wrangler dev --var`; set it manually only if you run Wrangler yourself.
+APNS_HTTP2_BRIDGE_URL="http://127.0.0.1:8791"
+
 # OpenAI — used for product image generation (gpt-image-1)
 OPENAI_API_KEY="sk-REPLACE_WITH_YOUR_KEY"

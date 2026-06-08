@@ -2,6 +2,161 @@ import CloudKit
 import Foundation
 import Observation
 
+private enum PendingCloudOperation: String, Codable {
+    case save
+    case delete
+}
+
+private enum PendingCloudRecord: Codable, Equatable {
+    case household(Household)
+    case member(HouseholdMember)
+    case list(GroceryList)
+    case item(GroceryItem)
+    case session(ShoppingSession)
+    case event(ItemEvent)
+
+    var recordType: String {
+        switch self {
+        case .household: return CK.RecordType.household
+        case .member: return CK.RecordType.member
+        case .list: return CK.RecordType.list
+        case .item: return CK.RecordType.item
+        case .session: return CK.RecordType.session
+        case .event: return CK.RecordType.event
+        }
+    }
+
+    var recordName: String {
+        switch self {
+        case .household(let value): return value.id
+        case .member(let value): return "\(value.id)_\(value.householdId)"
+        case .list(let value): return value.id
+        case .item(let value): return value.id
+        case .session(let value): return value.id
+        case .event(let value): return value.id
+        }
+    }
+
+    var householdId: String? {
+        switch self {
+        case .household(let value): return value.id
+        case .member(let value): return value.householdId
+        case .list(let value): return value.householdId
+        case .item(let value): return value.householdId
+        case .session(let value): return value.householdId
+        case .event(let value): return value.householdId
+        }
+    }
+
+    var key: String {
+        "\(recordType):\(recordName):\(householdId ?? "")"
+    }
+
+    var snapshot: CloudSnapshot {
+        var snapshot = CloudSnapshot()
+        switch self {
+        case .household(let value): snapshot.households = [value]
+        case .member(let value): snapshot.members = [value]
+        case .list(let value): snapshot.lists = [value]
+        case .item(let value): snapshot.items = [value]
+        case .session(let value): snapshot.sessions = [value]
+        case .event(let value): snapshot.events = [value]
+        }
+        return snapshot
+    }
+
+    var deletion: CloudRecordDeletion {
+        CloudRecordDeletion(
+            recordName: recordName,
+            recordType: recordType,
+            zone: CloudZoneRef(scope: "local", zoneName: "", ownerName: "")
+        )
+    }
+
+    func apply(to record: CKRecord) {
+        switch self {
+        case .household(let value): value.apply(to: record)
+        case .member(let value): value.apply(to: record)
+        case .list(let value): value.apply(to: record)
+        case .item(let value): value.apply(to: record)
+        case .session(let value): value.apply(to: record)
+        case .event(let value): value.apply(to: record)
+        }
+    }
+}
+
+private struct PendingCloudWrite: Codable, Equatable {
+    var operation: PendingCloudOperation
+    var record: PendingCloudRecord
+    var revision: Int
+    var enqueuedAt: Date
+
+    var key: String { record.key }
+}
+
+private final class LocalSyncStore {
+    private let fileManager = FileManager.default
+    private let snapshotURL: URL
+    private let outboxURL: URL
+
+    init() {
+        let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? fileManager.temporaryDirectory
+        let directory = base.appendingPathComponent("GrocerSync", isDirectory: true)
+        try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        snapshotURL = directory.appendingPathComponent("snapshot.json")
+        outboxURL = directory.appendingPathComponent("outbox.json")
+    }
+
+    func loadSnapshot() -> CloudSnapshot? {
+        guard let data = try? Data(contentsOf: snapshotURL) else { return nil }
+        return try? Self.decoder.decode(CloudSnapshot.self, from: data)
+    }
+
+    func saveSnapshot(_ snapshot: CloudSnapshot) {
+        guard let data = try? Self.encoder.encode(snapshot) else { return }
+        try? data.write(to: snapshotURL, options: .atomic)
+    }
+
+    func loadOutbox() -> [String: PendingCloudWrite] {
+        guard let data = try? Data(contentsOf: outboxURL),
+              let writes = try? Self.decoder.decode([PendingCloudWrite].self, from: data) else {
+            return [:]
+        }
+        var byKey: [String: PendingCloudWrite] = [:]
+        for write in writes {
+            if let existing = byKey[write.key], existing.revision > write.revision {
+                continue
+            }
+            byKey[write.key] = write
+        }
+        return byKey
+    }
+
+    func saveOutbox(_ writes: [String: PendingCloudWrite]) {
+        let ordered = writes.values.sorted { $0.enqueuedAt < $1.enqueuedAt }
+        guard let data = try? Self.encoder.encode(ordered) else { return }
+        try? data.write(to: outboxURL, options: .atomic)
+    }
+
+    func reset() {
+        try? fileManager.removeItem(at: snapshotURL)
+        try? fileManager.removeItem(at: outboxURL)
+    }
+
+    private static let encoder: JSONEncoder = {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        return encoder
+    }()
+
+    private static let decoder: JSONDecoder = {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
+    }()
+}
+
 /// Central observable store for the family grocery space.
 ///
 /// CloudKit is the source of truth. This repository keeps an in-memory working
@@ -50,15 +205,15 @@ final class GroceryRepository {
     private let liveActivity = LiveActivityManager.shared
     private let notifications = PushNotificationCoordinator.shared
     private let settings = SettingsStore.shared
+    private let localStore = LocalSyncStore()
     private let shoppingTripInactivityLimit: TimeInterval = 60 * 60
     private var remoteRefreshTask: Task<Void, Never>?
     private var foregroundRefreshTask: Task<Void, Never>?
     private var refreshInFlight = false
     private var lastActivationRefreshAt: Date?
     private var cloudWriteTask: Task<Void, Never>?
-    private var pendingItemSaves: [String: GroceryItem] = [:]
-    private var pendingItemDeletes = Set<String>()
-    private var pendingItemWriteVersions: [String: Int] = [:]
+    private var pendingCloudWrites: [String: PendingCloudWrite] = [:]
+    private var nextCloudWriteRevision = 0
 
     // MARK: - Current selection
 
@@ -159,7 +314,7 @@ final class GroceryRepository {
 
     var removedItems: [GroceryItem] {
         guard let listId = currentList?.id else { return [] }
-        return items.filter { $0.listId == listId && ($0.status == .removed || $0.status == .found || $0.status == .replaced) }
+        return items.filter { $0.listId == listId && $0.deletedAt == nil && ($0.status == .removed || $0.status == .found || $0.status == .replaced) }
             .sorted { ($0.completedAt ?? $0.updatedAt) > ($1.completedAt ?? $1.updatedAt) }
     }
 
@@ -176,7 +331,7 @@ final class GroceryRepository {
         let pendingNames = Set(pendingItems.map(\.name))
         var seen = Set<String>()
         return items
-            .filter { $0.listId == listId && !pendingNames.contains($0.name) && $0.status != .needed }
+            .filter { $0.listId == listId && $0.deletedAt == nil && !pendingNames.contains($0.name) && $0.status != .needed }
             .sorted { ($0.completedAt ?? $0.updatedAt) > ($1.completedAt ?? $1.updatedAt) }
             .compactMap { item in
                 let lower = item.name.lowercased()
@@ -263,14 +418,17 @@ final class GroceryRepository {
 
         selectedHouseholdId = settings.selectedHouseholdId.nilIfBlank
         print("[Repo] restored selectedHouseholdId: \(selectedHouseholdId ?? "nil")")
+        loadLocalSyncState()
 
         syncState = .syncing
         print("[Repo] checking iCloud account status…")
         let status = await cloud.accountStatus()
         guard status == .available else {
-            print("[Repo] ⚠️ iCloud not available (status=\(status.rawValue)), using sample data")
+            print("[Repo] ⚠️ iCloud not available (status=\(status.rawValue))")
             usingCloudKit = false
-            seedSampleData()
+            if households.isEmpty {
+                seedSampleData()
+            }
             syncState = .offline
             hasCompletedInitialLoad = true
             await configureLiveActivity()
@@ -293,7 +451,7 @@ final class GroceryRepository {
             print("[Repo] step 1: ensureZone…")
             try await cloud.ensureZone()
 
-            print("[Repo] step 2: refresh (fetch all records)…")
+            print("[Repo] step 2: refresh (fetch CloudKit changes)…")
             try await refresh()
 
             print("[Repo] step 3: households=\(households.count), checking if empty…")
@@ -303,6 +461,7 @@ final class GroceryRepository {
             }
             ensureValidSelection()
             syncState = .idle
+            scheduleOutboxFlush()
             print("[Repo] ✅ bootstrap succeeded — \(households.count) group(s), sync=idle")
             await registerForRealtimeSync()
         } catch {
@@ -333,9 +492,10 @@ final class GroceryRepository {
             print("[Repo] refresh skipped (not using CloudKit)")
             return
         }
-        print("[Repo] refresh → fetching snapshot…")
-        let snapshot = try await cloud.fetchSnapshot()
-        applySnapshot(snapshot)
+        print("[Repo] refresh → fetching changes…")
+        let changes = try await cloud.fetchChanges(forceFull: currentSnapshot().isEmpty)
+        applySyncResult(changes)
+        saveLocalSnapshot()
         print("[Repo] refresh → \(households.count) households, \(members.count) members, \(lists.count) lists, \(items.count) items, \(events.count) events")
         ensureValidSelection()
         ensureCurrentUserMemberRecords()
@@ -461,6 +621,7 @@ final class GroceryRepository {
             if registerSubscriptions {
                 await registerForRealtimeSync()
             }
+            scheduleOutboxFlush()
             print("[Repo] ✅ \(context.replacingOccurrences(of: " failed", with: "")) succeeded")
         } catch {
             print("[Repo] ❌ \(context): \(error)")
@@ -514,14 +675,8 @@ final class GroceryRepository {
             added.append(member)
             print("[Repo] auto-created member \(memberId) for household \(household.name)")
         }
-        // Save sequentially — all members share the same record ID, so parallel
-        // saves race and produce "record already exists" conflicts.
         if !added.isEmpty {
-            Task {
-                for member in added {
-                    await saveMemberBestEffort(member)
-                }
-            }
+            added.forEach { persist($0) }
         }
     }
 
@@ -579,19 +734,19 @@ final class GroceryRepository {
         print("[Repo] group added to local state: house=\(house.id), list=\(list.id)")
 
         if usingCloudKit {
-            print("[Repo] saving new group to CloudKit…")
-            let houseRecord = CKRecord(recordType: CK.RecordType.household, recordID: cloud.makeRecordID(house.id))
-            house.apply(to: houseRecord)
-            let memberRecord = CKRecord(recordType: CK.RecordType.member, recordID: recordID(for: member))
-            member.apply(to: memberRecord)
-            setHouseholdParent(memberRecord, householdId: house.id)
-            let listRecord = CKRecord(recordType: CK.RecordType.list, recordID: cloud.makeRecordID(list.id))
-            list.apply(to: listRecord)
-            setHouseholdParent(listRecord, householdId: house.id)
-
-            _ = try await cloud.saveToPrivateZone([houseRecord, memberRecord, listRecord])
-            syncState = .idle
-            print("[Repo] ✅ group saved to CloudKit")
+            print("[Repo] queueing new group records for CloudKit…")
+            enqueueSave(.household(house))
+            enqueueSave(.member(member))
+            enqueueSave(.list(list))
+            await flushOutbox()
+            if !pendingCloudWrites.keys.contains(PendingCloudRecord.household(house).key),
+               !pendingCloudWrites.keys.contains(PendingCloudRecord.member(member).key),
+               !pendingCloudWrites.keys.contains(PendingCloudRecord.list(list).key) {
+                syncState = .idle
+                print("[Repo] ✅ group saved to CloudKit")
+            }
+        } else {
+            saveLocalSnapshot()
         }
         return house
     }
@@ -634,7 +789,10 @@ final class GroceryRepository {
         guard let household = households.first(where: { $0.id == member.householdId }) else { return }
         guard member.role != .owner else { return }
         members.removeAll { $0.id == member.id && $0.householdId == member.householdId }
-        guard usingCloudKit else { return }
+        guard usingCloudKit else {
+            saveLocalSnapshot()
+            return
+        }
         Task {
             do {
                 let names = Set([member.id, member.iCloudUserRecordName].compactMap { $0?.nilIfBlank })
@@ -642,7 +800,8 @@ final class GroceryRepository {
                     matching: names,
                     from: householdRecordID(household)
                 )
-                await deleteBestEffort(recordID: recordID(for: member), context: "Remove member failed")
+                enqueueDelete(.member(member))
+                await flushOutbox()
                 try? await refresh()
             } catch {
                 print("[Repo] ❌ remove member failed: \(error)")
@@ -690,7 +849,9 @@ final class GroceryRepository {
         selectedHouseholdId = households.first?.id
         ensureValidSelection()
         if usingCloudKit, let me {
-            Task { await deleteBestEffort(recordID: recordID(for: me), context: "Leave group failed") }
+            enqueueDelete(.member(me))
+        } else {
+            saveLocalSnapshot()
         }
     }
 
@@ -711,7 +872,7 @@ final class GroceryRepository {
             requestedByDisplayName: member?.displayName ?? settings.displayName,
             status: .needed, priority: priority,
             replacementPreference: replacementPreference?.nilIfBlank,
-            replacementItemName: nil, createdAt: now, updatedAt: now, completedAt: nil,
+            replacementItemName: nil, createdAt: now, updatedAt: now, completedAt: nil, deletedAt: nil,
             activeSessionId: activeSession(for: list.id)?.id
         )
         items.append(item)
@@ -739,6 +900,7 @@ final class GroceryRepository {
         var updated = item
         updated.status = .needed
         updated.completedAt = nil
+        updated.deletedAt = nil
         updated.activeSessionId = nil
         updated.updatedAt = Date()
         replaceInWorkingSet(updated)
@@ -749,8 +911,15 @@ final class GroceryRepository {
     }
 
     func delete(_ item: GroceryItem) {
-        items.removeAll { $0.id == item.id }
-        persistDeletion(item)
+        let now = Date()
+        var updated = item
+        updated.status = .removed
+        updated.updatedAt = now
+        updated.completedAt = updated.completedAt ?? now
+        updated.deletedAt = now
+        updated.activeSessionId = activeSession(for: item.listId)?.id
+        replaceInWorkingSet(updated)
+        persist(updated)
         logEvent(.itemRemoved, householdId: item.householdId, itemId: item.id,
                  sessionId: activeSession(for: item.listId)?.id, metadata: ["name": item.name])
     }
@@ -764,6 +933,10 @@ final class GroceryRepository {
         updated.updatedAt = Date()
         updated.activeSessionId = session?.id
         if status != .needed { updated.completedAt = Date() }
+        if status == .needed {
+            updated.completedAt = nil
+            updated.deletedAt = nil
+        }
         if status == .replaced { updated.replacementItemName = replacement }
         replaceInWorkingSet(updated)
         persist(updated)
@@ -865,27 +1038,37 @@ final class GroceryRepository {
 
     private func applyCleanup(session: ShoppingSession, clearCompleted: Bool, keepOutOfStock: Bool) {
         var changed: [GroceryItem] = []
-        var deleted: [GroceryItem] = []
+        let now = Date()
         items = items.compactMap { item in
             guard item.listId == session.listId else { return item }
             var item = item
             switch item.status {
             case .found, .replaced:
                 if clearCompleted {
-                    deleted.append(item)
-                    return nil
+                    item.status = .removed
+                    item.deletedAt = now
+                    item.completedAt = item.completedAt ?? now
+                    item.updatedAt = now
+                    changed.append(item)
                 }
             case .outOfStock:
-                if !keepOutOfStock { item.status = .needed; item.completedAt = nil; changed.append(item) }
+                if !keepOutOfStock {
+                    item.status = .needed
+                    item.completedAt = nil
+                    item.deletedAt = nil
+                    changed.append(item)
+                }
             case .skipped:
-                item.status = .needed; item.completedAt = nil; changed.append(item)
+                item.status = .needed
+                item.completedAt = nil
+                item.deletedAt = nil
+                changed.append(item)
             default: break
             }
             item.activeSessionId = nil
             return item
         }
         changed.forEach { persist($0) }
-        deleted.forEach { persistDeletion($0) }
     }
 
     // MARK: - Live Activity payload helpers
@@ -1033,128 +1216,180 @@ final class GroceryRepository {
         if let idx = sessions.firstIndex(where: { $0.id == session.id }) { sessions[idx] = session }
     }
 
+    private func currentSnapshot() -> CloudSnapshot {
+        CloudSnapshot(
+            households: households,
+            members: members,
+            lists: lists,
+            items: items,
+            sessions: sessions,
+            events: events
+        )
+    }
+
+    private func loadLocalSyncState() {
+        pendingCloudWrites = localStore.loadOutbox()
+        nextCloudWriteRevision = (pendingCloudWrites.values.map(\.revision).max() ?? 0) + 1
+        guard var snapshot = localStore.loadSnapshot(), !snapshot.isEmpty else { return }
+        applyPendingWrites(to: &snapshot)
+        applySnapshot(snapshot)
+        ensureValidSelection()
+        hasCompletedInitialLoad = true
+        print("[Repo] loaded local cache — \(households.count) group(s), \(items.count) item(s), \(pendingCloudWrites.count) pending write(s)")
+    }
+
+    private func saveLocalSnapshot() {
+        localStore.saveSnapshot(currentSnapshot())
+        localStore.saveOutbox(pendingCloudWrites)
+    }
+
     private func applySnapshot(_ snapshot: CloudSnapshot) {
         households = snapshot.households
         members = snapshot.members
         lists = snapshot.lists
-        items = mergePendingItemChanges(into: snapshot.items)
+        items = snapshot.items
         sessions = snapshot.sessions
         events = snapshot.events
     }
 
-    private func mergePendingItemChanges(into snapshotItems: [GroceryItem]) -> [GroceryItem] {
-        guard !pendingItemSaves.isEmpty || !pendingItemDeletes.isEmpty else {
-            return snapshotItems
+    private func applySyncResult(_ result: CloudSyncResult) {
+        var snapshot = currentSnapshot()
+        snapshot.removeRecords(in: result.fullZones)
+        snapshot.upsert(contentsOf: result.snapshot)
+        for deletion in result.deletions {
+            snapshot.remove(deletion)
         }
+        applyPendingWrites(to: &snapshot)
+        applySnapshot(snapshot)
+    }
 
-        var merged: [String: GroceryItem] = [:]
-        for item in snapshotItems {
-            if let existing = merged[item.id], existing.updatedAt > item.updatedAt {
-                continue
+    private func applyPendingWrites(to snapshot: inout CloudSnapshot) {
+        for write in pendingCloudWrites.values {
+            switch write.operation {
+            case .save:
+                snapshot.upsert(contentsOf: write.record.snapshot)
+            case .delete:
+                snapshot.remove(write.record.deletion)
             }
-            merged[item.id] = item
         }
-
-        for id in pendingItemDeletes {
-            merged.removeValue(forKey: id)
-        }
-        for item in pendingItemSaves.values {
-            merged[item.id] = item
-        }
-        return Array(merged.values)
     }
 
     private func persist(_ item: GroceryItem) {
-        guard usingCloudKit else { return }
-        let version = nextItemWriteVersion(for: item.id)
-        pendingItemSaves[item.id] = item
-        pendingItemDeletes.remove(item.id)
-        enqueueCloudWrite { [weak self] in
-            await self?.savePendingItem(item, version: version)
-        }
-    }
-
-    private func persistDeletion(_ item: GroceryItem) {
-        guard usingCloudKit else { return }
-        let version = nextItemWriteVersion(for: item.id)
-        pendingItemSaves.removeValue(forKey: item.id)
-        pendingItemDeletes.insert(item.id)
-        enqueueCloudWrite { [weak self] in
-            await self?.deletePendingItem(item, version: version)
-        }
+        enqueueSave(.item(item))
     }
 
     private func persist(_ session: ShoppingSession) {
-        guard usingCloudKit else { return }
-        Task { await fetchAndSave(session, type: CK.RecordType.session, id: session.id, householdId: session.householdId) }
+        enqueueSave(.session(session))
     }
     private func persist(_ member: HouseholdMember) {
-        guard usingCloudKit else { return }
-        Task { await saveMemberBestEffort(member) }
+        enqueueSave(.member(member))
     }
     private func persistHousehold(_ house: Household) {
-        guard usingCloudKit else { return }
-        Task {
-            let rid = householdRecordID(house)
-            let record: CKRecord
-            do {
-                record = try await cloud.record(for: rid)
-            } catch let error as CKError where error.code == .unknownItem {
-                record = CKRecord(recordType: CK.RecordType.household, recordID: rid)
-            } catch {
-                print("[Repo] ⚠️ household fetch deferred: \(error)")
-                recordSyncFailure(error, context: "Save group failed")
-                return
-            }
-            house.apply(to: record)
-            await saveBestEffort(record)
-        }
+        enqueueSave(.household(house))
     }
 
-    private func enqueueCloudWrite(_ operation: @escaping () async -> Void) {
+    private func persist(_ list: GroceryList) {
+        enqueueSave(.list(list))
+    }
+
+    private func persist(_ event: ItemEvent) {
+        enqueueSave(.event(event))
+    }
+
+    private func enqueueSave(_ record: PendingCloudRecord) {
+        enqueueWrite(PendingCloudWrite(
+            operation: .save,
+            record: record,
+            revision: nextOutboxRevision(),
+            enqueuedAt: Date()
+        ))
+    }
+
+    private func enqueueDelete(_ record: PendingCloudRecord) {
+        enqueueWrite(PendingCloudWrite(
+            operation: .delete,
+            record: record,
+            revision: nextOutboxRevision(),
+            enqueuedAt: Date()
+        ))
+    }
+
+    private func enqueueWrite(_ write: PendingCloudWrite) {
+        guard shouldQueueForCloud(write.record) else {
+            saveLocalSnapshot()
+            return
+        }
+        pendingCloudWrites[write.key] = write
+        saveLocalSnapshot()
+        scheduleOutboxFlush()
+    }
+
+    private func shouldQueueForCloud(_ record: PendingCloudRecord) -> Bool {
+        if usingCloudKit { return true }
+        guard let householdId = record.householdId else { return false }
+        return households.first { $0.id == householdId }?.recordZoneName != nil
+    }
+
+    private func nextOutboxRevision() -> Int {
+        defer { nextCloudWriteRevision += 1 }
+        return nextCloudWriteRevision
+    }
+
+    private func scheduleOutboxFlush() {
+        guard usingCloudKit else { return }
         let previous = cloudWriteTask
-        cloudWriteTask = Task {
+        cloudWriteTask = Task { [weak self] in
             await previous?.value
             guard !Task.isCancelled else { return }
-            await operation()
+            await self?.flushOutbox()
         }
     }
 
-    private func nextItemWriteVersion(for id: String) -> Int {
-        let version = (pendingItemWriteVersions[id] ?? 0) + 1
-        pendingItemWriteVersions[id] = version
-        return version
-    }
-
-    private func savePendingItem(_ item: GroceryItem, version: Int) async {
-        guard pendingItemWriteVersions[item.id] == version,
-              pendingItemSaves[item.id] == item else {
-            return
-        }
-
-        let saved = await fetchAndSave(item, type: CK.RecordType.item, id: item.id, householdId: item.householdId)
-        guard pendingItemWriteVersions[item.id] == version else { return }
-        if saved {
-            pendingItemSaves.removeValue(forKey: item.id)
-            pendingItemWriteVersions.removeValue(forKey: item.id)
+    private func flushOutbox() async {
+        guard usingCloudKit, !pendingCloudWrites.isEmpty else { return }
+        let writes = pendingCloudWrites.values.sorted { $0.enqueuedAt < $1.enqueuedAt }
+        for write in writes {
+            guard pendingCloudWrites[write.key] == write else { continue }
+            let succeeded = await perform(write)
+            guard pendingCloudWrites[write.key] == write else { continue }
+            if succeeded {
+                pendingCloudWrites.removeValue(forKey: write.key)
+                saveLocalSnapshot()
+            }
         }
     }
 
-    private func deletePendingItem(_ item: GroceryItem, version: Int) async {
-        guard pendingItemWriteVersions[item.id] == version,
-              pendingItemDeletes.contains(item.id) else {
-            return
+    private func perform(_ write: PendingCloudWrite) async -> Bool {
+        switch write.operation {
+        case .save:
+            return await savePendingRecord(write.record)
+        case .delete:
+            return await deletePendingRecord(write.record)
         }
+    }
 
-        let deleted = await deleteBestEffort(
-            recordID: childRecordID(item.id, householdId: item.householdId),
-            context: "Delete item failed"
-        )
-        guard pendingItemWriteVersions[item.id] == version else { return }
-        if deleted {
-            pendingItemDeletes.remove(item.id)
-            pendingItemWriteVersions.removeValue(forKey: item.id)
+    private func savePendingRecord(_ pending: PendingCloudRecord) async -> Bool {
+        guard usingCloudKit else { return false }
+        let rid = recordID(for: pending)
+        let record: CKRecord
+        do {
+            record = try await cloud.record(for: rid)
+        } catch let error as CKError where error.code == .unknownItem {
+            record = CKRecord(recordType: pending.recordType, recordID: rid)
+        } catch {
+            print("[Repo] ⚠️ fetch deferred for \(pending.recordType) \(pending.recordName): \(error)")
+            recordSyncFailure(error, context: "Save \(pending.recordType) failed")
+            return false
         }
+        pending.apply(to: record)
+        if let householdId = pending.householdId, pending.recordType != CK.RecordType.household {
+            setHouseholdParent(record, householdId: householdId)
+        }
+        return await saveBestEffort(record)
+    }
+
+    private func deletePendingRecord(_ pending: PendingCloudRecord) async -> Bool {
+        await deleteBestEffort(recordID: recordID(for: pending), context: "Delete \(pending.recordType) failed")
     }
 
     @discardableResult
@@ -1249,9 +1484,9 @@ final class GroceryRepository {
         UserDefaults.standard.removeObject(forKey: "grocer.migration.parentRefs.v2")
         cloudWriteTask?.cancel()
         cloudWriteTask = nil
-        pendingItemSaves.removeAll()
-        pendingItemDeletes.removeAll()
-        pendingItemWriteVersions.removeAll()
+        pendingCloudWrites.removeAll()
+        nextCloudWriteRevision = 0
+        localStore.reset()
         subscriptionStatus = CloudSubscriptionRegistrationResult(
             privateZoneRegistered: false,
             sharedDatabaseRegistered: false,
@@ -1272,8 +1507,7 @@ final class GroceryRepository {
             createdAt: Date(), metadata: metadata
         )
         events.append(event)
-        guard usingCloudKit else { return }
-        Task { await saveBestEffort(newRecord(event, type: CK.RecordType.event, id: event.id, householdId: event.householdId)) }
+        persist(event)
     }
 
     private func newRecord<T: CloudKitApplicable>(_ model: T, type: String, id: String, householdId: String? = nil) -> CKRecord {
@@ -1311,6 +1545,23 @@ final class GroceryRepository {
     /// members actually receive them.
     private func childRecordID(_ name: String, householdId: String) -> CKRecord.ID {
         CKRecord.ID(recordName: name, zoneID: zoneID(forHousehold: householdId))
+    }
+
+    private func recordID(for pending: PendingCloudRecord) -> CKRecord.ID {
+        switch pending {
+        case .household(let household):
+            return householdRecordID(household)
+        case .member(let member):
+            return recordID(for: member)
+        case .list(let list):
+            return childRecordID(list.id, householdId: list.householdId)
+        case .item(let item):
+            return childRecordID(item.id, householdId: item.householdId)
+        case .session(let session):
+            return childRecordID(session.id, householdId: session.householdId)
+        case .event(let event):
+            return childRecordID(event.id, householdId: event.householdId)
+        }
     }
 
     /// Links a child record to its Household root via a `parent` reference so
@@ -1391,7 +1642,7 @@ final class GroceryRepository {
                         status: .needed, priority: .normal,
                         replacementPreference: nil, replacementItemName: nil,
                         createdAt: now.addingTimeInterval(Double.random(in: -50000 ... -100)),
-                        updatedAt: now, completedAt: nil, activeSessionId: nil)
+                        updatedAt: now, completedAt: nil, deletedAt: nil, activeSessionId: nil)
         }
 
         func event(_ id: String, _ type: ItemEventType, household: Household,
