@@ -130,7 +130,7 @@ struct GroceryListView: View {
                     sessionForNav = repo.activeSession
                 }
             }
-            .presentationDetents([.medium])
+            .presentationDetents([.height(300)])
         }
     }
 
@@ -324,8 +324,6 @@ struct StartTripSheet: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
-
-                Spacer()
 
                 Button {
                     dismiss()

@@ -181,6 +181,21 @@ final class GroceryRepository {
         return repo
     }
 
+    #if DEBUG
+    static func makePreview(
+        households: [Household] = [],
+        members: [HouseholdMember] = [],
+        joinedHouseholdId: String? = nil
+    ) -> GroceryRepository {
+        let repo = GroceryRepository()
+        repo.households = households
+        repo.members = members
+        repo.joinedHouseholdId = joinedHouseholdId
+        repo.hasCompletedInitialLoad = true
+        return repo
+    }
+    #endif
+
     private(set) var households: [Household] = []
     private(set) var members: [HouseholdMember] = []
     private(set) var lists: [GroceryList] = []
@@ -189,6 +204,9 @@ final class GroceryRepository {
     private(set) var events: [ItemEvent] = []
 
     private(set) var selectedHouseholdId: String?
+
+    /// Set after successfully joining a group; the UI shows a welcome sheet.
+    var joinedHouseholdId: String?
 
     enum SyncState: Equatable { case idle, syncing, offline, error(String) }
     private(set) var syncState: SyncState = .idle
@@ -1203,12 +1221,23 @@ final class GroceryRepository {
         return url
     }
 
+    func dismissJoinedHousehold() {
+        joinedHouseholdId = nil
+    }
+
     func acceptShare(_ metadata: CKShare.Metadata) async {
+        let householdIdsBefore = Set(households.map(\.id))
         do {
             try await cloud.accept(metadata)
             try await refresh()
             await registerForRealtimeSync(force: true)
             await configureLiveActivity()
+
+            if let newHousehold = households.first(where: { !householdIdsBefore.contains($0.id) }) {
+                selectHousehold(newHousehold.id)
+                joinedHouseholdId = newHousehold.id
+                print("[Repo] switched to newly joined group: \(newHousehold.name)")
+            }
         } catch {
             print("[Repository] accept share failed: \(error)")
             recordSyncFailure(error, context: "Accept share failed")

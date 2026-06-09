@@ -36,16 +36,12 @@ struct GrocerApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ZStack {
-                RootView()
-                    .environment(repository)
-                    .environment(settings)
-                    .task {
-                        await repository.bootstrap()
-                    }
-
-                SplashScreenView()
-            }
+            RootView()
+                .environment(repository)
+                .environment(settings)
+                .task {
+                    await repository.bootstrap()
+                }
         }
     }
 }

@@ -38,12 +38,172 @@ struct RootView: View {
                 repo.stopForegroundRefreshLoop()
             }
         }
+        .sheet(isPresented: Binding(
+            get: { repo.joinedHouseholdId != nil },
+            set: { if !$0 { repo.dismissJoinedHousehold() } }
+        )) {
+            JoinedGroupSheet()
+        }
     }
 
     private var shouldShowOnboarding: Bool {
         Self.forceShowOnboardingForDebug || (repo.hasCompletedInitialLoad && repo.households.isEmpty)
     }
 }
+
+// MARK: - Joined Group Sheet
+
+private struct JoinedGroupSheet: View {
+    @Environment(GroceryRepository.self) private var repo
+    @Environment(\.dismiss) private var dismiss
+
+    private var household: Household? {
+        repo.joinedHouseholdId.flatMap { id in repo.households.first { $0.id == id } }
+    }
+
+    private var groupMembers: [HouseholdMember] {
+        guard let id = repo.joinedHouseholdId else { return [] }
+        return repo.members
+            .filter { $0.householdId == id }
+            .sorted(by: HouseholdMember.stableDisplayOrder)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Spacer()
+
+            VStack(spacing: 24) {
+                if let household {
+                    groupIcon(household)
+
+                    VStack(spacing: 8) {
+                        Text("You\u{2019}ve joined \u{201c}\(household.name)\u{201d}")
+                            .font(.title2.bold())
+                            .multilineTextAlignment(.center)
+
+                        if let store = household.storeName {
+                            Text(store)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    if !groupMembers.isEmpty {
+                        membersRow
+                    }
+                }
+            }
+            .padding(.horizontal, 32)
+
+            Spacer()
+
+            Button {
+                repo.dismissJoinedHousehold()
+                dismiss()
+            } label: {
+                Text("Done")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .tint(household?.tint ?? .green)
+            .padding(.horizontal, 24)
+            .padding(.bottom, 12)
+        }
+        .presentationDetents([.medium])
+    }
+
+    private func groupIcon(_ household: Household) -> some View {
+        Image(systemName: household.icon)
+            .font(.system(size: 32, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(width: 72, height: 72)
+            .background(household.tint.gradient, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .shadow(color: household.tint.opacity(0.3), radius: 12, y: 6)
+    }
+
+    private var membersRow: some View {
+        VStack(spacing: 12) {
+            Text("Members")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            VStack(spacing: 0) {
+                ForEach(groupMembers) { member in
+                    HStack(spacing: 12) {
+                        memberAvatar(member)
+                        Text(member.displayName)
+                            .font(.body)
+                        Spacer()
+                        Text(member.role.rawValue)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+
+                    if member.id != groupMembers.last?.id {
+                        Divider().padding(.leading, 52)
+                    }
+                }
+            }
+            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+    }
+
+    private func memberAvatar(_ member: HouseholdMember) -> some View {
+        Group {
+            if let data = member.profileImageData, let image = UIImage(data: data) {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Image(systemName: "person.crop.circle.fill")
+                    .resizable()
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: 28, height: 28)
+        .clipShape(Circle())
+    }
+}
+
+#if DEBUG
+#Preview("Joined Group") {
+    @Previewable @State var isPresented = true
+    Color.clear
+        .sheet(isPresented: $isPresented) {
+            JoinedGroupSheetPreview()
+        }
+}
+
+private struct JoinedGroupSheetPreview: View {
+    var body: some View {
+        let household = Household(
+            id: "preview", name: "Family Groceries", ownerMemberId: "m1",
+            storeName: "Whole Foods", icon: "cart.fill",
+            colorTheme: .green, createdAt: .now, updatedAt: .now
+        )
+        let members = [
+            HouseholdMember(id: "m1", householdId: "preview", displayName: "Sarah",
+                            role: .owner, joinedAt: .now),
+            HouseholdMember(id: "m2", householdId: "preview", displayName: "You",
+                            role: .member, joinedAt: .now),
+        ]
+        JoinedGroupSheet()
+            .grocerPreviewEnvironment(
+                repository: GrocerPreview.repository(
+                    households: [household],
+                    members: members,
+                    joinedHouseholdId: "preview"
+                )
+            )
+    }
+}
+#endif
 
 /// Forces iOS to initialize its keyboard infrastructure at app launch so the
 /// first TextField focus doesn't stall while the system cold-starts the
@@ -81,218 +241,205 @@ private struct KeyboardWarmer: UIViewRepresentable {
 
 // MARK: - Onboarding
 
+private enum OnboardingSheet: Identifiable {
+    case profile
+    case createGroup
+    case joinHelp
+
+    var id: Self { self }
+}
+
 private struct OnboardingView: View {
     @Environment(GroceryRepository.self) private var repo
-    @Environment(SettingsStore.self) private var settings
 
-    @State private var displayName = ""
-    @State private var selectedProfilePhoto: PhotosPickerItem?
-    @State private var hasConfirmedProfile = false
-    @State private var showCreateGroup = false
-    @State private var showJoinHelp = false
-
-    private var trimmedDisplayName: String {
-        displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private var canSaveProfile: Bool {
-        !trimmedDisplayName.isEmpty
-    }
-
-    private var profileIsDirty: Bool {
-        trimmedDisplayName != repo.displayName && !trimmedDisplayName.isEmpty
-    }
+    @State private var activeSheet: OnboardingSheet?
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                header
-                profilePanel
-                if hasConfirmedProfile {
-                    groupChoicePanel
-                        .transition(.opacity.combined(with: .move(edge: .bottom)))
+        ZStack {
+            LinearGradient(
+                gradient: Gradient(stops: [
+                    .init(color: .green, location: 0),
+                    .init(color: .black, location: 0.85),
+                ]),
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .ignoresSafeArea()
+
+            VStack {
+                Spacer()
+
+                VStack(spacing: 0) {
+                    onboardingLogo
+                    Text("Your Grocery List.\nWith Magic Powers.")
+                        .foregroundStyle(.white)
+                        .font(.largeTitle.bold())
+                        .multilineTextAlignment(.center)
+                        .padding(.bottom, 80)
                 }
+
+                Button {
+                    activeSheet = .profile
+                } label: {
+                    Text("Continue")
+                        .fontWeight(.medium)
+                        .foregroundStyle(.black)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 50)
+                        .background(.white, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+                .padding(.horizontal)
+                .padding(.bottom, 40)
             }
-            .padding(20)
-            .frame(maxWidth: 560)
-            .frame(maxWidth: .infinity)
         }
-        .background(Color(.systemGroupedBackground))
-        .navigationTitle("Welcome")
-        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .navigationBar)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             SyncStatusBar(state: repo.syncState)
         }
-        .onAppear(perform: loadProfile)
-        .onChange(of: selectedProfilePhoto) { _, newItem in
-            loadProfilePhoto(newItem)
-        }
-        .sheet(isPresented: $showCreateGroup) {
-            NavigationStack {
-                GroupEditorView(group: nil)
+        .sheet(item: $activeSheet) { sheet in
+            switch sheet {
+            case .profile:
+                OnboardingProfileSheet(
+                    onContinue: {
+                        activeSheet = .createGroup
+                    },
+                    onJoinExisting: {
+                        activeSheet = .joinHelp
+                    }
+                )
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+            case .createGroup:
+                NavigationStack {
+                    GroupEditorView(group: nil)
+                }
+            case .joinHelp:
+                JoinExistingGroupHelpView()
             }
         }
-        .sheet(isPresented: $showJoinHelp) {
-            JoinExistingGroupHelpView()
-        }
-        .animation(.default, value: hasConfirmedProfile)
     }
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            appIcon
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Set Up Grocer")
-                    .font(.largeTitle.bold())
-                Text("Add the profile your group will see.")
-                    .font(.body)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(.top, 18)
-    }
-
-    private var appIcon: some View {
+    private var onboardingLogo: some View {
         Group {
             if let image = UIImage(named: "AppIcon") {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFit()
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
             } else {
                 Image(systemName: "cart.fill")
-                    .font(.system(size: 36, weight: .semibold))
+                    .font(.system(size: 72, weight: .semibold))
                     .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(.green, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .frame(width: 160, height: 160)
+                    .background(.green.opacity(0.35), in: RoundedRectangle(cornerRadius: 28, style: .continuous))
             }
         }
-        .frame(width: 72, height: 72)
-        .shadow(color: .black.opacity(0.12), radius: 12, y: 6)
+        .frame(width: 160, height: 160)
+        .scaleEffect(0.55)
         .accessibilityHidden(true)
     }
+}
 
-    private var profilePanel: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text("Profile")
-                .font(.headline)
+private struct OnboardingProfileSheet: View {
+    @Environment(GroceryRepository.self) private var repo
+    @Environment(SettingsStore.self) private var settings
 
-            HStack(alignment: .center, spacing: 16) {
+    @State private var displayName = ""
+    @State private var selectedProfilePhoto: PhotosPickerItem?
+    @FocusState private var nameFieldFocused: Bool
+
+    var onContinue: () -> Void
+    var onJoinExisting: () -> Void
+
+    private var trimmedDisplayName: String {
+        displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var canContinue: Bool {
+        !trimmedDisplayName.isEmpty
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            VStack(spacing: 28) {
+                VStack(spacing: 8) {
+                    Text("Your Profile")
+                        .font(.title2.bold())
+                    Text("This is how your group will see you.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding(.top, 8)
+
                 PhotosPicker(selection: $selectedProfilePhoto, matching: .images) {
                     ZStack(alignment: .bottomTrailing) {
-                        OnboardingProfilePicture(imageData: settings.profileImageData, size: 88)
-                        Image(systemName: "camera.fill")
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(.white)
-                            .frame(width: 28, height: 28)
-                            .background(.green, in: Circle())
-                            .overlay {
-                                Circle().stroke(Color(.secondarySystemGroupedBackground), lineWidth: 2)
-                            }
+                        OnboardingProfilePicture(imageData: settings.profileImageData, size: 96)
+                        Image(systemName: "camera.circle.fill")
+                            .font(.title3)
+                            .symbolRenderingMode(.palette)
+                            .foregroundStyle(.white, .green)
                     }
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Choose profile photo")
 
-                VStack(alignment: .leading, spacing: 8) {
-                    TextField("Your name", text: $displayName)
-                        .textContentType(.name)
-                        .textInputAutocapitalization(.words)
-                        .submitLabel(.done)
-                        .font(.title3.weight(.semibold))
-                        .onSubmit(saveProfile)
-                        .padding(.horizontal, 12)
-                        .frame(height: 48)
-                        .background(Color(.tertiarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-
-                    Text("Choose a photo and enter your name.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
+                TextField("Your Name", text: $displayName)
+                    .textContentType(.name)
+                    .textInputAutocapitalization(.words)
+                    .submitLabel(.continue)
+                    .multilineTextAlignment(.center)
+                    .font(.title3)
+                    .focused($nameFieldFocused)
+                    .onSubmit(continueToCreateGroup)
+                    .padding(.vertical, 14)
+                    .padding(.horizontal, 16)
+                    .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
+            .padding(.horizontal, 24)
+            .padding(.top, 12)
 
-            if hasConfirmedProfile {
-                HStack(spacing: 10) {
-                    Label(profileIsDirty ? "Unsaved changes" : "Profile saved",
-                          systemImage: profileIsDirty ? "pencil.circle" : "checkmark.circle.fill")
+            Spacer()
+
+            VStack(spacing: 16) {
+                Button(action: continueToCreateGroup) {
+                    Text("Continue")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 50)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .tint(.green)
+                .disabled(!canContinue || !repo.hasCompletedInitialLoad)
+
+                Button("Join an Existing Group", action: onJoinExisting)
                     .font(.subheadline.weight(.medium))
-                    .foregroundStyle(profileIsDirty ? .orange : .green)
-
-                    Spacer()
-
-                    if profileIsDirty {
-                        Button("Save", action: saveProfile)
-                            .font(.subheadline.weight(.semibold))
-                            .disabled(!canSaveProfile)
-                    }
-                }
-            } else {
-                Button(action: saveProfile) {
-                    Label("Continue", systemImage: "arrow.right.circle.fill")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 6)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .tint(.green)
-                .disabled(!canSaveProfile)
+                    .foregroundStyle(.secondary)
             }
+            .padding(.horizontal, 24)
+            .padding(.bottom, 24)
         }
-        .padding(18)
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-    }
-
-    private var groupChoicePanel: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Group")
-                .font(.headline)
-
-            VStack(spacing: 12) {
-                Button {
-                    saveProfile()
-                    showCreateGroup = true
-                } label: {
-                    Label("Create Group", systemImage: "person.2.badge.plus")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 6)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .tint(.green)
-                .disabled(!canSaveProfile || !repo.hasCompletedInitialLoad)
-
-                Button {
-                    saveProfile()
-                    showJoinHelp = true
-                } label: {
-                    Label("Learn How to Join", systemImage: "link")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 6)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.large)
-                .disabled(!canSaveProfile)
-            }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemBackground))
+        .onAppear(perform: loadProfile)
+        .onChange(of: selectedProfilePhoto) { _, newItem in
+            loadProfilePhoto(newItem)
         }
-        .padding(18)
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
     private func loadProfile() {
         guard displayName.isEmpty else { return }
         let savedName = settings.displayName == "Me" ? "" : settings.displayName
         displayName = savedName
-        hasConfirmedProfile = !savedName.isEmpty
     }
 
-    private func saveProfile() {
-        guard canSaveProfile else { return }
+    private func continueToCreateGroup() {
+        guard canContinue else { return }
         repo.updateDisplayName(trimmedDisplayName)
         displayName = trimmedDisplayName
-        hasConfirmedProfile = true
+        nameFieldFocused = false
+        onContinue()
     }
 
     private func loadProfilePhoto(_ item: PhotosPickerItem?) {
@@ -330,15 +477,11 @@ private struct OnboardingProfilePicture: View {
                 Image(systemName: "person.crop.circle.fill")
                     .resizable()
                     .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(.secondary)
-                    .padding(size * 0.08)
+                    .foregroundStyle(Color(.systemFill))
             }
         }
         .frame(width: size, height: size)
         .clipShape(Circle())
-        .overlay {
-            Circle().stroke(.quaternary, lineWidth: 1)
-        }
         .accessibilityHidden(true)
     }
 }
@@ -365,6 +508,44 @@ private struct JoinExistingGroupHelpView: View {
         }
     }
 }
+
+#if DEBUG
+// MARK: - Onboarding Previews
+
+#Preview("Onboarding Hero") {
+    NavigationStack {
+        OnboardingView()
+    }
+    .grocerPreviewEnvironment()
+}
+
+#Preview("Onboarding Profile Sheet") {
+    @Previewable @State var isPresented = true
+    Color.clear
+        .sheet(isPresented: $isPresented) {
+            OnboardingProfileSheet(onContinue: {}, onJoinExisting: {})
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+                .grocerPreviewEnvironment()
+        }
+}
+
+#Preview("Onboarding Create Group") {
+    @Previewable @State var isPresented = true
+    Color.clear
+        .sheet(isPresented: $isPresented) {
+            NavigationStack {
+                GroupEditorView(group: nil)
+            }
+            .grocerPreviewEnvironment()
+        }
+}
+
+#Preview("Root — Onboarding") {
+    RootView()
+        .grocerPreviewEnvironment()
+}
+#endif
 
 private extension UIImage {
     func onboardingProfileImageData(maxPixelSize: CGFloat = 512,

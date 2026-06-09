@@ -344,7 +344,11 @@ final class CloudKitService {
         print("[CK] share(for:) → household \(householdRecord.recordID.recordName)")
         if let ref = householdRecord.share,
            let existing = try? await privateDB.record(for: ref.recordID) as? CKShare {
+            existing[CKShare.SystemFieldKey.title] = householdRecord[CK.Field.name] as? String ?? "Family Groceries"
             existing.publicPermission = .none
+            if let iconData = Self.appIconPNGData() {
+                existing[CKShare.SystemFieldKey.thumbnailImageData] = iconData as CKRecordValue
+            }
             print("[CK] ✅ reusing existing CKShare")
             return try await saveShare(existing)
         }
@@ -655,8 +659,17 @@ final class CloudKitService {
     // MARK: - Debug helpers
 
     static func appIconPNGData() -> Data? {
-        guard let icon = UIImage(named: "AppIcon") ?? UIImage(named: "AppIcon60x60") else { return nil }
-        return icon.pngData()
+        if let icons = Bundle.main.infoDictionary?["CFBundleIcons"] as? [String: Any],
+           let primary = icons["CFBundlePrimaryIcon"] as? [String: Any],
+           let files = primary["CFBundleIconFiles"] as? [String],
+           let lastFile = files.last,
+           let icon = UIImage(named: lastFile) {
+            return icon.pngData()
+        }
+        if let icon = UIImage(named: "AppIcon60x60") ?? UIImage(named: "AppIcon76x76") {
+            return icon.pngData()
+        }
+        return nil
     }
 
     private static func describeAccountStatus(_ s: CKAccountStatus) -> String {

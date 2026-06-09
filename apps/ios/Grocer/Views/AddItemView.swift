@@ -220,7 +220,7 @@ struct AddItemSearchView: View {
     // MARK: - Top pane: input + autocomplete
 
     private var composePanel: some View {
-        TextField("Milk, eggs, bananas for the week", text: $inputText, axis: .vertical)
+        TextField("Milk, eggs, bananas, e.t.c.", text: $inputText, axis: .vertical)
             .focused($inputFocused)
             .font(.title3.weight(.medium))
             .textInputAutocapitalization(.sentences)
