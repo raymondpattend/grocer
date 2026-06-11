@@ -86,11 +86,22 @@ struct EditItemView: View {
     @State var item: GroceryItem
     let onSave: (GroceryItem) -> Void
 
+    /// Natural unit proposed for the item name, offered by the quantity stepper.
+    private var proposedUnit: String? {
+        let unit = UnitGuess.guess(for: item.name)
+        return unit.isEmpty ? nil : unit
+    }
+
     var body: some View {
         Form {
             Section("Item") {
                 TextField("Name", text: $item.name)
-                TextField("Quantity", text: Binding($item.quantity, default: ""))
+                LabeledContent("Quantity") {
+                    QuantityStepperField(
+                        quantity: Binding($item.quantity, default: ""),
+                        proposedUnit: proposedUnit
+                    )
+                }
                 Picker("Category", selection: $item.category) {
                     ForEach(GroceryCategory.ordered) { Text($0.rawValue).tag($0) }
                 }

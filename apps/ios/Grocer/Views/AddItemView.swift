@@ -1,4 +1,21 @@
 import SwiftUI
+import UIKit
+
+/// Lightweight taptic feedback for discrete UI actions in the add/history flow.
+enum Haptics {
+    /// A light tap for ordinary button presses (close, history, remove).
+    static func tap() {
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+    /// A selection tick for toggling/expanding rows.
+    static func selection() {
+        UISelectionFeedbackGenerator().selectionChanged()
+    }
+    /// A success notification when an item lands on the list.
+    static func success() {
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+    }
+}
 
 struct AddItemView: View {
     @Environment(GroceryRepository.self) private var repo
@@ -32,7 +49,13 @@ struct AddItemView: View {
             }
 
             Section("Details (optional)") {
-                TextField("Quantity", text: $quantity)
+                LabeledContent("Quantity") {
+                    QuantityStepperField(
+                        quantity: $quantity,
+                        proposedUnit: proposedUnit,
+                        tint: .green
+                    )
+                }
                 Picker("Category", selection: $category) {
                     ForEach(GroceryCategory.ordered) { Text($0.rawValue).tag($0) }
                 }
@@ -82,6 +105,13 @@ struct AddItemView: View {
         name.trimmingCharacters(in: .whitespaces)
     }
 
+    /// Natural unit proposed for the current name (e.g. eggs → "dozen"), offered
+    /// by the quantity stepper. `nil` when nothing fits.
+    private var proposedUnit: String? {
+        let unit = UnitGuess.guess(for: trimmedName)
+        return unit.isEmpty ? nil : unit
+    }
+
     private var canSave: Bool {
         !trimmedName.isEmpty
     }
@@ -118,6 +148,7 @@ struct AddItemSearchView: View {
     @State private var drafts: [ParsedGroceryDraft] = []
     @State private var isParsing = false
     @State private var contentAppeared = false
+    @State private var showHistory = false
 
     /// Debounce handle for the AI parse; cancelled and rescheduled on each edit.
     @State private var parseTask: Task<Void, Never>?
@@ -133,14 +164,46 @@ struct AddItemSearchView: View {
         inputText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// Distinct items anyone in the group has added before — the pool offered in
+    /// the History pane, latest first. Items already on the list are kept (and
+    /// flagged) so the button still appears for a brand-new group's first reuse.
+    private var historySuggestions: [GroceryItemSuggestion] {
+        repo.currentItemSuggestions
+    }
+
     var body: some View {
         ZStack {
             Color(.systemGroupedBackground)
                 .ignoresSafeArea()
 
             addFlowContent
-                .opacity(contentAppeared ? 1 : 0)
+                .opacity(contentAppeared ? (showHistory ? 0 : 1) : 0)
                 .offset(y: contentAppeared ? 0 : 14)
+                .overlay(alignment: .bottomTrailing) {
+                    if !showHistory && !historySuggestions.isEmpty {
+                        historyButton
+                    }
+                }
+
+            if showHistory {
+                HistoryItemsView(
+                    suggestions: historySuggestions,
+                    tint: tint,
+                    onSelect: { name, quantity, category in
+                        addFromHistory(name: name, quantity: quantity, category: category)
+                        withAnimation(.easeInOut(duration: 0.28)) {
+                            showHistory = false
+                        }
+                    },
+                    onClose: {
+                        withAnimation(.easeInOut(duration: 0.28)) {
+                            showHistory = false
+                        }
+                    }
+                )
+                .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                .zIndex(2)
+            }
         }
         .tint(tint)
         .onAppear {
@@ -157,8 +220,33 @@ struct AddItemSearchView: View {
             scheduleParse(after: .milliseconds(500))
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            bottomAction
+            if !showHistory {
+                bottomAction
+            }
         }
+    }
+
+    /// Floating glass pill that swaps the add flow for the group's item history.
+    private var historyButton: some View {
+        Button {
+            Haptics.tap()
+            inputFocused = false
+            withAnimation(.easeInOut(duration: 0.28)) {
+                showHistory = true
+            }
+        } label: {
+            Image(systemName: "clock.arrow.circlepath")
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.primary)
+                .frame(width: 52, height: 52)
+        }
+        .tint(.primary)
+        .grocerGlassButton()
+        .clipShape(Circle())
+        .padding(.trailing, 16)
+        .padding(.bottom, 16)
+        .transition(.scale(scale: 0.85).combined(with: .opacity))
+        .accessibilityLabel("Add from history")
     }
 
     @ViewBuilder
@@ -194,25 +282,23 @@ struct AddItemSearchView: View {
 
     private var header: some View {
         HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Add Items")
-                    .font(.title2.weight(.bold))
-                Text(repo.currentHousehold?.name ?? "Grocer")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
+            Text("Add Items")
+                .font(.largeTitle.weight(.bold))
 
             Spacer()
 
             Button {
+                Haptics.tap()
                 dismiss()
             } label: {
                 Image(systemName: "xmark")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .frame(width: 30, height: 30)
+                    .frame(width: 38, height: 38)
             }
-            .buttonStyle(.plain)
+            .tint(.primary)
+            .grocerGlassButton()
+            .clipShape(Circle())
             .accessibilityLabel("Close")
         }
     }
@@ -250,7 +336,7 @@ struct AddItemSearchView: View {
                     Text("Proposed")
                         .font(.headline)
                     if isParsing {
-                        ProgressView().controlSize(.small)
+                        ProgressView().controlSize(.small).tint(.secondary)
                     }
                     Spacer()
                     Text("^[\(drafts.count) item](inflect: true)")
@@ -353,26 +439,59 @@ struct AddItemSearchView: View {
             .split(whereSeparator: { $0 == "," || $0 == "\n" })
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
-            .map { DetectedItem(name: $0, quantity: "", category: CategoryGuess.guess(for: $0)) }
+            .map { DetectedItem(name: $0, quantity: "", unit: UnitGuess.guess(for: $0), category: CategoryGuess.guess(for: $0)) }
     }
 
     /// Re-projects detected items onto the current drafts, reusing existing rows
     /// (and their `id`, so the streamed image doesn't reload) when names match.
     private func merge(_ detected: [DetectedItem], into existing: [ParsedGroceryDraft]) -> [ParsedGroceryDraft] {
         detected.map { item in
+            // Best unit to propose when the user didn't state one themselves:
+            // the AI's natural unit first, else the on-device guess.
+            let proposedUnit = item.unit.isEmpty ? UnitGuess.guess(for: item.name) : item.unit
+            // The user stated an explicit amount in the text (e.g. "12 individual
+            // bananas"). Their words win over any previously-proposed unit.
+            let hasExplicitAmount = !item.quantity.trimmingCharacters(in: .whitespaces).isEmpty
+
             if var match = existing.first(where: { $0.name.lowercased() == item.name.lowercased() }) {
-                if !item.quantity.isEmpty { match.quantity = item.quantity }
+                if hasExplicitAmount {
+                    // Rebuild from the user's explicit amount + unit, replacing the
+                    // earlier proposal (e.g. "1 bunch" -> "12 each").
+                    match.quantity = explicitQuantity(for: item)
+                    match.unit = proposedUnit
+                } else if match.unit.isEmpty, !proposedUnit.isEmpty {
+                    // No new amount; only fill a missing unit, never clobber one
+                    // the user already chose on the row.
+                    match.unit = proposedUnit
+                }
                 match.category = item.category
                 return match
             }
-            var quantity = item.quantity
-            if quantity.isEmpty,
-               let known = repo.currentItemSuggestions.first(where: { $0.name.lowercased() == item.name.lowercased() }),
-               let knownQuantity = known.quantity {
+
+            var quantity = ""
+            if hasExplicitAmount {
+                quantity = explicitQuantity(for: item)
+            } else if let known = repo.currentItemSuggestions.first(where: { $0.name.lowercased() == item.name.lowercased() }),
+                      let knownQuantity = known.quantity {
+                // Reuse the amount this household last bought.
                 quantity = knownQuantity
+            } else if !proposedUnit.isEmpty {
+                // Propose one of the natural unit, e.g. "1 dozen" for eggs.
+                quantity = "1 \(proposedUnit)"
             }
-            return ParsedGroceryDraft(name: item.name, quantity: quantity, category: item.category)
+            return ParsedGroceryDraft(name: item.name, quantity: quantity, unit: proposedUnit, category: item.category)
         }
+    }
+
+    /// Combine an AI-detected amount and unit into a single quantity string,
+    /// e.g. amount "12" + unit "each" -> "12 each". If the amount text already
+    /// carries its own unit (e.g. "2 lbs") that is kept as-is.
+    private func explicitQuantity(for item: DetectedItem) -> String {
+        var parsed = Quantity(parsing: item.quantity)
+        if parsed.unit.isEmpty, !item.unit.isEmpty {
+            parsed.unit = item.unit
+        }
+        return parsed.formatted
     }
 
     // MARK: - Mirror (rows → text)
@@ -392,6 +511,7 @@ struct AddItemSearchView: View {
     }
 
     private func removeDraft(_ id: UUID) {
+        Haptics.tap()
         withAnimation(.spring(response: 0.3, dampingFraction: 0.84)) {
             drafts.removeAll { $0.id == id }
         }
@@ -409,12 +529,37 @@ struct AddItemSearchView: View {
         lastParsedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    // MARK: - History
+
+    /// Stage a previously-bought item picked from History. Mirrors the parse path:
+    /// it lands as a draft (deduping by name) and is reflected back into the
+    /// freeform text, so the user can still review before "Add to List".
+    private func addFromHistory(name: String, quantity: String, category: GroceryCategory) {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else { return }
+        let trimmedQuantity = quantity.trimmingCharacters(in: .whitespacesAndNewlines)
+        let proposedUnit = Quantity(parsing: trimmedQuantity).unit
+
+        withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
+            if let idx = drafts.firstIndex(where: { $0.name.lowercased() == trimmedName.lowercased() }) {
+                if !trimmedQuantity.isEmpty { drafts[idx].quantity = trimmedQuantity }
+                drafts[idx].category = category
+            } else {
+                drafts.append(ParsedGroceryDraft(name: trimmedName, quantity: trimmedQuantity,
+                                                 unit: proposedUnit, category: category))
+            }
+        }
+        syncTextFromDrafts()
+        Task { await APIClient.shared.prewarmImages([trimmedName]) }
+    }
+
     // MARK: - Finalize
 
     private func addItems() {
         let itemsToAdd = drafts.filter { !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         guard !itemsToAdd.isEmpty else { return }
 
+        Haptics.success()
         for draft in itemsToAdd {
             repo.addItem(
                 name: draft.name.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -435,22 +580,41 @@ struct AddItemSearchView: View {
 }
 
 /// A food detected from the input text, before it becomes an editable draft.
+private extension String {
+    /// Title-cases a grocery item name ("eggs" -> "Eggs", "chicken breast" ->
+    /// "Chicken Breast"), mirroring the API's `titleCase`. Words already cased
+    /// (e.g. "OJ") keep their later letters.
+    var groceryTitleCased: String {
+        trimmingCharacters(in: .whitespaces)
+            .split(separator: " ", omittingEmptySubsequences: true)
+            .map { word -> String in
+                guard let first = word.first else { return String(word) }
+                return first.uppercased() + word.dropFirst()
+            }
+            .joined(separator: " ")
+    }
+}
+
 private struct DetectedItem {
     var name: String
     var quantity: String
+    /// Proposed natural unit (e.g. "dozen") even when no amount was stated.
+    var unit: String
     var category: GroceryCategory
 
-    init(name: String, quantity: String, category: GroceryCategory) {
-        self.name = name
+    init(name: String, quantity: String, unit: String = "", category: GroceryCategory) {
+        self.name = name.groceryTitleCased
         self.quantity = quantity
+        self.unit = unit
         self.category = category
     }
 
     init?(parsedItem: ParsedItem) {
         let trimmedName = parsedItem.name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else { return nil }
-        name = trimmedName
+        name = trimmedName.groceryTitleCased
         quantity = parsedItem.quantity?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        unit = parsedItem.unit?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         category = GroceryCategory(rawValue: parsedItem.category) ?? CategoryGuess.guess(for: trimmedName)
     }
 }
@@ -459,11 +623,14 @@ private struct ParsedGroceryDraft: Identifiable, Hashable {
     let id = UUID()
     var name: String
     var quantity: String
+    /// Proposed unit offered by the stepper when `quantity` carries no unit.
+    var unit: String
     var category: GroceryCategory
 
-    init(name: String, quantity: String, category: GroceryCategory) {
+    init(name: String, quantity: String, unit: String = "", category: GroceryCategory) {
         self.name = name
         self.quantity = quantity
+        self.unit = unit
         self.category = category
     }
 }
@@ -483,48 +650,59 @@ private struct ParsedGroceryDraftRow: View {
         Binding(get: { draft.quantity }, set: onQuantityChange)
     }
 
+    private var categoryMenu: some View {
+        Menu {
+            Picker("Category", selection: Binding(get: { draft.category }, set: onCategoryChange)) {
+                ForEach(GroceryCategory.ordered) { category in
+                    Label(category.rawValue, systemImage: category.systemImage)
+                        .tag(category)
+                }
+            }
+        } label: {
+            Label(draft.category.rawValue, systemImage: draft.category.systemImage)
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+        }
+        .tint(.secondary)
+        .foregroundStyle(.secondary)
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             ProductImageView(itemName: draft.name, size: 44)
 
             VStack(alignment: .leading, spacing: 8) {
-                TextField("Item", text: nameBinding)
-                    .font(.headline)
-                    .textInputAutocapitalization(.words)
+                HStack(spacing: 8) {
+                    TextField("Item", text: nameBinding)
+                        .font(.headline)
+                        .textInputAutocapitalization(.words)
+
+                    Spacer(minLength: 0)
+
+                    Button {
+                        onRemove()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.title3)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 30, height: 30)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Remove \(draft.name)")
+                }
 
                 HStack(spacing: 10) {
-                    TextField("Quantity", text: quantityBinding)
-                        .font(.subheadline)
-                        .textInputAutocapitalization(.never)
+                    QuantityStepperField(
+                        quantity: quantityBinding,
+                        proposedUnit: draft.unit.isEmpty ? nil : draft.unit,
+                        tint: tint
+                    )
 
-                    Menu {
-                        Picker("Category", selection: Binding(get: { draft.category }, set: onCategoryChange)) {
-                            ForEach(GroceryCategory.ordered) { category in
-                                Label(category.rawValue, systemImage: category.systemImage)
-                                    .tag(category)
-                            }
-                        }
-                    } label: {
-                        Label(draft.category.rawValue, systemImage: draft.category.systemImage)
-                            .font(.caption.weight(.semibold))
-                            .lineLimit(1)
-                    }
+                    Spacer(minLength: 0)
+
+                    categoryMenu
                 }
-                .foregroundStyle(.secondary)
             }
-
-            Spacer(minLength: 0)
-
-            Button {
-                onRemove()
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.title3)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 30, height: 30)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Remove \(draft.name)")
         }
         .padding(14)
         .grocerLiquidGlass(in: RoundedRectangle(cornerRadius: 22, style: .continuous), interactive: true)
@@ -547,6 +725,241 @@ private struct ParsedGroceryDraftSkeletonRow: View {
         }
         .padding(14)
         .grocerLiquidGlass(in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+    }
+}
+
+// MARK: - History
+
+/// Full-pane history browser shown when "History" is tapped in the add flow. It
+/// lists items anyone in the group has bought before (with product image and the
+/// last-used quantity). Tapping a row reveals the shared quantity stepper to
+/// confirm the amount; "Add" stages it back in the add flow.
+private struct HistoryItemsView: View {
+    let suggestions: [GroceryItemSuggestion]
+    var tint: Color
+    var onSelect: (String, String, GroceryCategory) -> Void
+    var onClose: () -> Void
+
+    @State private var search = ""
+
+    private var filtered: [GroceryItemSuggestion] {
+        let query = search.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !query.isEmpty else { return suggestions }
+        return suggestions.filter { $0.name.lowercased().contains(query) }
+    }
+
+    var body: some View {
+        ZStack {
+            Color(.systemGroupedBackground)
+                .ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                header
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+                    .padding(.bottom, 8)
+
+                searchField
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 8)
+
+                content
+            }
+        }
+        .tint(.primary)
+    }
+
+    private var header: some View {
+        HStack(spacing: 12) {
+            Button {
+                Haptics.tap()
+                onClose()
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 30, height: 30)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Back")
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("History")
+                    .font(.title2.weight(.bold))
+                Text("Previously added by the group")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+        }
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+            TextField("Search previous items", text: $search)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            if !search.isEmpty {
+                Button {
+                    Haptics.tap()
+                    search = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .grocerLiquidGlass(in: Capsule())
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if filtered.isEmpty {
+            emptyState
+        } else {
+            ScrollView {
+                LazyVStack(spacing: 10) {
+                    ForEach(filtered) { suggestion in
+                        HistoryItemRow(suggestion: suggestion, tint: tint) { quantity in
+                            onSelect(suggestion.name, quantity, suggestion.category)
+                        }
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+                .padding(.bottom, 24)
+            }
+            .scrollDismissesKeyboard(.interactively)
+        }
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 8) {
+            Image(systemName: search.isEmpty ? "clock.arrow.circlepath" : "magnifyingglass")
+                .font(.title)
+                .foregroundStyle(.tertiary)
+            Text(search.isEmpty
+                 ? "No previous items yet"
+                 : "No items match \u{201C}\(search)\u{201D}")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.vertical, 28)
+    }
+}
+
+/// A single history row. Collapsed it shows the image, name, and last quantity;
+/// tapping expands it to confirm the amount via `QuantityStepperField` before
+/// adding.
+private struct HistoryItemRow: View {
+    let suggestion: GroceryItemSuggestion
+    var tint: Color
+    var onAdd: (String) -> Void
+
+    @State private var expanded = false
+    @State private var quantity = ""
+
+    private var proposedUnit: String? {
+        let unit = UnitGuess.guess(for: suggestion.name)
+        return unit.isEmpty ? nil : unit
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Button {
+                toggle()
+            } label: {
+                rowHeader
+            }
+            .buttonStyle(.plain)
+
+            if expanded {
+                HStack(spacing: 12) {
+                    QuantityStepperField(
+                        quantity: $quantity,
+                        proposedUnit: proposedUnit,
+                        tint: tint
+                    )
+
+                    Spacer(minLength: 0)
+
+                    Button {
+                        Haptics.success()
+                        onAdd(quantity)
+                    } label: {
+                        Label("Add", systemImage: "plus")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .padding(.horizontal, 10)
+                    }
+                    .tint(.primary)
+                    .grocerGlassButton()
+                    .clipShape(Capsule())
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .padding(14)
+        .grocerLiquidGlass(in: RoundedRectangle(cornerRadius: 22, style: .continuous), interactive: true)
+    }
+
+    private var rowHeader: some View {
+        HStack(spacing: 12) {
+            ProductImageView(itemName: suggestion.name, size: 44)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(suggestion.name)
+                        .font(.headline)
+                        .lineLimit(1)
+                        .foregroundStyle(.primary)
+                    if suggestion.isPending {
+                        Text("On list")
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(.quaternary, in: Capsule())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                if let last = suggestion.quantity?.trimmingCharacters(in: .whitespaces), !last.isEmpty {
+                    Text("Last: \(last)")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Label(suggestion.category.rawValue, systemImage: suggestion.category.systemImage)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Spacer(minLength: 0)
+
+            Image(systemName: expanded ? "chevron.up" : "plus.circle.fill")
+                .font(.title3)
+                .foregroundStyle(.secondary)
+                .frame(width: 30, height: 30)
+        }
+        .contentShape(Rectangle())
+    }
+
+    private func toggle() {
+        Haptics.selection()
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+            if !expanded {
+                // Seed the stepper with the group's last-used amount.
+                quantity = suggestion.quantity?.trimmingCharacters(in: .whitespaces) ?? ""
+            }
+            expanded.toggle()
+        }
     }
 }
 

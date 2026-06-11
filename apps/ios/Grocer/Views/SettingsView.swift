@@ -433,6 +433,7 @@ struct InviteToGroupSheet: View {
 
     @State private var preparingShare = false
     @State private var shareError: String?
+    @State private var showingContacts = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -460,7 +461,7 @@ struct InviteToGroupSheet: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 24)
 
-            Text("Invites are single-use and expire after a short time. You can remove members at any time from Settings.")
+            Text("Pick people from your contacts and we\u{2019}ll text them an invite link. You can remove members at any time from Settings.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -469,26 +470,35 @@ struct InviteToGroupSheet: View {
                 .padding(.bottom, 8)
         }
         .safeAreaInset(edge: .bottom) {
+          VStack(spacing: 0) {
             Button {
-                inviteMember()
+                if let reason = repo.sharingUnavailableReason {
+                    shareError = reason
+                } else {
+                    showingContacts = true
+                }
             } label: {
-                Text("Share Invite")
+                Text("Choose Contacts")
                     .font(.headline)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 6)
-                    .overlay(alignment: .trailing) {
-                        if preparingShare {
-                            ProgressView()
-                                .padding(.trailing, 16)
-                        }
-                    }
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            .disabled(preparingShare)
             .padding(.horizontal, 24)
             .padding(.top, 12)
-            .padding(.bottom, 12)
+            .padding(.bottom, 4)
+
+            if #available(iOS 26.0, *) {
+                Button("Get a link instead", action: copyInviteLink)
+                    .font(.subheadline)
+                    .disabled(preparingShare)
+                    .padding(.bottom, 12)
+            }
+          }
+        }
+        .sheet(isPresented: $showingContacts) {
+            InviteContactsView()
         }
         .alert("Couldn\u{2019}t start sharing", isPresented: Binding(
             get: { shareError != nil }, set: { if !$0 { shareError = nil } }
@@ -497,7 +507,10 @@ struct InviteToGroupSheet: View {
         } message: { Text(shareError ?? "") }
     }
 
-    private func inviteMember() {
+    /// Secondary escape hatch for recipients who won't resolve via iCloud:
+    /// mint a single-use link and hand it to the system share sheet.
+    @available(iOS 26.0, *)
+    private func copyInviteLink() {
         if let reason = repo.sharingUnavailableReason {
             shareError = reason
             return
@@ -506,13 +519,8 @@ struct InviteToGroupSheet: View {
         Task {
             defer { preparingShare = false }
             do {
-                if #available(iOS 26.0, *) {
-                    let url = try await repo.prepareOneTimeInviteURL()
-                    ShareSheetPresenter.presentInvite(url: url)
-                } else {
-                    let (share, container) = try await repo.prepareShare()
-                    ShareSheetPresenter.present(share: share, container: container)
-                }
+                let url = try await repo.prepareOneTimeInviteURL()
+                ShareSheetPresenter.presentInvite(url: url)
             } catch {
                 shareError = error.localizedDescription
             }

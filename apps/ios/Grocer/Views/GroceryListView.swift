@@ -136,14 +136,35 @@ struct GroceryListView: View {
 
     // MARK: - Group menu
 
+    private var ownedHouseholds: [Household] {
+        repo.households.filter { !repo.isSharedWithMe($0) }
+    }
+
+    private var sharedHouseholds: [Household] {
+        repo.households.filter { repo.isSharedWithMe($0) }
+    }
+
     private var groupMenu: some View {
         Menu {
             Picker("Group", selection: Binding(
                 get: { repo.currentHousehold?.id ?? "" },
                 set: { repo.selectHousehold($0) }
             )) {
-                ForEach(repo.households) { house in
-                    Label(house.name, systemImage: house.icon).tag(house.id)
+                if sharedHouseholds.isEmpty {
+                    ForEach(ownedHouseholds) { house in
+                        Label(house.name, systemImage: house.icon).tag(house.id)
+                    }
+                } else {
+                    Section("My Groups") {
+                        ForEach(ownedHouseholds) { house in
+                            Label(house.name, systemImage: house.icon).tag(house.id)
+                        }
+                    }
+                    Section("Shared with Me") {
+                        ForEach(sharedHouseholds) { house in
+                            Label(house.name, systemImage: house.icon).tag(house.id)
+                        }
+                    }
                 }
             }
             Divider()

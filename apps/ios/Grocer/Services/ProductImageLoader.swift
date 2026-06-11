@@ -187,14 +187,45 @@ final class ProductImageLoader {
         return bytes
     }
 
-    nonisolated private static func cacheFile(for name: String) -> URL {
+    /// Directory where product images are persisted. Lives in Application
+    /// Support rather than Caches so iOS won't purge it under storage pressure
+    /// while the app is backgrounded — that durability is what lets already-loaded
+    /// images appear when the device is offline. Excluded from iCloud backup
+    /// since every image is re-fetchable from the server. Resolved once (static
+    /// `let` initialization is thread-safe), which also runs the one-time
+    /// migration below exactly once.
+    nonisolated private static let cacheDirectory: URL = {
         let fileManager = FileManager.default
-        let dir = fileManager.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("product-images", isDirectory: true)
+        let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? fileManager.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        var dir = base.appendingPathComponent("ProductImages", isDirectory: true)
         try? fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        // Re-downloadable images shouldn't bloat the user's iCloud backup.
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? dir.setResourceValues(values)
+
+        // Migrate images cached by older builds in the purgeable Caches
+        // directory so users keep images they've already loaded.
+        let legacy = fileManager.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("product-images", isDirectory: true)
+        if let files = try? fileManager.contentsOfDirectory(at: legacy, includingPropertiesForKeys: nil) {
+            for file in files {
+                let dest = dir.appendingPathComponent(file.lastPathComponent)
+                if !fileManager.fileExists(atPath: dest.path) {
+                    try? fileManager.moveItem(at: file, to: dest)
+                }
+            }
+            try? fileManager.removeItem(at: legacy)
+        }
+        return dir
+    }()
+
+    nonisolated private static func cacheFile(for name: String) -> URL {
         let safe = name.lowercased()
             .replacingOccurrences(of: "[^a-z0-9]+", with: "-", options: .regularExpression)
-        return dir.appendingPathComponent("\(safe).png")
+        return cacheDirectory.appendingPathComponent("\(safe).png")
     }
 }
 

@@ -173,6 +173,7 @@ struct Suggestion: Decodable, Identifiable {
     var id: String { name }
     let name: String
     let quantity: String?
+    let unit: String?
     let category: String
     let notes: String?
 }
@@ -181,6 +182,7 @@ struct ParsedItem: Decodable {
     let name: String
     let category: String
     let quantity: String?
+    let unit: String?
 }
 
 struct OkResponse: Decodable { let ok: Bool }

@@ -94,6 +94,33 @@ private struct PendingCloudWrite: Codable, Equatable {
     var key: String { record.key }
 }
 
+/// Which CloudKit environment this build talks to. CloudKit picks this from the
+/// provisioning profile's `aps-environment`: Debug / dev-signed builds use
+/// `development`, TestFlight / App Store builds use `production`. We read the
+/// same signal so the local cache can be scoped to match — otherwise a Debug
+/// build replays Production records into Development zones that don't exist,
+/// producing endless "Zone Not Found" failures.
+enum CloudKitEnvironment {
+    static let current: String = resolve()
+
+    private static func resolve() -> String {
+        guard let url = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision"),
+              let data = try? Data(contentsOf: url),
+              let raw = String(data: data, encoding: .ascii),
+              let start = raw.range(of: "<plist"),
+              let end = raw.range(of: "</plist>"),
+              let plistData = String(raw[start.lowerBound..<end.upperBound]).data(using: .utf8),
+              let plist = try? PropertyListSerialization.propertyList(from: plistData, options: [], format: nil) as? [String: Any],
+              let entitlements = plist["Entitlements"] as? [String: Any],
+              let aps = entitlements["aps-environment"] as? String
+        else {
+            // No embedded profile (App Store build) → Production.
+            return "production"
+        }
+        return aps == "development" ? "development" : "production"
+    }
+}
+
 private final class LocalSyncStore {
     private let fileManager = FileManager.default
     private let snapshotURL: URL
@@ -102,10 +129,18 @@ private final class LocalSyncStore {
     init() {
         let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? fileManager.temporaryDirectory
-        let directory = base.appendingPathComponent("GrocerSync", isDirectory: true)
+        let root = base.appendingPathComponent("GrocerSync", isDirectory: true)
+        // Scope the cache per CloudKit environment so Development and Production
+        // data never mix on the same device.
+        let directory = root.appendingPathComponent(CloudKitEnvironment.current, isDirectory: true)
         try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         snapshotURL = directory.appendingPathComponent("snapshot.json")
         outboxURL = directory.appendingPathComponent("outbox.json")
+
+        // Remove the legacy un-scoped cache from older builds so it can't be
+        // read by the wrong environment again.
+        try? fileManager.removeItem(at: root.appendingPathComponent("snapshot.json"))
+        try? fileManager.removeItem(at: root.appendingPathComponent("outbox.json"))
     }
 
     func loadSnapshot() -> CloudSnapshot? {
@@ -268,6 +303,13 @@ final class GroceryRepository {
     private var currentMember: HouseholdMember? {
         guard let household = currentHousehold else { return nil }
         return member(for: household)
+    }
+
+    /// True when the group's CloudKit zone belongs to another user — i.e. it was
+    /// shared into this account rather than created here. Drives the "Shared with
+    /// Me" grouping in the group switcher.
+    func isSharedWithMe(_ household: Household) -> Bool {
+        (household.recordOwnerName ?? CKCurrentUserDefaultName) != CKCurrentUserDefaultName
     }
 
     var isOwnerOfCurrentGroup: Bool {
@@ -1200,6 +1242,25 @@ final class GroceryRepository {
         let share = try await cloud.share(for: householdRecord)
         print("[Repo] ✅ prepareShare done")
         return (share, container)
+    }
+
+    /// Invite link for the contacts-picker flow: one URL we can text to several
+    /// chosen people at once. See `CloudKitService.invitableShareURL`.
+    func prepareInviteLink() async throws -> URL {
+        print("[Repo] prepareInviteLink starting…")
+        if let reason = sharingUnavailableReason {
+            print("[Repo] ❌ invite link unavailable: \(reason)")
+            throw CloudSharingUnavailable(reason)
+        }
+        guard usingCloudKit, let household = currentHousehold else {
+            print("[Repo] ❌ prepareInviteLink: usingCloudKit=\(usingCloudKit), household=\(currentHousehold?.id ?? "nil")")
+            throw CloudKitUnavailable()
+        }
+        let recordID = cloud.makeRecordID(household.id)
+        let householdRecord = try await cloud.privateRecord(id: recordID)
+        let url = try await cloud.invitableShareURL(for: householdRecord)
+        print("[Repo] ✅ prepareInviteLink done")
+        return url
     }
 
     @available(iOS 26.0, *)

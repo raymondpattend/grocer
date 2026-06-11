@@ -375,6 +375,19 @@ final class CloudKitService {
         return share
     }
 
+    /// A share URL that any chosen recipient can accept — used when we send the
+    /// link to several hand-picked contacts at once (the one-time URL only works
+    /// for a single joiner). Opening it routes through ShareAcceptance like any
+    /// other invite; the owner can still remove members afterward.
+    func invitableShareURL(for householdRecord: CKRecord) async throws -> URL {
+        let share = try await share(for: householdRecord)
+        share.publicPermission = .readWrite
+        let savedShare = try await saveShare(share)
+        guard let url = savedShare.url else { throw CloudInviteURLUnavailable() }
+        print("[CK] ✅ invitable share URL ready")
+        return url
+    }
+
     @available(iOS 26.0, *)
     func oneTimeInviteURL(for householdRecord: CKRecord) async throws -> URL {
         let share = try await share(for: householdRecord)
@@ -609,7 +622,10 @@ final class CloudKitService {
     }
 
     private func changeTokenKey(for zone: CloudZoneRef) -> String {
-        [Self.changeTokenKeyPrefix, zone.scope, zone.ownerName, zone.zoneName].joined(separator: ".")
+        // Scoped by CloudKit environment so a Production token is never replayed
+        // by a Development (Debug) build, and vice versa.
+        [Self.changeTokenKeyPrefix, CloudKitEnvironment.current, zone.scope, zone.ownerName, zone.zoneName]
+            .joined(separator: ".")
     }
 
     private func performWithRetry<T>(

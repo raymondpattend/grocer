@@ -4,6 +4,7 @@ import {
   type ParsedItem,
 } from "@grocer/shared";
 import type { Env } from "../env.js";
+import { titleCase } from "./categorize.js";
 
 const DEFAULT_PARSE_MODEL = "gpt-4.1-mini";
 
@@ -39,8 +40,12 @@ export async function parseListWithAI(
             role: "system",
             content:
               "Extract a grocery list from free-form text. Infer reasonable grocery items and quantities from the user's words. " +
-              "Use concise grocery item names, merge duplicates, and choose exactly one category from the enum. " +
-              "If a quantity is explicit or implied, include it. If no quantity is known, use an empty string.",
+              "Use concise grocery item names in Title Case (e.g. \"eggs\" -> \"Eggs\", \"chicken breast\" -> \"Chicken Breast\"), merge duplicates, and choose exactly one category from the enum. " +
+              "Put ONLY the numeric amount in `quantity` (e.g. \"12\", \"2\", \"1.5\"); leave it an empty string when no amount is stated. " +
+              "Set `unit` to the unit the item is measured in. If the user explicitly states a unit or count style, USE THAT (it overrides the natural default), normalizing to a short form: \"individual\"/\"single\"/\"whole\" -> \"each\", \"loaves\" -> \"loaf\", \"cans\" -> \"can\", \"lbs\"/\"pounds\" -> \"lb\". " +
+              "Example: \"12 individual bananas\" -> quantity \"12\", unit \"each\" (NOT \"bunch\"). " +
+              "When the user does not state a unit, propose the natural unit the item is typically bought in (eggs -> dozen, milk -> gallon, bananas -> bunch, deli meat -> lb, soda -> pack). " +
+              "Use an empty string for the unit only when the item has no sensible unit.",
           },
           {
             role: "user",
@@ -64,12 +69,13 @@ export async function parseListWithAI(
                     properties: {
                       name: { type: "string" },
                       quantity: { type: "string" },
+                      unit: { type: "string" },
                       category: {
                         type: "string",
                         enum: GROCERY_CATEGORIES,
                       },
                     },
-                    required: ["name", "quantity", "category"],
+                    required: ["name", "quantity", "unit", "category"],
                   },
                 },
               },
@@ -121,7 +127,9 @@ function sanitizeParsedItems(items: ParsedItem[]): ParsedItem[] {
   const out: ParsedItem[] = [];
 
   for (const item of items) {
-    const name = item.name.trim();
+    // Normalize to Title Case so names read consistently regardless of how the
+    // model (or the user) cased them.
+    const name = titleCase(item.name.trim());
     const key = name.toLowerCase();
     if (!name || seen.has(key)) continue;
     seen.add(key);
@@ -130,6 +138,7 @@ function sanitizeParsedItems(items: ParsedItem[]): ParsedItem[] {
       name,
       category: item.category,
       quantity: item.quantity?.trim() || undefined,
+      unit: item.unit?.trim() || undefined,
     });
   }
 

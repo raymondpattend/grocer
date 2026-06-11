@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   categorize,
+  guessUnit,
   parseList,
   suggestItems,
 } from "../src/services/categorize.js";
@@ -19,6 +20,24 @@ describe("categorize", () => {
 
   it("defaults to Other when nothing matches", () => {
     expect(categorize("xyzzy")).toBe("Other");
+  });
+});
+
+describe("guessUnit", () => {
+  it("proposes natural units for known items", () => {
+    expect(guessUnit("Eggs")).toBe("dozen");
+    expect(guessUnit("milk")).toBe("gallon");
+    expect(guessUnit("bananas")).toBe("bunch");
+    expect(guessUnit("bread")).toBe("loaf");
+  });
+
+  it("uses keyword fallback for unknown items", () => {
+    expect(guessUnit("ribeye steak")).toBe("lb");
+    expect(guessUnit("apple juice")).toBe("gallon");
+  });
+
+  it("returns empty string when no unit fits", () => {
+    expect(guessUnit("xyzzy")).toBe("");
   });
 });
 
@@ -47,6 +66,12 @@ describe("suggestItems", () => {
   it("suggests catalog matches and always includes the raw query", () => {
     const out = suggestItems("mil");
     expect(out.some((s) => s.name === "Milk")).toBe(true);
+  });
+
+  it("proposes a unit on catalog matches", () => {
+    const out = suggestItems("egg");
+    const eggs = out.find((s) => s.name === "Eggs");
+    expect(eggs?.unit).toBe("dozen");
   });
 
   it("prioritizes recent items", () => {
