@@ -187,18 +187,18 @@ final class ProductImageLoader {
         return bytes
     }
 
-    /// Directory where product images are persisted. Lives in Application
-    /// Support rather than Caches so iOS won't purge it under storage pressure
-    /// while the app is backgrounded — that durability is what lets already-loaded
-    /// images appear when the device is offline. Excluded from iCloud backup
-    /// since every image is re-fetchable from the server. Resolved once (static
-    /// `let` initialization is thread-safe), which also runs the one-time
-    /// migration below exactly once.
+    /// Directory where product images are persisted. Lives in the App Group
+    /// container so the home-screen widget can read the same images, rather than
+    /// the per-app sandbox. Excluded from iCloud backup since every image is
+    /// re-fetchable from the server. Falls back to Application Support if the App
+    /// Group is unavailable. Resolved once (static `let` initialization is
+    /// thread-safe), which also runs the one-time migration below exactly once.
     nonisolated private static let cacheDirectory: URL = {
         let fileManager = FileManager.default
-        let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+        let base = GrocerAppGroup.containerURL
+            ?? fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? fileManager.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        var dir = base.appendingPathComponent("ProductImages", isDirectory: true)
+        var dir = base.appendingPathComponent(GrocerAppGroup.scopedName("ProductImages"), isDirectory: true)
         try? fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
 
         // Re-downloadable images shouldn't bloat the user's iCloud backup.
@@ -206,11 +206,17 @@ final class ProductImageLoader {
         values.isExcludedFromBackup = true
         try? dir.setResourceValues(values)
 
-        // Migrate images cached by older builds in the purgeable Caches
-        // directory so users keep images they've already loaded.
-        let legacy = fileManager.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("product-images", isDirectory: true)
-        if let files = try? fileManager.contentsOfDirectory(at: legacy, includingPropertiesForKeys: nil) {
+        // Migrate images cached by older builds (purgeable Caches dir, and the
+        // pre-App-Group Application Support dir) so users keep images they've
+        // already loaded.
+        let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+        let legacyDirs = [
+            fileManager.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("product-images", isDirectory: true),
+            appSupport?.appendingPathComponent("ProductImages", isDirectory: true),
+        ].compactMap { $0 }
+        for legacy in legacyDirs where legacy.standardizedFileURL != dir.standardizedFileURL {
+            guard let files = try? fileManager.contentsOfDirectory(at: legacy, includingPropertiesForKeys: nil) else { continue }
             for file in files {
                 let dest = dir.appendingPathComponent(file.lastPathComponent)
                 if !fileManager.fileExists(atPath: dest.path) {
@@ -222,6 +228,8 @@ final class ProductImageLoader {
         return dir
     }()
 
+    /// Filename scheme MUST match `WidgetImageStore.cacheFileURL(for:)` so the
+    /// widget finds the same files.
     nonisolated private static func cacheFile(for name: String) -> URL {
         let safe = name.lowercased()
             .replacingOccurrences(of: "[^a-z0-9]+", with: "-", options: .regularExpression)

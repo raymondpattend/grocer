@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 
 /// Thin client for the Cloudflare Worker API.
 ///
@@ -34,8 +35,12 @@ actor APIClient {
 
     // MARK: - Health / config
 
-    func config() async -> IOSConfig? {
-        await get("/config/ios")
+    func config(currentBuild: Int? = nil) async -> IOSConfig? {
+        var query: [String: String] = [:]
+        if let currentBuild {
+            query["build"] = String(currentBuild)
+        }
+        return await get("/config/ios", query: query)
     }
 
     func health() async -> Bool {
@@ -166,7 +171,64 @@ struct IOSConfig: Decodable {
     }
     let minimumSupportedBuild: Int
     let latestBuild: Int
+    let upgradeRequired: Bool
+    let status: String
+    let updateUrl: String
     let features: Features
+
+    var updateURL: URL? {
+        URL(string: updateUrl)
+    }
+}
+
+struct RequiredAppUpdate: Identifiable, Equatable {
+    let id = "required-app-update"
+    let updateURL: URL
+    let currentBuild: Int
+    let minimumSupportedBuild: Int
+    let latestBuild: Int
+}
+
+@MainActor
+@Observable
+final class AppUpdateGate {
+    static let shared = AppUpdateGate()
+
+    private(set) var requiredUpdate: RequiredAppUpdate?
+    private var isChecking = false
+
+    private init() {}
+
+    func refresh() async {
+        guard !isChecking else { return }
+        isChecking = true
+        defer { isChecking = false }
+
+        let currentBuild = Self.currentBuild
+        guard let config = await APIClient.shared.config(currentBuild: currentBuild) else { return }
+
+        guard config.upgradeRequired else {
+            requiredUpdate = nil
+            return
+        }
+
+        guard let updateURL = config.updateURL else {
+            print("[AppUpdateGate] invalid updateUrl in iOS config")
+            return
+        }
+
+        requiredUpdate = RequiredAppUpdate(
+            updateURL: updateURL,
+            currentBuild: currentBuild,
+            minimumSupportedBuild: config.minimumSupportedBuild,
+            latestBuild: config.latestBuild
+        )
+    }
+
+    private static var currentBuild: Int {
+        let raw = Bundle.main.infoDictionary?["CFBundleVersion"] as? String
+        return raw.flatMap(Int.init) ?? 0
+    }
 }
 
 struct Suggestion: Decodable, Identifiable {
@@ -217,6 +279,7 @@ struct RegisterUpdateTokenPayload: Encodable {
 struct StartLiveActivityPayload: Encodable {
     let householdId: String
     let sessionId: String
+    let startedByMemberId: String
     let sourceDeviceId: String
     let storeName: String?
     let shopperName: String

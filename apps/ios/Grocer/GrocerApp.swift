@@ -29,17 +29,24 @@ struct GrocerApp: App {
             options.sessionReplay.sessionSampleRate = 0.0
             options.sessionReplay.onErrorSampleRate = 0.0
         }
+
+        RevenueCatConfig.configure()
     }
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var repository = GroceryRepository.makeShared()
     @State private var settings = SettingsStore.shared
+    @State private var subscriptions = SubscriptionStore.shared
+    @State private var appUpdateGate = AppUpdateGate.shared
 
     var body: some Scene {
         WindowGroup {
             RootView()
                 .environment(repository)
                 .environment(settings)
+                .environment(subscriptions)
+                .environment(appUpdateGate)
                 .task {
+                    subscriptions.start()
                     await repository.bootstrap()
                 }
         }

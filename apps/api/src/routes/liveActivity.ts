@@ -31,6 +31,7 @@ import {
   upsertActivityToken,
   upsertDeviceToken,
 } from "../db/liveActivityTokens.js";
+import { createPostHogClient } from "../lib/posthog.js";
 
 export const liveActivityRoute = new Hono<{ Bindings: Env }>();
 
@@ -149,6 +150,23 @@ liveActivityRoute.post("/live-activity/register-token", async (c) => {
   if ("error" in parsed) return parsed.error;
 
   await upsertDeviceToken(c.env.DB, parsed.data);
+
+  const posthog = createPostHogClient(c.env);
+  posthog.capture({
+    distinctId: parsed.data.memberId,
+    event: "device registered",
+    properties: {
+      household_id: parsed.data.householdId,
+      platform: parsed.data.platform ?? "iOS",
+      app_version: parsed.data.appVersion,
+      live_activities_enabled: parsed.data.familyLiveActivitiesEnabled,
+      has_push_to_start_token: !!parsed.data.pushToStartToken,
+      has_push_notification_token: !!parsed.data.pushNotificationToken,
+      $groups: { household: parsed.data.householdId },
+    },
+  });
+  c.executionCtx.waitUntil(posthog.shutdown());
+
   return c.json({ ok: true });
 });
 
@@ -208,6 +226,7 @@ liveActivityRoute.post("/live-activity/start", async (c) => {
           attributes: {
             householdId: body.householdId,
             sessionId: body.sessionId,
+            startedByMemberId: body.startedByMemberId ?? null,
           },
         });
       } catch (err) {
@@ -258,6 +277,24 @@ liveActivityRoute.post("/live-activity/start", async (c) => {
     shopperName: body.shopperName,
     storeName: body.storeName,
   });
+
+  const posthog = createPostHogClient(c.env);
+  posthog.capture({
+    distinctId: body.startedByMemberId ?? body.householdId,
+    event: "shopping trip started",
+    properties: {
+      session_id: body.sessionId,
+      household_id: body.householdId,
+      store_name: body.storeName ?? null,
+      total_items: body.totalItems,
+      devices_live_activity_sent: sent,
+      devices_live_activity_failed: failed,
+      devices_notified: notifications.sent,
+      devices_notification_failed: notifications.failed,
+      $groups: { household: body.householdId },
+    },
+  });
+  c.executionCtx.waitUntil(posthog.shutdown());
 
   return c.json({
     ok: true,
@@ -330,6 +367,25 @@ liveActivityRoute.post("/live-activity/update", async (c) => {
       }
     }),
   );
+
+  const posthog = createPostHogClient(c.env);
+  posthog.capture({
+    distinctId: body.householdId,
+    event: "shopping trip updated",
+    properties: {
+      session_id: body.sessionId,
+      household_id: body.householdId,
+      items_found: body.itemsFound,
+      items_remaining: body.itemsRemaining,
+      total_items: body.totalItems,
+      out_of_stock_count: body.outOfStockCount,
+      replaced_count: body.replacedCount,
+      devices_updated: sent,
+      devices_update_failed: failed,
+      $groups: { household: body.householdId },
+    },
+  });
+  c.executionCtx.waitUntil(posthog.shutdown());
 
   return c.json({ ok: true, sent, failed });
 });
@@ -420,6 +476,30 @@ liveActivityRoute.post("/live-activity/end", async (c) => {
     itemsFound: body.itemsFound,
     totalItems: body.totalItems,
   });
+
+  const posthog = createPostHogClient(c.env);
+  posthog.capture({
+    distinctId: body.householdId,
+    event: "shopping trip ended",
+    properties: {
+      session_id: body.sessionId,
+      household_id: body.householdId,
+      status: body.status,
+      store_name: body.storeName ?? null,
+      items_found: body.itemsFound,
+      items_remaining: body.itemsRemaining,
+      total_items: body.totalItems,
+      out_of_stock_count: body.outOfStockCount,
+      replaced_count: body.replacedCount,
+      completion_rate: body.totalItems > 0
+        ? Math.round((body.itemsFound / body.totalItems) * 100)
+        : null,
+      devices_notified: notifications.sent,
+      devices_notification_failed: notifications.failed,
+      $groups: { household: body.householdId },
+    },
+  });
+  c.executionCtx.waitUntil(posthog.shutdown());
 
   return c.json({
     ok: true,

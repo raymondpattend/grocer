@@ -100,6 +100,55 @@ enum UnitGuess {
 
 // MARK: - Quantity stepper control
 
+/// The shared minus / amount / plus capsule used by every quantity stepper in
+/// the app (add-item, history "add again", and the item detail page). The amount
+/// animates with iOS's numeric content transition when callers mutate the value
+/// inside a `withAnimation` block. The control is purely presentational — it
+/// owns no state, so each call site keeps whatever zero / unit behaviour it
+/// needs.
+struct QuantityStepperControl: View {
+    /// Pre-formatted text shown between the buttons (e.g. "2", "1.5", "2 lb").
+    let amount: String
+    /// Spoken value for VoiceOver; defaults to `amount` when omitted.
+    var accessibilityValue: String? = nil
+    var onDecrement: () -> Void
+    var onIncrement: () -> Void
+
+    var body: some View {
+        HStack(spacing: 0) {
+            stepButton(systemImage: "minus", action: onDecrement)
+            Text(amount)
+                .font(.subheadline.weight(.semibold).monospacedDigit())
+                .contentTransition(.numericText())
+                .frame(minWidth: 30)
+            stepButton(systemImage: "plus", action: onIncrement)
+        }
+        .padding(.vertical, 4)
+        .background(.quaternary.opacity(0.6), in: Capsule())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Quantity")
+        .accessibilityValue(accessibilityValue ?? amount)
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment: onIncrement()
+            case .decrement: onDecrement()
+            @unknown default: break
+            }
+        }
+    }
+
+    private func stepButton(systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.footnote.weight(.bold))
+                .frame(width: 30, height: 24)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.primary)
+    }
+}
+
 /// A drop-in replacement for a quantity `TextField`: a stepper for the amount
 /// plus a menu for the unit. Reads and writes a single formatted string binding
 /// so callers (and storage) stay string-based. When the bound string has no
@@ -141,36 +190,12 @@ struct QuantityStepperField: View {
     }
 
     private var stepperControl: some View {
-        HStack(spacing: 0) {
-            stepButton(systemImage: "minus") { adjust(-1) }
-            Text(amountLabel)
-                .font(.subheadline.weight(.semibold).monospacedDigit())
-                .frame(minWidth: 30)
-            stepButton(systemImage: "plus") { adjust(1) }
-        }
-        .padding(.vertical, 4)
-        .background(.quaternary.opacity(0.6), in: Capsule())
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Quantity")
-        .accessibilityValue("\(amountLabel) \(effectiveUnit)")
-        .accessibilityAdjustableAction { direction in
-            switch direction {
-            case .increment: adjust(1)
-            case .decrement: adjust(-1)
-            @unknown default: break
-            }
-        }
-    }
-
-    private func stepButton(systemImage: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.footnote.weight(.bold))
-                .frame(width: 30, height: 24)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(.primary)
+        QuantityStepperControl(
+            amount: amountLabel,
+            accessibilityValue: "\(amountLabel) \(effectiveUnit)",
+            onDecrement: { adjust(-1) },
+            onIncrement: { adjust(1) }
+        )
     }
 
     private var unitMenu: some View {
@@ -215,23 +240,26 @@ struct QuantityStepperField: View {
     // MARK: - Mutation
 
     private func adjust(_ direction: Double) {
+        Haptics.selection()
         let unit = effectiveUnit
         let step = GroceryUnits.step(for: unit)
         let next = (parsed.amount ?? 0) + direction * step
-        guard next > 0 else {
-            quantity = ""  // stepping to zero clears the quantity
-            return
+        withAnimation(.snappy(duration: 0.22)) {
+            // Stepping to zero clears the quantity.
+            quantity = next > 0 ? Quantity(amount: next, unit: unit).formatted : ""
         }
-        quantity = Quantity(amount: next, unit: unit).formatted
     }
 
     private func setUnit(_ unit: String) {
+        Haptics.selection()
         var next = parsed
         next.unit = unit
         // Picking a real unit with no amount yet implies one of it.
         if !unit.isEmpty && next.amount == nil {
             next.amount = 1
         }
-        quantity = next.formatted
+        withAnimation(.snappy(duration: 0.22)) {
+            quantity = next.formatted
+        }
     }
 }

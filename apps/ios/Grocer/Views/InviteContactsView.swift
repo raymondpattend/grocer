@@ -121,6 +121,7 @@ struct InviteContactsView: View {
             Text("Turn on Contacts for Grocer in Settings to pick people to invite, or use \u{201C}Get a link instead.\u{201D}")
         } actions: {
             Button("Open Settings") {
+                Haptics.selection()
                 if let url = URL(string: UIApplication.openSettingsURLString) {
                     UIApplication.shared.open(url)
                 }
@@ -143,11 +144,13 @@ struct InviteContactsView: View {
     }
 
     private func toggle(_ contact: InviteContact) {
+        Haptics.selection()
         if selected.contains(contact.id) { selected.remove(contact.id) }
         else { selected.insert(contact.id) }
     }
 
     private func invite() {
+        Haptics.selection()
         let recipients = store.contacts
             .filter { selected.contains($0.id) }
             .map(\.sendable)
@@ -173,14 +176,20 @@ struct InviteContactsView: View {
     }
 
     private func prepareLink(_ completion: @escaping (URL) -> Void) {
-        if let reason = repo.sharingUnavailableReason { errorMessage = reason; return }
+        if let reason = repo.sharingUnavailableReason {
+            Haptics.error()
+            errorMessage = reason
+            return
+        }
         preparing = true
         Task {
             defer { preparing = false }
             do {
                 let url = try await repo.prepareInviteLink()
+                Haptics.success()
                 completion(url)
             } catch {
+                Haptics.error()
                 errorMessage = error.localizedDescription
             }
         }

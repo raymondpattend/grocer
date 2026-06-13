@@ -1,14 +1,14 @@
 import PhotosUI
+import RevenueCatUI
 import SwiftUI
 import UIKit
 
 struct SettingsView: View {
     @Environment(GroceryRepository.self) private var repo
     @Environment(SettingsStore.self) private var settings
-    @Environment(\.dismiss) private var dismiss
+    @Environment(SubscriptionStore.self) private var subscriptions
 
-    @State private var showFeedback = false
-    @State private var apiHealthy: Bool?
+    @State private var showProPaywall = false
     @State private var displayName = ""
     @State private var groupName = ""
     @State private var committedGroupName = ""
@@ -19,26 +19,22 @@ struct SettingsView: View {
     @State private var showInviteIntro = false
 
     var body: some View {
-        Form {
-            profileSection
-            groupSection
-            membersSection
-            liveActivitiesSection
-            notificationsSection
-            // diagnosticsSection
-            actionsSection
+        ScrollView {
+            VStack(spacing: 28) {
+                profileHeader
+                proCard
+                generalSection
+                membersSection
+                preferencesSection
+                moreSection
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+            .padding(.bottom, 36)
         }
+        .background(Color(.systemGroupedBackground))
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .confirmationAction) {
-                Button("Done") {
-                    commitPendingChanges()
-                    dismiss()
-                }
-            }
-        }
-        // .task { apiHealthy = await APIClient.shared.health() }
         .onAppear {
             displayName = repo.displayName
             syncGroupNameFromRepo()
@@ -53,28 +49,322 @@ struct SettingsView: View {
             loadProfilePhoto(newItem)
         }
         .onDisappear {
-            commitDisplayName()
+            commitPendingChanges()
         }
-        .confirmationDialog("Leave this group?", isPresented: $confirmLeave, titleVisibility: .visible) {
-            Button("Leave Group", role: .destructive) { repo.leaveCurrentGroup() }
+        .confirmationDialog(
+            repo.isOwnerOfCurrentGroup ? "Delete this group?" : "Leave this group?",
+            isPresented: $confirmLeave,
+            titleVisibility: .visible
+        ) {
+            Button(repo.isOwnerOfCurrentGroup ? "Delete Group" : "Leave Group", role: .destructive) {
+                Haptics.warning()
+                repo.leaveCurrentGroup()
+            }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("You’ll stop seeing this group’s lists on this device.")
+            Text(repo.isOwnerOfCurrentGroup
+                 ? "As the owner, this deletes the group and its list for everyone."
+                 : "You’ll stop seeing this group’s lists on this device.")
         }
         .confirmationDialog("Delete all data?", isPresented: $confirmPurge, titleVisibility: .visible) {
-            Button("Delete Everything", role: .destructive) { purgeAllData() }
+            Button("Delete Everything", role: .destructive) {
+                Haptics.warning()
+                purgeAllData()
+            }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This permanently deletes all groups, lists, and items from iCloud. You can create or join a group again afterward.")
         }
-        .sheet(isPresented: $showFeedback) { NavigationStack { FeedbackView() } }
         .sheet(isPresented: $showInviteIntro) {
             InviteToGroupSheet()
+        }
+        .sheet(isPresented: $showProPaywall) {
+            GrocerProPaywall(isPresented: $showProPaywall)
+        }
+        .alert("Purchase Error", isPresented: purchaseErrorPresented) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(purchaseErrorMessage)
         }
     }
 
     private func canRemove(_ member: HouseholdMember) -> Bool {
         repo.isOwnerOfCurrentGroup && member.role != .owner
+    }
+
+    private var purchaseErrorPresented: Binding<Bool> {
+        Binding(
+            get: { subscriptions.lastErrorMessage != nil },
+            set: { if !$0 { subscriptions.clearError() } }
+        )
+    }
+
+    private var purchaseErrorMessage: String {
+        subscriptions.lastErrorMessage ?? ""
+    }
+
+    // MARK: - Reusable building blocks
+
+    /// Rounded "card" container matching the Home screen aesthetic.
+    @ViewBuilder
+    private func card<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        VStack(spacing: 0) { content() }
+            .background(Color(.secondarySystemGroupedBackground),
+                        in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .strokeBorder(Color(.separator).opacity(0.5), lineWidth: 1)
+            }
+    }
+
+    /// Section header + content, with an optional footer caption.
+    @ViewBuilder
+    private func settingsSection<Content: View>(
+        _ title: String,
+        footer: String? = nil,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 4)
+            content()
+            if let footer {
+                Text(footer)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 4)
+            }
+        }
+    }
+
+    /// Divider between rows inside a card, inset past the leading icon.
+    private var rowDivider: some View {
+        Divider().padding(.leading, 52)
+    }
+
+    /// A leading-icon row label used across button/navigation rows.
+    private func rowLabel(_ title: String,
+                          systemImage: String,
+                          tint: Color = .accentColor,
+                          chevron: Bool = false,
+                          destructive: Bool = false,
+                          enabled: Bool = true) -> some View {
+        let iconColor: Color = !enabled ? .secondary : (destructive ? .red : tint)
+        let textColor: Color = !enabled ? .secondary : (destructive ? .red : .primary)
+        return HStack(spacing: 14) {
+            Image(systemName: systemImage)
+                .font(.body)
+                .foregroundStyle(iconColor)
+                .frame(width: 24)
+            Text(title)
+                .foregroundStyle(textColor)
+            Spacer(minLength: 8)
+            if chevron {
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 13)
+        .contentShape(Rectangle())
+    }
+
+    // MARK: - Profile header
+
+    private var profileHeader: some View {
+        VStack(spacing: 14) {
+            PhotosPicker(selection: $selectedProfilePhoto, matching: .images) {
+                ProfilePicture(imageData: repo.profileImageData, size: 96)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Change profile photo")
+
+            TextField("Your Name", text: $displayName)
+                .font(.title2.weight(.bold))
+                .multilineTextAlignment(.center)
+                .textContentType(.name)
+                .textInputAutocapitalization(.words)
+                .submitLabel(.done)
+                .onSubmit { commitDisplayName() }
+                .frame(maxWidth: 280)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 8)
+    }
+
+    // MARK: - Grocer Pro
+
+    private var proCard: some View {
+        card {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Text("Grocer")
+                        .font(.title2.weight(.bold))
+                    Text("Pro")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.black)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Color.yellow, in: Capsule())
+                }
+
+                Text(subscriptions.hasGrocerPro
+                     ? subscriptions.displayStatus
+                     : "Get Pro to unlock all features")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+
+                Button {
+                    Haptics.selection()
+                    showProPaywall = true
+                } label: {
+                    Text(subscriptions.hasGrocerPro ? "View Plans" : "Try for free")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Color(.systemBackground))
+                        .padding(.horizontal, 22)
+                        .padding(.vertical, 11)
+                        .background(Color.primary, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 4)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(18)
+        }
+    }
+
+    // MARK: - General
+
+    private var generalSection: some View {
+        settingsSection("Group") {
+            card {
+                if repo.isOwnerOfCurrentGroup {
+                    HStack(spacing: 14) {
+                        Image(systemName: "person.2.fill")
+                            .font(.body)
+                            .foregroundStyle(Color.accentColor)
+                            .frame(width: 24)
+                        TextField("Group Name", text: $groupName)
+                            .submitLabel(.done)
+                            .onSubmit { commitGroupName() }
+                        commitButton(isEnabled: canSaveGroupName) {
+                            commitGroupName()
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 13)
+                } else {
+                    HStack(spacing: 14) {
+                        Image(systemName: "person.2.fill")
+                            .font(.body)
+                            .foregroundStyle(Color.accentColor)
+                            .frame(width: 24)
+                        Text("Group")
+                        Spacer()
+                        Text(repo.currentHousehold?.name ?? "Group")
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 13)
+                }
+
+                rowDivider
+
+                NavigationLink {
+                    TripHistoryView()
+                } label: {
+                    rowLabel("Trip History", systemImage: "clock.arrow.circlepath", chevron: true)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    // MARK: - Members
+
+    private var membersSection: some View {
+        let canInvite = repo.isOwnerOfCurrentGroup && repo.canShare
+        return settingsSection("Members", footer: membersFooter) {
+            card {
+                Button {
+                    Haptics.selection()
+                    showInviteIntro = true
+                } label: {
+                    rowLabel("Invite to Group", systemImage: "person.crop.circle.badge.plus",
+                             enabled: canInvite)
+                }
+                .buttonStyle(.plain)
+                .disabled(!canInvite)
+
+                ForEach(repo.currentMembers) { member in
+                    rowDivider
+                    memberRow(member)
+                }
+            }
+        }
+    }
+
+    private var membersFooter: String? {
+        if !repo.isOwnerOfCurrentGroup {
+            return "Only the group owner can invite people."
+        } else if let reason = repo.sharingUnavailableReason {
+            return reason
+        } else if repo.isOwnerOfCurrentGroup {
+            return "Tap the minus button to remove a member from this group."
+        }
+        return nil
+    }
+
+    // MARK: - Preferences
+
+    private var preferencesSection: some View {
+        settingsSection("Preferences") {
+            card {
+                Toggle(isOn: familyLiveActivitiesBinding) {
+                    Label("Show Live Activities", systemImage: "bolt.horizontal.circle")
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+
+                rowDivider
+
+                Toggle(isOn: notificationsBinding) {
+                    Label("Shopping notifications", systemImage: "bell.badge")
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+            }
+        }
+    }
+
+    // MARK: - More / actions
+
+    private var moreSection: some View {
+        settingsSection("More") {
+            card {
+                if repo.households.count > 1 || !repo.isOwnerOfCurrentGroup {
+                    Button(role: .destructive) { confirmLeave = true } label: {
+                        rowLabel(repo.isOwnerOfCurrentGroup ? "Delete Group" : "Leave Group",
+                                 systemImage: repo.isOwnerOfCurrentGroup ? "trash" : "rectangle.portrait.and.arrow.right",
+                                 destructive: true)
+                    }
+                    .buttonStyle(.plain)
+                    rowDivider
+                }
+
+                Button(role: .destructive) { confirmPurge = true } label: {
+                    HStack(spacing: 0) {
+                        rowLabel("Reset All Data", systemImage: "trash", destructive: true)
+                        if purging { ProgressView().padding(.trailing, 16) }
+                    }
+                }
+                .buttonStyle(.plain)
+                .disabled(purging)
+            }
+        }
     }
 
     private var familyLiveActivitiesBinding: Binding<Bool> {
@@ -97,175 +387,33 @@ struct SettingsView: View {
         )
     }
 
-    private var profileSection: some View {
-        let currentProfileImage = repo.profileImageData
-        return Section("Profile") {
-            HStack(alignment: .center, spacing: 16) {
-                PhotosPicker(selection: $selectedProfilePhoto, matching: .images) {
-                    ProfilePicture(imageData: currentProfileImage, size: 72)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Change profile photo")
-
-                HStack {
-                    TextField("Your Name", text: $displayName)
-                        .textContentType(.name)
-                        .textInputAutocapitalization(.words)
-                        .submitLabel(.done)
-                        .onSubmit { commitDisplayName() }
-                    commitButton(isEnabled: canSaveDisplayName) {
-                        commitDisplayName()
-                    }
-                }
-            }
-        }
-    }
-
-    private var groupSection: some View {
-        Section("Group") {
-            if repo.isOwnerOfCurrentGroup {
-                HStack {
-                    TextField("Group Name", text: $groupName)
-                        .submitLabel(.done)
-                        .onSubmit { commitGroupName() }
-                    commitButton(isEnabled: canSaveGroupName) {
-                        commitGroupName()
-                    }
-                }
-            } else {
-                LabeledContent("Name", value: repo.currentHousehold?.name ?? "Group")
-            }
-        }
-    }
-
-    private var membersSection: some View {
-        Section {
-            Button {
-                showInviteIntro = true
-            } label: {
-                Label("Invite to Group", systemImage: "person.crop.circle.badge.plus")
-            }
-            .disabled(!repo.canShare)
-
-            ForEach(repo.currentMembers) { member in
-                memberRow(member)
-                .swipeActions {
-                    removeMemberSwipeAction(for: member)
-                }
-            }
-        } header: {
-            Text("Members")
-        } footer: {
-            if let reason = repo.sharingUnavailableReason {
-                Text(reason)
-            } else if repo.isOwnerOfCurrentGroup {
-                Text("Swipe a member to remove them from this group.")
-            }
-        }
-    }
-
-    private var liveActivitiesSection: some View {
-        Section {
-            Toggle("Show Live Activities",
-                   isOn: familyLiveActivitiesBinding)
-        } header: {
-            Text("Live Activities")
-        } footer: {
-            Text("When enabled, active group grocery trips can appear on your Lock Screen or Dynamic Island so you can follow shopping progress.")
-        }
-    }
-
-    private var notificationsSection: some View {
-        Section {
-            Toggle("Group shopping notifications", isOn: notificationsBinding)
-        } header: {
-            Text("Notifications")
-        } footer: {
-            Text("Get an alert when someone in this group starts or ends a shopping trip, or adds an item while you are shopping.")
-        }
-    }
-
-    private var diagnosticsSection: some View {
-        Section("Diagnostics") {
-            HStack {
-                Text("API status")
-                Spacer()
-                switch apiHealthy {
-                case .some(true): Label("Healthy", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
-                case .some(false): Label("Unreachable", systemImage: "xmark.circle.fill").foregroundStyle(.orange)
-                case .none: ProgressView()
-                }
-            }
-            LabeledContent("Sync", value: syncLabel)
-            LabeledContent("CloudKit", value: repo.usingCloudKit ? "Active" : "Disabled")
-            LabeledContent("Container", value: CloudKitService.shared.container != nil ? "OK" : "nil")
-            LabeledContent("Subscriptions", value: repo.subscriptionStatus.statusText)
-            LabeledContent("Groups", value: "\(repo.households.count)")
-            LabeledContent("Members", value: "\(repo.members.count)")
-            LabeledContent("Lists", value: "\(repo.lists.count)")
-            LabeledContent("Items", value: "\(repo.items.count)")
-            LabeledContent("App version", value: settings.appVersion)
-
-            Button("Force Refresh") {
-                Task {
-                    do {
-                        try await repo.refresh()
-                    } catch {
-                        print("[Settings] force refresh failed: \(error)")
-                    }
-                }
-            }
-        }
-    }
-
-    private var actionsSection: some View {
-        Section {
-            Button { showFeedback = true } label: {
-                Label("Send Feedback", systemImage: "envelope")
-            }
-            if repo.households.count > 1 || !repo.isOwnerOfCurrentGroup {
-                Button(role: .destructive) { confirmLeave = true } label: {
-                    Label("Leave Group", systemImage: "rectangle.portrait.and.arrow.right")
-                }
-            }
-            Button(role: .destructive) { confirmPurge = true } label: {
-                HStack {
-                    Label("Reset All Data", systemImage: "trash")
-                    if purging { Spacer(); ProgressView() }
-                }
-            }
-            .disabled(purging)
-        }
-    }
-
     private func memberRow(_ member: HouseholdMember) -> some View {
         HStack(spacing: 12) {
             ProfilePicture(
                 imageData: repo.isCurrentUser(member) ? repo.profileImageData : member.profileImageData,
-                size: 32
+                size: 30
             )
             Text(member.displayName)
             Spacer()
-            Text(member.role.rawValue)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    @ViewBuilder
-    private func removeMemberSwipeAction(for member: HouseholdMember) -> some View {
-        if canRemove(member) {
-            Button(role: .destructive) {
-                repo.removeMember(member)
-            } label: {
-                Label("Remove", systemImage: "person.badge.minus")
+            if canRemove(member) {
+                Button {
+                    Haptics.warning()
+                    repo.removeMember(member)
+                } label: {
+                    Image(systemName: "minus.circle.fill")
+                        .font(.title3)
+                        .foregroundStyle(.red)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Remove \(member.displayName)")
+            } else {
+                Text(member.role.rawValue)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
-    }
-
-    private var canSaveDisplayName: Bool {
-        let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-        return !trimmed.isEmpty && trimmed != repo.displayName
+        .padding(.horizontal, 16)
+        .padding(.vertical, 11)
     }
 
     private var canSaveGroupName: Bool {
@@ -275,7 +423,10 @@ struct SettingsView: View {
 
     @ViewBuilder
     private func commitButton(isEnabled: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+        Button {
+            Haptics.success()
+            action()
+        } label: {
             Image(systemName: "checkmark.circle.fill")
                 .imageScale(.large)
         }
@@ -356,19 +507,12 @@ struct SettingsView: View {
             do {
                 try await repo.purgeAndRebootstrap()
                 groupName = repo.currentHousehold?.name ?? ""
+                Haptics.success()
             } catch {
+                Haptics.error()
                 print("[Settings] purge failed: \(error)")
             }
             purging = false
-        }
-    }
-
-    private var syncLabel: String {
-        switch repo.syncState {
-        case .idle: return repo.usingCloudKit ? "iCloud synced" : "Local only"
-        case .syncing: return "Syncing…"
-        case .offline: return "Offline"
-        case .error(let m): return m
         }
     }
 }
@@ -472,6 +616,7 @@ struct InviteToGroupSheet: View {
         .safeAreaInset(edge: .bottom) {
           VStack(spacing: 0) {
             Button {
+                Haptics.selection()
                 if let reason = repo.sharingUnavailableReason {
                     shareError = reason
                 } else {
@@ -512,16 +657,20 @@ struct InviteToGroupSheet: View {
     @available(iOS 26.0, *)
     private func copyInviteLink() {
         if let reason = repo.sharingUnavailableReason {
+            Haptics.error()
             shareError = reason
             return
         }
+        Haptics.selection()
         preparingShare = true
         Task {
             defer { preparingShare = false }
             do {
                 let url = try await repo.prepareOneTimeInviteURL()
+                Haptics.success()
                 ShareSheetPresenter.presentInvite(url: url)
             } catch {
+                Haptics.error()
                 shareError = error.localizedDescription
             }
         }
@@ -566,6 +715,47 @@ private struct GlassCircleBackground: ViewModifier {
             content.glassEffect(.regular.interactive(), in: .circle)
         } else {
             content.background(.ultraThinMaterial, in: Circle())
+        }
+    }
+}
+
+private struct GrocerProPaywall: View {
+    @Environment(SubscriptionStore.self) private var subscriptions
+    @Binding var isPresented: Bool
+
+    var body: some View {
+        Group {
+            if let offering = subscriptions.currentOffering {
+                PaywallView(offering: offering, displayCloseButton: true)
+            } else {
+                PaywallView(displayCloseButton: true)
+            }
+        }
+        .onPurchaseCompleted { customerInfo in
+            subscriptions.update(with: customerInfo)
+            if RevenueCatConfig.hasGrocerPro(customerInfo) {
+                isPresented = false
+            }
+        }
+        .onRestoreCompleted { customerInfo in
+            subscriptions.update(with: customerInfo)
+            if RevenueCatConfig.hasGrocerPro(customerInfo) {
+                isPresented = false
+            }
+        }
+        .onPurchaseFailure { error in
+            subscriptions.recordFailure(error)
+        }
+        .onRestoreFailure { error in
+            subscriptions.recordFailure(error)
+        }
+        .onRequestedDismissal {
+            isPresented = false
+        }
+        .task {
+            if subscriptions.currentOffering == nil {
+                await subscriptions.refresh()
+            }
         }
     }
 }
@@ -618,6 +808,11 @@ struct FeedbackView: View {
             await MainActor.run {
                 sending = false
                 sent = ok
+                if ok {
+                    Haptics.success()
+                } else {
+                    Haptics.error()
+                }
                 if ok { message = "" }
             }
         }

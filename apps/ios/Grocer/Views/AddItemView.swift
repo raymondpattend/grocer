@@ -1,21 +1,4 @@
 import SwiftUI
-import UIKit
-
-/// Lightweight taptic feedback for discrete UI actions in the add/history flow.
-enum Haptics {
-    /// A light tap for ordinary button presses (close, history, remove).
-    static func tap() {
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-    }
-    /// A selection tick for toggling/expanding rows.
-    static func selection() {
-        UISelectionFeedbackGenerator().selectionChanged()
-    }
-    /// A success notification when an item lands on the list.
-    static func success() {
-        UINotificationFeedbackGenerator().notificationOccurred(.success)
-    }
-}
 
 struct AddItemView: View {
     @Environment(GroceryRepository.self) private var repo
@@ -62,7 +45,7 @@ struct AddItemView: View {
                 .onChange(of: category) { _, _ in categoryEditedManually = true }
                 Picker("Priority", selection: $priority) {
                     ForEach(ItemPriority.allCases) { p in
-                        Label(p.rawValue, systemImage: p.systemImage).tag(p)
+                        PriorityLabel(priority: p).tag(p)
                     }
                 }
                 TextField("Notes", text: $notes, axis: .vertical)
@@ -117,6 +100,7 @@ struct AddItemView: View {
     }
 
     private func save() {
+        Haptics.success()
         repo.addItem(
             name: trimmedName,
             quantity: quantity,
@@ -149,6 +133,7 @@ struct AddItemSearchView: View {
     @State private var isParsing = false
     @State private var contentAppeared = false
     @State private var showHistory = false
+    @State private var showDiscardConfirm = false
 
     /// Debounce handle for the AI parse; cancelled and rescheduled on each edit.
     @State private var parseTask: Task<Void, Never>?
@@ -162,6 +147,10 @@ struct AddItemSearchView: View {
 
     private var trimmedInput: String {
         inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var hasProposedItems: Bool {
+        drafts.contains { !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
 
     /// Distinct items anyone in the group has added before — the pool offered in
@@ -190,10 +179,9 @@ struct AddItemSearchView: View {
                     suggestions: historySuggestions,
                     tint: tint,
                     onSelect: { name, quantity, category in
+                        // Stay in History after adding so several previously-bought
+                        // items can be batch-added; the user closes via Back.
                         addFromHistory(name: name, quantity: quantity, category: category)
-                        withAnimation(.easeInOut(duration: 0.28)) {
-                            showHistory = false
-                        }
                     },
                     onClose: {
                         withAnimation(.easeInOut(duration: 0.28)) {
@@ -212,10 +200,17 @@ struct AddItemSearchView: View {
             }
             refocusInput(after: 0.24)
         }
-        .onChange(of: inputText) { _, _ in
+        .onChange(of: inputText) { _, newValue in
             if suppressParse {
                 suppressParse = false
                 return
+            }
+            // Once the list spans more than one line (the user hit return), render
+            // it as a bullet list so each item reads as its own point.
+            let formatted = bulletified(newValue)
+            if formatted != newValue {
+                suppressParse = true
+                inputText = formatted
             }
             scheduleParse(after: .milliseconds(500))
         }
@@ -223,6 +218,14 @@ struct AddItemSearchView: View {
             if !showHistory {
                 bottomAction
             }
+        }
+        .alert("Discard proposed items?", isPresented: $showDiscardConfirm) {
+            Button("Discard", role: .destructive) {
+                dismiss()
+            }
+            Button("Keep Editing", role: .cancel) {}
+        } message: {
+            Text("You have items ready to add. Close without adding them?")
         }
     }
 
@@ -235,14 +238,15 @@ struct AddItemSearchView: View {
                 showHistory = true
             }
         } label: {
-            Image(systemName: "clock.arrow.circlepath")
-                .font(.title3.weight(.semibold))
+            Label("History", systemImage: "clock.arrow.circlepath")
+                .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.primary)
-                .frame(width: 52, height: 52)
+                .padding(.horizontal, 16)
+                .frame(height: 46)
         }
         .tint(.primary)
         .grocerGlassButton()
-        .clipShape(Circle())
+        .clipShape(Capsule())
         .padding(.trailing, 16)
         .padding(.bottom, 16)
         .transition(.scale(scale: 0.85).combined(with: .opacity))
@@ -289,7 +293,7 @@ struct AddItemSearchView: View {
 
             Button {
                 Haptics.tap()
-                dismiss()
+                attemptClose()
             } label: {
                 Image(systemName: "xmark")
                     .font(.subheadline.weight(.semibold))
@@ -306,7 +310,7 @@ struct AddItemSearchView: View {
     // MARK: - Top pane: input + autocomplete
 
     private var composePanel: some View {
-        TextField("Milk, eggs, bananas, e.t.c.", text: $inputText, axis: .vertical)
+        TextField("Type your list freely — milk, eggs, bananas, e.t.c.", text: $inputText, axis: .vertical)
             .focused($inputFocused)
             .font(.title3.weight(.medium))
             .textInputAutocapitalization(.sentences)
@@ -419,10 +423,13 @@ struct AddItemSearchView: View {
         }
 
         isParsing = true
-        let parsed = await APIClient.shared.parseList(text)
+        // The freeform field may carry bullet markers ("• "); feed clean lines to
+        // both the AI parse and the offline fallback.
+        let cleaned = stripBullets(text)
+        let parsed = await APIClient.shared.parseList(cleaned)
         guard !Task.isCancelled else { isParsing = false; return }
 
-        let detected = parsed.isEmpty ? localSplit(text) : parsed.compactMap(DetectedItem.init(parsedItem:))
+        let detected = parsed.isEmpty ? localSplit(cleaned) : parsed.compactMap(DetectedItem.init(parsedItem:))
         withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
             drafts = merge(detected, into: drafts)
         }
@@ -506,6 +513,7 @@ struct AddItemSearchView: View {
 
     private func updateDraftCategory(_ id: UUID, _ category: GroceryCategory) {
         guard let idx = drafts.firstIndex(where: { $0.id == id }) else { return }
+        Haptics.selection()
         drafts[idx].category = category
         // Category isn't reflected in the mirrored text, so no write-back needed.
     }
@@ -521,12 +529,61 @@ struct AddItemSearchView: View {
     /// Rewrites the input text from the current drafts. Guarded so the resulting
     /// `inputText` change doesn't kick off another parse.
     private func syncTextFromDrafts() {
-        let text = drafts
-            .map { $0.quantity.isEmpty ? $0.name : "\($0.quantity) \($0.name)" }
-            .joined(separator: ", ")
+        let parts = drafts.map { $0.quantity.isEmpty ? $0.name : "\($0.quantity) \($0.name)" }
+        // Mirror the bullet-list presentation: a single item stays plain, several
+        // become a bulleted, one-per-line list to match the typed input.
+        let text = parts.count > 1
+            ? parts.map { "\(Self.bullet)\($0)" }.joined(separator: "\n")
+            : parts.joined()
         suppressParse = true
         inputText = text
         lastParsedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Bullet prefix used when the freeform input is rendered as a list.
+    private static let bullet = "• "
+
+    /// Renders the input as a bullet list once it spans multiple lines. Each
+    /// non-empty line is normalized to a single "• " prefix; a trailing blank line
+    /// (just after the user hit return) gets a bare bullet so the next item starts
+    /// against one. Single-line input is left untouched.
+    ///
+    /// Backspace handling: an empty bullet sits as "• " (marker + space).
+    /// Backspacing it removes the space, leaving a bare "•" — the signal that the
+    /// user wants the bullet gone. That line is dropped so it collapses onto the
+    /// previous item instead of being re-padded back to "• ".
+    private func bulletified(_ text: String) -> String {
+        var lines = text.components(separatedBy: "\n")
+
+        if let idx = lines.firstIndex(where: { $0 == Self.bulletMarker }), lines.count > 1 {
+            lines.remove(at: idx)
+            // A single surviving item reads plainly; several keep their bullets.
+            guard lines.count > 1 else { return stripBulletPrefix(lines[0]) }
+            return lines.map { Self.bullet + stripBulletPrefix($0) }.joined(separator: "\n")
+        }
+
+        guard text.contains("\n") else { return text }
+        return lines
+            .map { Self.bullet + stripBulletPrefix($0) }
+            .joined(separator: "\n")
+    }
+
+    /// The bullet glyph without its trailing space.
+    private static let bulletMarker = "•"
+
+    /// Drops a line's leading bullet marker and surrounding spaces, recovering the
+    /// plain item text.
+    private func stripBulletPrefix(_ line: String) -> String {
+        String(line.drop(while: { $0 == "•" || $0 == " " }))
+    }
+
+    /// Strips bullet markers and surrounding whitespace from each line, recovering
+    /// the plain item text for parsing.
+    private func stripBullets(_ text: String) -> String {
+        text
+            .components(separatedBy: "\n")
+            .map(stripBulletPrefix)
+            .joined(separator: "\n")
     }
 
     // MARK: - History
@@ -554,6 +611,14 @@ struct AddItemSearchView: View {
     }
 
     // MARK: - Finalize
+
+    private func attemptClose() {
+        guard hasProposedItems else {
+            dismiss()
+            return
+        }
+        showDiscardConfirm = true
+    }
 
     private func addItems() {
         let itemsToAdd = drafts.filter { !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -776,11 +841,13 @@ private struct HistoryItemsView: View {
                 onClose()
             } label: {
                 Image(systemName: "chevron.left")
-                    .font(.headline.weight(.semibold))
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .frame(width: 30, height: 30)
+                    .frame(width: 38, height: 38)
             }
-            .buttonStyle(.plain)
+            .tint(.primary)
+            .grocerGlassButton()
+            .clipShape(Circle())
             .accessibilityLabel("Back")
 
             VStack(alignment: .leading, spacing: 2) {
@@ -864,54 +931,73 @@ private struct HistoryItemRow: View {
     var tint: Color
     var onAdd: (String) -> Void
 
-    @State private var expanded = false
     @State private var quantity = ""
+    /// Briefly shows a checkmark on the add control after staging the item, so
+    /// batch-adding from history gives per-tap confirmation.
+    @State private var justAdded = false
+    /// Drives the "already on your list" confirmation before re-adding.
+    @State private var showAddAgainConfirm = false
+    /// Amount captured when the confirmation is raised, applied on confirm.
+    @State private var pendingQuantity = ""
 
     private var proposedUnit: String? {
         let unit = UnitGuess.guess(for: suggestion.name)
         return unit.isEmpty ? nil : unit
     }
 
+    /// A sensible non-zero amount for a one-tap add: the group's last-used amount,
+    /// else one of the natural unit, else no quantity at all (never "0").
+    private var defaultQuantity: String {
+        let last = suggestion.quantity?.trimmingCharacters(in: .whitespaces) ?? ""
+        if !last.isEmpty { return last }
+        if let unit = proposedUnit { return "1 \(unit)" }
+        return ""
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Button {
-                toggle()
-            } label: {
-                rowHeader
-            }
-            .buttonStyle(.plain)
+            rowInfo
 
-            if expanded {
-                HStack(spacing: 12) {
-                    QuantityStepperField(
-                        quantity: $quantity,
-                        proposedUnit: proposedUnit,
-                        tint: tint
-                    )
+            HStack(spacing: 12) {
+                QuantityStepperField(
+                    quantity: $quantity,
+                    proposedUnit: proposedUnit,
+                    tint: tint
+                )
 
-                    Spacer(minLength: 0)
+                Spacer(minLength: 0)
 
-                    Button {
-                        Haptics.success()
-                        onAdd(quantity)
-                    } label: {
-                        Label("Add", systemImage: "plus")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.primary)
-                            .padding(.horizontal, 10)
-                    }
-                    .tint(.primary)
-                    .grocerGlassButton()
-                    .clipShape(Capsule())
+                Button {
+                    attemptAdd(quantity)
+                } label: {
+                    Label(justAdded ? "Added" : "Add",
+                          systemImage: justAdded ? "checkmark" : "plus")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .padding(.horizontal, 10)
+                        .contentTransition(.symbolEffect(.replace))
                 }
-                .transition(.opacity.combined(with: .move(edge: .top)))
+                .tint(.primary)
+                .grocerGlassButton()
+                .clipShape(Capsule())
+                .disabled(justAdded)
             }
         }
         .padding(14)
         .grocerLiquidGlass(in: RoundedRectangle(cornerRadius: 22, style: .continuous), interactive: true)
+        .alert("Already on your list", isPresented: $showAddAgainConfirm) {
+            Button("Add Again") { performAdd(pendingQuantity) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("\(suggestion.name) is already on your list. Add it again?")
+        }
+        .onAppear {
+            // Always-expanded rows seed a non-zero amount to adjust from.
+            if quantity.isEmpty { quantity = defaultQuantity }
+        }
     }
 
-    private var rowHeader: some View {
+    private var rowInfo: some View {
         HStack(spacing: 12) {
             ProductImageView(itemName: suggestion.name, size: 44)
 
@@ -940,25 +1026,45 @@ private struct HistoryItemRow: View {
                         .foregroundStyle(.secondary)
                 }
             }
-
-            Spacer(minLength: 0)
-
-            Image(systemName: expanded ? "chevron.up" : "plus.circle.fill")
-                .font(.title3)
-                .foregroundStyle(.secondary)
-                .frame(width: 30, height: 30)
         }
         .contentShape(Rectangle())
     }
 
-    private func toggle() {
-        Haptics.selection()
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-            if !expanded {
-                // Seed the stepper with the group's last-used amount.
-                quantity = suggestion.quantity?.trimmingCharacters(in: .whitespaces) ?? ""
-            }
-            expanded.toggle()
+    /// Route an add through the duplicate check: items already on the list prompt
+    /// for confirmation; everything else is added straight away.
+    private func attemptAdd(_ rawQuantity: String) {
+        let quantity = sanitizedQuantity(rawQuantity)
+        if suggestion.isPending {
+            pendingQuantity = quantity
+            showAddAgainConfirm = true
+        } else {
+            performAdd(quantity)
+        }
+    }
+
+    private func performAdd(_ quantity: String) {
+        Haptics.success()
+        onAdd(quantity)
+        confirmAdded()
+    }
+
+    /// Never hand a zero (or blank) amount to the list — treat it as "no quantity".
+    private func sanitizedQuantity(_ quantity: String) -> String {
+        let trimmed = quantity.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return "" }
+        if let amount = Quantity(parsing: trimmed).amount, amount <= 0 { return "" }
+        return trimmed
+    }
+
+    /// Flip the add control to a checkmark, then revert so the item can be added
+    /// again (e.g. with a different amount).
+    private func confirmAdded() {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+            justAdded = true
+        }
+        Task {
+            try? await Task.sleep(for: .seconds(1.4))
+            withAnimation(.easeInOut(duration: 0.25)) { justAdded = false }
         }
     }
 }
@@ -1019,6 +1125,7 @@ private struct PastItemsSheet: View {
                 } else {
                     ForEach(filtered, id: \.self) { itemName in
                         Button {
+                            Haptics.selection()
                             onSelect(itemName)
                             dismiss()
                         } label: {

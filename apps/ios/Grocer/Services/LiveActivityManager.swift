@@ -181,7 +181,8 @@ final class LiveActivityManager {
 
         let attributes = GroceryActivityAttributes(
             householdId: session.householdId,
-            sessionId: session.id
+            sessionId: session.id,
+            startedByMemberId: session.startedByMemberId
         )
 
         // The Simulator can't register for APNs, so requesting `.token` fails

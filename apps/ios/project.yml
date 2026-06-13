@@ -19,6 +19,9 @@ packages:
   Sentry:
     url: https://github.com/getsentry/sentry-cocoa/
     from: 8.0.0
+  RevenueCat:
+    url: https://github.com/RevenueCat/purchases-ios-spm.git
+    from: 5.43.0
 
 settings:
   base:
@@ -55,6 +58,10 @@ targets:
         # plain `Sentry` product is a static archive whose .framework wrapper
         # gets copied into the bundle with no dSYM, triggering upload warnings.
         product: Sentry-Dynamic
+      - package: RevenueCat
+        product: RevenueCat
+      - package: RevenueCat
+        product: RevenueCatUI
     postCompileScripts:
       - name: Upload Debug Symbols to Sentry
         # No inputFiles/outputFiles: declaring the dSYM as an input forces this
@@ -81,8 +88,9 @@ targets:
     platform: iOS
     sources:
       - path: GrocerWidget
-      # The ActivityAttributes type is shared with the app target.
+      # Shared types used by the widget target.
       - path: Grocer/Shared/GroceryActivityAttributes.swift
+      - path: Grocer/Shared/WidgetSharedData.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.narro.grocer.GrocerWidget

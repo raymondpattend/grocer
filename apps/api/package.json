@@ -20,6 +20,7 @@
     "@sentry/cloudflare": "^10.56.0",
     "@sentry/hono": "^10.56.0",
     "hono": "^4.6.3",
+    "posthog-node": "^5.0.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {

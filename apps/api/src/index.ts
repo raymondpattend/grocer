@@ -3,6 +3,7 @@ import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { sentry } from "@sentry/hono/cloudflare";
 import type { Env } from "./env.js";
+import { createPostHogClient } from "./lib/posthog.js";
 import { healthRoute } from "./routes/health.js";
 import { configRoute } from "./routes/config.js";
 import { feedbackRoute } from "./routes/feedback.js";
@@ -38,6 +39,9 @@ app.notFound((c) => c.json({ ok: false, error: "Not found" }, 404));
 
 app.onError((err, c) => {
   console.error("Unhandled error:", err);
+  const posthog = createPostHogClient(c.env);
+  posthog.captureException(err);
+  c.executionCtx.waitUntil(posthog.shutdown());
   return c.json({ ok: false, error: "Internal error" }, 500);
 });
 

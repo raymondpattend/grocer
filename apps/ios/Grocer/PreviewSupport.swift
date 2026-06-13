@@ -10,17 +10,25 @@ enum GrocerPreview {
     static func repository(
         households: [Household] = [],
         members: [HouseholdMember] = [],
+        lists: [GroceryList] = [],
+        items: [GroceryItem] = [],
         joinedHouseholdId: String? = nil
     ) -> GroceryRepository {
         GroceryRepository.makePreview(
             households: households,
             members: members,
+            lists: lists,
+            items: items,
             joinedHouseholdId: joinedHouseholdId
         )
     }
 
     static var settings: SettingsStore {
         SettingsStore.shared
+    }
+
+    static var subscriptions: SubscriptionStore {
+        SubscriptionStore.shared
     }
 }
 
@@ -33,6 +41,7 @@ extension View {
     func grocerPreviewEnvironment(repository: GroceryRepository) -> some View {
         environment(repository)
             .environment(GrocerPreview.settings)
+            .environment(GrocerPreview.subscriptions)
     }
 }
 #endif

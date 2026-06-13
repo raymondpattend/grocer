@@ -21,6 +21,7 @@ enum CK {
         static let list = "GroceryList"
         static let item = "GroceryItem"
         static let session = "ShoppingSession"
+        static let tripItem = "ShoppingTripItem"
         static let event = "ItemEvent"
         // Private DB only:
         static let appSettings = "AppSettings"

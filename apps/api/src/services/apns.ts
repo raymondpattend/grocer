@@ -126,7 +126,7 @@ interface BuildPayloadArgs {
   content: LiveActivityContent;
   /** Required for a `start` event — must match the Swift ActivityAttributes type name. */
   attributesType?: string;
-  /** Static attributes for `start` (householdId/sessionId). */
+  /** Static attributes for `start` (householdId/sessionId/startedByMemberId). */
   attributes?: Record<string, unknown>;
   /** "default" | "after" — only used for `end`. */
   dismissalDate?: number;

@@ -25,17 +25,21 @@ struct ItemActionSheet: View {
 
                 Section {
                     actionRow("Mark Found", systemImage: "checkmark.circle.fill", tint: .green) {
+                        Haptics.success()
                         moveItem { repo.mark(item, as: .found) }
                         dismiss()
                     }
                     actionRow("Replace", systemImage: "arrow.triangle.2.circlepath.circle.fill", tint: .blue) {
+                        Haptics.selection()
                         dismiss(); onReplace()
                     }
                     actionRow("Out of Stock", systemImage: "xmark.circle.fill", tint: .red) {
+                        Haptics.warning()
                         moveItem { repo.mark(item, as: .outOfStock) }
                         dismiss()
                     }
                     actionRow("Skip", systemImage: "arrow.uturn.forward.circle.fill", tint: .orange) {
+                        Haptics.warning()
                         moveItem { repo.mark(item, as: .skipped) }
                         dismiss()
                     }
@@ -43,6 +47,7 @@ struct ItemActionSheet: View {
 
                 Section {
                     Button {
+                        Haptics.selection()
                         note = item.notes ?? ""
                         addingNote = true
                     } label: {
@@ -63,6 +68,7 @@ struct ItemActionSheet: View {
             .alert("Add Note", isPresented: $addingNote) {
                 TextField("Note", text: $note)
                 Button("Save") {
+                    Haptics.success()
                     var updated = item
                     updated.notes = note.isEmpty ? nil : note
                     repo.update(updated)
@@ -108,6 +114,7 @@ struct ReplacementSheet: View {
                 Section("\(item.name) unavailable — replace with") {
                     ForEach(suggestions, id: \.self) { option in
                         Button {
+                            Haptics.success()
                             moveItem { repo.mark(item, as: .replaced, replacement: option) }
                             dismiss()
                         } label: {
@@ -119,6 +126,7 @@ struct ReplacementSheet: View {
                     HStack {
                         TextField("Replacement item", text: $customReplacement)
                         Button("Use") {
+                            Haptics.success()
                             moveItem { repo.mark(item, as: .replaced, replacement: customReplacement) }
                             dismiss()
                         }
@@ -127,6 +135,7 @@ struct ReplacementSheet: View {
                 }
                 Section {
                     Button("No replacement — mark Out of Stock", role: .destructive) {
+                        Haptics.warning()
                         moveItem { repo.mark(item, as: .outOfStock) }
                         dismiss()
                     }

@@ -215,6 +215,48 @@ extension ShoppingSession: CloudKitApplicable {
     }
 }
 
+// MARK: - ShoppingTripItem
+
+extension ShoppingTripItem: CloudKitApplicable {
+    init?(record r: CKRecord) {
+        guard let householdId = string(r, CK.Field.householdId),
+              let sessionId = string(r, CK.Field.sessionId),
+              let name = string(r, CK.Field.itemName),
+              let categoryRaw = string(r, CK.Field.category),
+              let category = GroceryCategory(rawValue: categoryRaw),
+              let outcomeRaw = string(r, CK.Field.status),
+              let outcome = ItemStatus(rawValue: outcomeRaw) else { return nil }
+        self.init(
+            id: r.recordID.recordName,
+            householdId: householdId,
+            sessionId: sessionId,
+            itemId: string(r, CK.Field.itemId) ?? "",
+            name: name,
+            quantity: string(r, CK.Field.quantity),
+            category: category,
+            outcome: outcome,
+            replacementItemName: string(r, CK.Field.replacementItemName),
+            requestedByMemberId: string(r, CK.Field.requestedByMemberId) ?? "",
+            requestedByDisplayName: string(r, CK.Field.requestedByDisplayName) ?? "",
+            createdAt: date(r, CK.Field.createdAt) ?? r.creationDate ?? Date()
+        )
+    }
+
+    func apply(to r: CKRecord) {
+        r[CK.Field.householdId] = householdId as CKRecordValue
+        r[CK.Field.sessionId] = sessionId as CKRecordValue
+        r[CK.Field.itemId] = itemId as CKRecordValue
+        r[CK.Field.itemName] = name as CKRecordValue
+        r[CK.Field.quantity] = quantity as CKRecordValue?
+        r[CK.Field.category] = category.rawValue as CKRecordValue
+        r[CK.Field.status] = outcome.rawValue as CKRecordValue
+        r[CK.Field.replacementItemName] = replacementItemName as CKRecordValue?
+        r[CK.Field.requestedByMemberId] = requestedByMemberId as CKRecordValue
+        r[CK.Field.requestedByDisplayName] = requestedByDisplayName as CKRecordValue
+        r[CK.Field.createdAt] = createdAt as CKRecordValue
+    }
+}
+
 // MARK: - ItemEvent
 
 extension ItemEvent: CloudKitApplicable {

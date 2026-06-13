@@ -15,8 +15,13 @@ export interface Env {
   // iOS remote config
   IOS_MIN_BUILD: string;
   IOS_LATEST_BUILD: string;
+  IOS_UPDATE_URL?: string;
 
   // OpenAI — used for product image generation, embeddings, and list parsing
   OPENAI_API_KEY: string;
   OPENAI_PARSE_MODEL?: string;
+
+  // PostHog analytics
+  POSTHOG_API_KEY: string;
+  POSTHOG_HOST: string;
 }

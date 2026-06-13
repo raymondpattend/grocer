@@ -10,7 +10,7 @@ import WidgetKit
 struct GroceryLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: GroceryActivityAttributes.self) { context in
-            LockScreenView(state: context.state)
+            LockScreenView(state: context.state, startedByMemberId: context.attributes.startedByMemberId)
                 .activityBackgroundTint(Color(.systemBackground))
                 .activitySystemActionForegroundColor(.green)
         } dynamicIsland: { context in
@@ -20,10 +20,10 @@ struct GroceryLiveActivity: Widget {
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
                     Label {
-                        Text(context.state.storeName ?? "Grocery Trip")
-                            .font(.caption).lineLimit(1)
+                        Text("\(context.state.shopperName) is shopping")
+                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     } icon: {
-                        Image(systemName: "cart.fill").foregroundStyle(.green)
+                        ShopperAvatarIcon(memberId: context.attributes.startedByMemberId, size: 20)
                     }
                 }
                 DynamicIslandExpandedRegion(.trailing) {
@@ -43,30 +43,28 @@ struct GroceryLiveActivity: Widget {
                     } else {
                         VStack(spacing: 6) {
                             HStack {
-                                Text("\(context.state.shopperName) is shopping")
-                                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                                 Spacer()
                                 Text("\(context.state.itemsRemaining) left")
                                     .font(.caption.weight(.semibold))
                             }
                             ProgressView(value: context.state.progress)
                                 .tint(.green)
-                            if let last = lastHandledLine(context.state) {
-                                Text(last).font(.caption2).foregroundStyle(.secondary)
+                                .scaleEffect(x: 1, y: 1.15, anchor: .center)
+                            if let name = context.state.lastHandledItemName {
+                                LastFoodThumbnail(name: name, size: 24)
                                     .frame(maxWidth: .infinity, alignment: .leading)
-                                    .lineLimit(1)
                             }
                         }
                     }
                 }
             } compactLeading: {
-                Image(systemName: "cart.fill").foregroundStyle(.green)
+                ShopperAvatarIcon(memberId: context.attributes.startedByMemberId, size: 18)
             } compactTrailing: {
                 Text("\(context.state.itemsRemaining)")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.green)
             } minimal: {
-                Image(systemName: "cart.fill").foregroundStyle(.green)
+                ShopperAvatarIcon(memberId: context.attributes.startedByMemberId, size: 18)
             }
             .keylineTint(.green)
         }
@@ -74,10 +72,6 @@ struct GroceryLiveActivity: Widget {
 
     private func timelineString(_ s: GroceryActivityAttributes.ContentState) -> String {
         "\(s.itemsFound)/\(s.totalItems)"
-    }
-    private func lastHandledLine(_ s: GroceryActivityAttributes.ContentState) -> String? {
-        guard let name = s.lastHandledItemName, let status = s.lastHandledItemStatus else { return nil }
-        return "Last: \(name) \(status.lowercased())"
     }
     private func finalHeadline(_ s: GroceryActivityAttributes.ContentState) -> String {
         s.isCancelled ? "Shopping Cancelled" : "Shopping Complete"
@@ -92,13 +86,17 @@ struct GroceryLiveActivity: Widget {
 
 private struct LockScreenView: View {
     let state: GroceryActivityAttributes.ContentState
+    let startedByMemberId: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Label("Grocery Trip", systemImage: "cart.fill")
-                    .font(.headline)
-                    .foregroundStyle(.green)
+                Label {
+                    Text("\(state.shopperName) \(state.isCancelled ? "cancelled" : "is") shopping")
+                } icon: {
+                    ShopperAvatarIcon(memberId: startedByMemberId, size: 22)
+                }
+                .font(.subheadline.weight(.medium)).foregroundStyle(state.isCompleted || state.isCancelled ? .secondary : .primary)
                 Spacer()
                 if let store = state.storeName {
                     Text(store).font(.subheadline).foregroundStyle(.secondary)
@@ -108,13 +106,11 @@ private struct LockScreenView: View {
             if state.isCompleted || state.isCancelled {
                 Text(state.isCancelled ? "Shopping Cancelled" : "Shopping Complete")
                     .font(.title3.bold())
-                Text(state.isCancelled
-                     ? "No longer active"
-                     : "\(state.itemsFound) found · \(state.replacedCount) replaced · \(state.outOfStockCount) unavailable")
-                    .font(.subheadline).foregroundStyle(.secondary)
+                if !state.isCancelled {
+                    Text("\(state.itemsFound) found · \(state.replacedCount) replaced · \(state.outOfStockCount) unavailable")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                }
             } else {
-                Text("\(state.shopperName) is shopping")
-                    .font(.subheadline.weight(.medium))
                 HStack {
                     Text("\(state.itemsFound) found")
                     Text("·")
@@ -123,13 +119,161 @@ private struct LockScreenView: View {
                 .font(.subheadline).foregroundStyle(.secondary)
 
                 ProgressView(value: state.progress).tint(.green)
+                    .scaleEffect(x: 1, y: 1.15, anchor: .center)
 
-                if let name = state.lastHandledItemName, let status = state.lastHandledItemStatus {
-                    Text("Last: \(name) \(status.lowercased())")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
+                LastFoodThumbnail(name: state.lastHandledItemName, size: 32)
             }
         }
         .padding()
     }
 }
+
+// MARK: - Image helpers
+
+/// The active shopper's avatar, loaded synchronously from the App Group cache.
+/// Falls back to the cart icon when no avatar has been published — e.g. on a
+/// family device whose activity was started via push (the push carries no
+/// image data).
+private struct ShopperAvatarIcon: View {
+    let memberId: String?
+    var size: CGFloat = 22
+
+    var body: some View {
+        if let memberId,
+           let image = WidgetShopperAvatarStore.cachedThumbnail(forMember: memberId, maxPixel: size * 3) {
+            Image(uiImage: image)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: size, height: size)
+                .clipShape(Circle())
+        } else {
+            Image(systemName: "cart.fill").foregroundStyle(.green)
+        }
+    }
+}
+
+/// Thumbnail of the most recently handled item's food image, loaded
+/// synchronously from the shared product-image cache. Renders nothing when the
+/// image isn't cached locally.
+private struct LastFoodThumbnail: View {
+    let name: String?
+    var size: CGFloat = 28
+
+    var body: some View {
+        if let name, let image = WidgetImageStore.cachedThumbnail(for: name, maxPixel: size * 3) {
+            Image(uiImage: image)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: size, height: size)
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+    }
+}
+
+// MARK: - Previews
+
+#if DEBUG
+private extension GroceryActivityAttributes {
+    static var preview: GroceryActivityAttributes {
+        GroceryActivityAttributes(
+            householdId: "preview-household",
+            sessionId: "preview-session"
+        )
+    }
+}
+
+private extension GroceryActivityAttributes.ContentState {
+    static var previewActive: GroceryActivityAttributes.ContentState {
+        GroceryActivityAttributes.ContentState(
+            storeName: "Meijer",
+            shopperName: "Sam",
+            status: "Active",
+            itemsFound: 7,
+            itemsRemaining: 5,
+            totalItems: 12,
+            outOfStockCount: 1,
+            replacedCount: 1,
+            lastHandledItemName: "Honeycrisp Apples",
+            lastHandledItemStatus: "Found"
+        )
+    }
+
+    static var previewReplaced: GroceryActivityAttributes.ContentState {
+        GroceryActivityAttributes.ContentState(
+            storeName: "Costco",
+            shopperName: "Maya",
+            status: "Active",
+            itemsFound: 10,
+            itemsRemaining: 2,
+            totalItems: 12,
+            outOfStockCount: 1,
+            replacedCount: 2,
+            lastHandledItemName: "Oat Milk",
+            lastHandledItemStatus: "Replaced"
+        )
+    }
+
+    static var previewCompleted: GroceryActivityAttributes.ContentState {
+        GroceryActivityAttributes.ContentState(
+            storeName: "Trader Joe's",
+            shopperName: "Sam",
+            status: "Completed",
+            itemsFound: 11,
+            itemsRemaining: 0,
+            totalItems: 12,
+            outOfStockCount: 1,
+            replacedCount: 2,
+            lastHandledItemName: nil,
+            lastHandledItemStatus: nil
+        )
+    }
+
+    static var previewCancelled: GroceryActivityAttributes.ContentState {
+        GroceryActivityAttributes.ContentState(
+            storeName: nil,
+            shopperName: "Maya",
+            status: "Cancelled",
+            itemsFound: 3,
+            itemsRemaining: 7,
+            totalItems: 10,
+            outOfStockCount: 0,
+            replacedCount: 0,
+            lastHandledItemName: "Sourdough",
+            lastHandledItemStatus: "Skipped"
+        )
+    }
+}
+
+#Preview("Lock Screen", as: .content, using: GroceryActivityAttributes.preview) {
+    GroceryLiveActivity()
+} contentStates: {
+    GroceryActivityAttributes.ContentState.previewActive
+    GroceryActivityAttributes.ContentState.previewReplaced
+    GroceryActivityAttributes.ContentState.previewCompleted
+    GroceryActivityAttributes.ContentState.previewCancelled
+}
+
+#Preview("Dynamic Island Expanded", as: .dynamicIsland(.expanded), using: GroceryActivityAttributes.preview) {
+    GroceryLiveActivity()
+} contentStates: {
+    GroceryActivityAttributes.ContentState.previewActive
+    GroceryActivityAttributes.ContentState.previewReplaced
+    GroceryActivityAttributes.ContentState.previewCompleted
+    GroceryActivityAttributes.ContentState.previewCancelled
+}
+
+#Preview("Dynamic Island Compact", as: .dynamicIsland(.compact), using: GroceryActivityAttributes.preview) {
+    GroceryLiveActivity()
+} contentStates: {
+    GroceryActivityAttributes.ContentState.previewActive
+    GroceryActivityAttributes.ContentState.previewReplaced
+    GroceryActivityAttributes.ContentState.previewCompleted
+}
+
+#Preview("Dynamic Island Minimal", as: .dynamicIsland(.minimal), using: GroceryActivityAttributes.preview) {
+    GroceryLiveActivity()
+} contentStates: {
+    GroceryActivityAttributes.ContentState.previewActive
+    GroceryActivityAttributes.ContentState.previewCompleted
+}
+#endif

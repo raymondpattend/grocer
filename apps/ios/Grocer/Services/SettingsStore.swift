@@ -9,7 +9,7 @@ import Observation
 final class SettingsStore {
     static let shared = SettingsStore()
 
-    private let defaults = UserDefaults.standard
+    private let defaults = GrocerAppGroup.defaults
 
     private enum Keys {
         static let deviceId = "grocer.deviceId"

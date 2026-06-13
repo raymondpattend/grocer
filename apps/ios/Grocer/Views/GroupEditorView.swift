@@ -46,7 +46,10 @@ struct GroupEditorView: View {
                                     Image(systemName: "checkmark").font(.caption.bold()).foregroundStyle(.white)
                                 }
                             }
-                            .onTapGesture { theme = t }
+                            .onTapGesture {
+                                Haptics.selection()
+                                theme = t
+                            }
                     }
                 }
                 .padding(.vertical, 4)
@@ -60,7 +63,10 @@ struct GroupEditorView: View {
                             .foregroundStyle(choice == icon ? .white : theme.color)
                             .frame(width: 40, height: 40)
                             .background(Circle().fill(choice == icon ? AnyShapeStyle(theme.color) : AnyShapeStyle(theme.color.opacity(0.15))))
-                            .onTapGesture { icon = choice }
+                            .onTapGesture {
+                                Haptics.selection()
+                                icon = choice
+                            }
                     }
                 }
                 .padding(.vertical, 4)
@@ -69,19 +75,23 @@ struct GroupEditorView: View {
             if isEditing, repo.households.count > 1 {
                 Section {
                     Button(role: .destructive) {
+                        Haptics.warning()
                         repo.leaveCurrentGroup(); dismiss()
                     } label: {
-                        Label("Delete Group", systemImage: "trash")
+                        Label(repo.isOwnerOfCurrentGroup ? "Delete Group" : "Leave Group",
+                              systemImage: repo.isOwnerOfCurrentGroup ? "trash" : "rectangle.portrait.and.arrow.right")
                     }
                 } footer: {
-                    Text("Removes this group and its list from your device.")
+                    Text(repo.isOwnerOfCurrentGroup
+                         ? "As the owner, this deletes the group and its list for everyone."
+                         : "Removes this group and its list from your device.")
                 }
             }
         }
         .navigationTitle(isEditing ? "Edit Group" : "New Group")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+            ToolbarItem(placement: .cancellationAction) { Button("Cancel") { Haptics.selection(); dismiss() } }
             ToolbarItem(placement: .confirmationAction) {
                 Button("Save", action: save).bold()
                     .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || isSaving || (isEditing && !repo.isOwnerOfCurrentGroup))
@@ -111,10 +121,12 @@ struct GroupEditorView: View {
         let store = storeName.trimmingCharacters(in: .whitespaces)
         if isEditing {
             guard repo.isOwnerOfCurrentGroup else {
+                Haptics.error()
                 saveError = "Only the group owner can edit group details."
                 return
             }
             repo.updateGroup(name: trimmedName, store: store, icon: icon, theme: theme)
+            Haptics.success()
             dismiss()
             return
         }
@@ -125,8 +137,10 @@ struct GroupEditorView: View {
             await MainActor.run {
                 isSaving = false
                 if created != nil {
+                    Haptics.success()
                     dismiss()
                 } else {
+                    Haptics.error()
                     saveError = repo.usingCloudKit
                         ? "This group couldn't be saved to iCloud. Check Settings → Diagnostics for sync status, then try again."
                         : "Sign in to iCloud to save groups across devices."

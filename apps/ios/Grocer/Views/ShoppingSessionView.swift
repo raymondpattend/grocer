@@ -121,6 +121,7 @@ struct ShoppingSessionView: View {
                 case .found:
                     markItem(item, as: .found)
                 case .replace:
+                    Haptics.selection()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                         replacingItem = item
                     }
@@ -129,6 +130,7 @@ struct ShoppingSessionView: View {
                 case .outOfStock:
                     markItem(item, as: .outOfStock)
                 case .edit:
+                    Haptics.selection()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                         editingItem = item
                     }
@@ -167,7 +169,10 @@ struct ShoppingSessionView: View {
     }
 
     private func shopItemButton(_ item: GroceryItem, canManageTrip: Bool) -> some View {
-        Button { selectedItem = item } label: {
+        Button {
+            Haptics.selection()
+            selectedItem = item
+        } label: {
             ShopItemRow(item: item, member: repo.currentMembers.first { $0.id == item.requestedByMemberId }, tint: tint)
         }
         .buttonStyle(.plain)
@@ -214,8 +219,20 @@ struct ShoppingSessionView: View {
     }
 
     private func markItem(_ item: GroceryItem, as status: ItemStatus, replacement: String? = nil) {
+        feedback(for: status)
         withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
             repo.mark(item, as: status, replacement: replacement)
+        }
+    }
+
+    private func feedback(for status: ItemStatus) {
+        switch status {
+        case .found, .replaced:
+            Haptics.success()
+        case .outOfStock, .skipped, .removed:
+            Haptics.warning()
+        case .needed:
+            Haptics.selection()
         }
     }
 
@@ -227,6 +244,7 @@ struct ShoppingSessionView: View {
                 VStack(alignment: .leading) {
                     if canManageTrip {
                         Button {
+                            Haptics.selection()
                             storeText = session.storeName ?? ""
                             editingStore = true
                         } label: {
@@ -288,6 +306,7 @@ struct ShoppingSessionView: View {
         if !handled.isEmpty {
             Section {
                 Button {
+                    Haptics.selection()
                     withAnimation { showCompleted.toggle() }
                 } label: {
                     HStack {
@@ -321,6 +340,7 @@ struct ShoppingSessionView: View {
 
     private var finishButton: some View {
         Button {
+            Haptics.selection()
             showFinish = true
         } label: {
             Label("Finish Shopping", systemImage: "flag.checkered")
@@ -358,17 +378,8 @@ struct ShopItemRow: View {
 
             Spacer(minLength: 4)
 
-            if item.priority == .high {
-                Image(systemName: "exclamationmark.circle.fill")
-                    .foregroundStyle(.red)
-                    .font(.subheadline)
-            } else if item.priority == .low {
-                Text("low")
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(.quaternary, in: Capsule())
+            if item.priority != .normal {
+                PriorityCircle(priority: item.priority, size: 10)
             }
 
             MemberAvatarView(member: member, size: 26)
@@ -510,13 +521,13 @@ struct ShoppingItemDetailView: View {
                 }
 
                 if item.priority != .normal {
-                    Label(item.priority.rawValue, systemImage: item.priority.systemImage)
+                    PriorityLabel(priority: item.priority)
                         .font(.caption.weight(.medium))
-                        .foregroundStyle(item.priority == .high ? .red : .secondary)
+                        .foregroundStyle(.secondary)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 5)
                         .background(
-                            (item.priority == .high ? Color.red : Color(.systemGray5)).opacity(0.12),
+                            item.priority.markerColor.opacity(0.12),
                             in: Capsule()
                         )
                 }

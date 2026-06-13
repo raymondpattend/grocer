@@ -6,15 +6,44 @@ struct ItemDetailView: View {
 
     @State var item: GroceryItem
     @State private var editing = false
+    @State private var showRemoveConfirm = false
+
+    /// The member who requested the item, for their avatar in "Requested".
+    private var requestedByMember: HouseholdMember? {
+        repo.currentMembers.first { $0.id == item.requestedByMemberId }
+    }
 
     var body: some View {
         Form {
             Section {
-                LabeledContent("Name", value: item.name)
-                if let q = item.quantity { LabeledContent("Quantity", value: q) }
-                LabeledContent("Category", value: item.category.rawValue)
+                VStack(spacing: 10) {
+                    ProductImageView(itemName: item.name, size: 160)
+                    VStack(spacing: 2) {
+                        Text(item.name)
+                            .font(.title2.weight(.bold))
+                            .multilineTextAlignment(.center)
+                        Text(item.category.rawValue)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+                .listRowBackground(Color.clear)
+            }
+
+            Section {
+                HStack {
+                    Text("Quantity")
+                    Spacer()
+                    QuantityStepperControl(
+                        amount: quantityLabel,
+                        onDecrement: decrementQuantity,
+                        onIncrement: incrementQuantity
+                    )
+                }
                 if item.priority != .normal {
-                    Label(item.priority.rawValue, systemImage: item.priority.systemImage)
+                    PriorityLabel(priority: item.priority)
                 }
                 if let notes = item.notes { LabeledContent("Notes", value: notes) }
             }
@@ -27,28 +56,19 @@ struct ItemDetailView: View {
             }
 
             Section("Requested") {
-                LabeledContent("By", value: item.requestedByDisplayName)
+                HStack {
+                    Text("By")
+                    Spacer()
+                    MemberAvatarView(member: requestedByMember, size: 24)
+                    Text(item.requestedByDisplayName)
+                        .foregroundStyle(.secondary)
+                }
                 LabeledContent("Added", value: item.createdAt.formatted(date: .abbreviated, time: .shortened))
             }
 
             Section {
-                Button {
-                    moveItem {
-                        repo.mark(item, as: .found)
-                    }
-                    dismiss()
-                } label: {
-                    Label("Mark as Bought", systemImage: "checkmark.circle")
-                }
-                Button {
-                    moveItem {
-                        repo.mark(item, as: .removed)
-                    }
-                    dismiss()
-                } label: {
-                    Label("Mark as Not Needed", systemImage: "minus.circle")
-                }
                 Button(role: .destructive) {
+                    Haptics.warning()
                     moveItem {
                         repo.delete(item)
                     }
@@ -56,13 +76,17 @@ struct ItemDetailView: View {
                 } label: {
                     Label("Delete", systemImage: "trash")
                 }
+                .tint(.red)
             }
         }
         .navigationTitle(item.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button("Edit") { editing = true }
+                Button("Edit") {
+                    Haptics.selection()
+                    editing = true
+                }
             }
         }
         .sheet(isPresented: $editing) {
@@ -73,6 +97,53 @@ struct ItemDetailView: View {
                 }
             }
         }
+        .alert("Remove \(item.name)?", isPresented: $showRemoveConfirm) {
+            Button("Remove", role: .destructive) {
+                Haptics.warning()
+                moveItem { repo.delete(item) }
+                dismiss()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Lowering the quantity to zero removes this item from your list.")
+        }
+    }
+
+    // MARK: - Quantity stepper
+
+    /// Items always represent at least one of something, so an absent quantity
+    /// reads as "1".
+    private var quantityLabel: String {
+        let parsed = Quantity(parsing: item.quantity ?? "")
+        return Quantity(amount: parsed.amount ?? 1, unit: parsed.unit).formatted
+    }
+
+    private func incrementQuantity() {
+        let parsed = Quantity(parsing: item.quantity ?? "")
+        let step = GroceryUnits.step(for: parsed.unit)
+        setQuantity(amount: (parsed.amount ?? 1) + step, unit: parsed.unit)
+    }
+
+    private func decrementQuantity() {
+        let parsed = Quantity(parsing: item.quantity ?? "")
+        let step = GroceryUnits.step(for: parsed.unit)
+        let next = (parsed.amount ?? 1) - step
+        guard next > 0 else {
+            // Stepping to zero offers to remove the item rather than leaving a
+            // quantity-less entry on the list.
+            Haptics.warning()
+            showRemoveConfirm = true
+            return
+        }
+        setQuantity(amount: next, unit: parsed.unit)
+    }
+
+    private func setQuantity(amount: Double, unit: String) {
+        Haptics.selection()
+        withAnimation(.snappy(duration: 0.22)) {
+            item.quantity = Quantity(amount: amount, unit: unit).formatted
+        }
+        repo.update(item)
     }
 
     private func moveItem(_ action: () -> Void) {
@@ -107,7 +178,7 @@ struct EditItemView: View {
                 }
                 Picker("Priority", selection: $item.priority) {
                     ForEach(ItemPriority.allCases) { p in
-                        Label(p.rawValue, systemImage: p.systemImage).tag(p)
+                        PriorityLabel(priority: p).tag(p)
                     }
                 }
             }
@@ -123,7 +194,11 @@ struct EditItemView: View {
         .toolbar {
             ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
             ToolbarItem(placement: .confirmationAction) {
-                Button("Save") { onSave(item); dismiss() }.bold()
+                Button("Save") {
+                    Haptics.success()
+                    onSave(item)
+                    dismiss()
+                }.bold()
             }
         }
     }

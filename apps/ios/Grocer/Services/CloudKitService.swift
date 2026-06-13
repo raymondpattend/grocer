@@ -484,7 +484,7 @@ final class CloudKitService {
                 errors: ["CloudKit unavailable"]
             )
         }
-        let registeredVersion = UserDefaults.standard.integer(forKey: Self.subscriptionsRegisteredVersionKey)
+        let registeredVersion = GrocerAppGroup.defaults.integer(forKey: Self.subscriptionsRegisteredVersionKey)
         if !force, registeredVersion >= Self.subscriptionRegistrationVersion {
             print("[CK] registerSubscriptions skipped (already registered)")
             await registerForRemoteNotifications()
@@ -532,11 +532,11 @@ final class CloudKitService {
         }
 
         if privateZoneRegistered && sharedDatabaseRegistered {
-            UserDefaults.standard.set(true, forKey: Self.subscriptionsRegisteredKey)
-            UserDefaults.standard.set(Self.subscriptionRegistrationVersion, forKey: Self.subscriptionsRegisteredVersionKey)
+            GrocerAppGroup.defaults.set(true, forKey: Self.subscriptionsRegisteredKey)
+            GrocerAppGroup.defaults.set(Self.subscriptionRegistrationVersion, forKey: Self.subscriptionsRegisteredVersionKey)
         } else {
-            UserDefaults.standard.set(false, forKey: Self.subscriptionsRegisteredKey)
-            UserDefaults.standard.removeObject(forKey: Self.subscriptionsRegisteredVersionKey)
+            GrocerAppGroup.defaults.set(false, forKey: Self.subscriptionsRegisteredKey)
+            GrocerAppGroup.defaults.removeObject(forKey: Self.subscriptionsRegisteredVersionKey)
         }
 
         await registerForRemoteNotifications()
@@ -548,8 +548,8 @@ final class CloudKitService {
     }
 
     func clearSubscriptionRegistrationFlag() {
-        UserDefaults.standard.set(false, forKey: Self.subscriptionsRegisteredKey)
-        UserDefaults.standard.removeObject(forKey: Self.subscriptionsRegisteredVersionKey)
+        GrocerAppGroup.defaults.set(false, forKey: Self.subscriptionsRegisteredKey)
+        GrocerAppGroup.defaults.removeObject(forKey: Self.subscriptionsRegisteredVersionKey)
         clearAllChangeTokens()
     }
 
@@ -598,7 +598,7 @@ final class CloudKitService {
     private static let changeTokenKeyPrefix = "grocer.cloudkit.changeToken"
 
     private func changeToken(for zone: CloudZoneRef) -> CKServerChangeToken? {
-        guard let data = UserDefaults.standard.data(forKey: changeTokenKey(for: zone)) else { return nil }
+        guard let data = GrocerAppGroup.defaults.data(forKey: changeTokenKey(for: zone)) else { return nil }
         return try? NSKeyedUnarchiver.unarchivedObject(ofClass: CKServerChangeToken.self, from: data)
     }
 
@@ -607,17 +607,17 @@ final class CloudKitService {
             print("[CK] ⚠️ failed to archive change token for \(zone.zoneName)")
             return
         }
-        UserDefaults.standard.set(data, forKey: changeTokenKey(for: zone))
+        GrocerAppGroup.defaults.set(data, forKey: changeTokenKey(for: zone))
     }
 
     private func clearChangeToken(for zone: CloudZoneRef) {
-        UserDefaults.standard.removeObject(forKey: changeTokenKey(for: zone))
+        GrocerAppGroup.defaults.removeObject(forKey: changeTokenKey(for: zone))
     }
 
     private func clearAllChangeTokens() {
-        for key in UserDefaults.standard.dictionaryRepresentation().keys
+        for key in GrocerAppGroup.defaults.dictionaryRepresentation().keys
             where key.hasPrefix(Self.changeTokenKeyPrefix) {
-            UserDefaults.standard.removeObject(forKey: key)
+            GrocerAppGroup.defaults.removeObject(forKey: key)
         }
     }
 
@@ -755,10 +755,12 @@ struct CloudSnapshot: Codable {
     var lists: [GroceryList] = []
     var items: [GroceryItem] = []
     var sessions: [ShoppingSession] = []
+    var tripItems: [ShoppingTripItem] = []
     var events: [ItemEvent] = []
 
     var isEmpty: Bool {
-        households.isEmpty && members.isEmpty && lists.isEmpty && items.isEmpty && sessions.isEmpty && events.isEmpty
+        households.isEmpty && members.isEmpty && lists.isEmpty && items.isEmpty
+            && sessions.isEmpty && tripItems.isEmpty && events.isEmpty
     }
 
     mutating func upsert(contentsOf other: CloudSnapshot) {
@@ -767,6 +769,7 @@ struct CloudSnapshot: Codable {
         lists = Self.upserting(other.lists, into: lists)
         items = Self.upserting(other.items, into: items)
         sessions = Self.upserting(other.sessions, into: sessions)
+        tripItems = Self.upserting(other.tripItems, into: tripItems)
         events = Self.upserting(other.events, into: events)
     }
 
@@ -777,6 +780,7 @@ struct CloudSnapshot: Codable {
             lists.removeAll { $0.householdId == deletion.recordName }
             items.removeAll { $0.householdId == deletion.recordName }
             sessions.removeAll { $0.householdId == deletion.recordName }
+            tripItems.removeAll { $0.householdId == deletion.recordName }
             events.removeAll { $0.householdId == deletion.recordName }
             members.removeAll { $0.householdId == deletion.recordName }
         case CK.RecordType.member:
@@ -789,6 +793,9 @@ struct CloudSnapshot: Codable {
             items.removeAll { $0.id == deletion.recordName }
         case CK.RecordType.session:
             sessions.removeAll { $0.id == deletion.recordName }
+            tripItems.removeAll { $0.sessionId == deletion.recordName }
+        case CK.RecordType.tripItem:
+            tripItems.removeAll { $0.id == deletion.recordName }
         case CK.RecordType.event:
             events.removeAll { $0.id == deletion.recordName }
         default:
@@ -812,6 +819,7 @@ struct CloudSnapshot: Codable {
         lists.removeAll { householdIds.contains($0.householdId) }
         items.removeAll { householdIds.contains($0.householdId) }
         sessions.removeAll { householdIds.contains($0.householdId) }
+        tripItems.removeAll { householdIds.contains($0.householdId) }
         events.removeAll { householdIds.contains($0.householdId) }
     }
 
@@ -832,6 +840,9 @@ struct CloudSnapshot: Codable {
         case CK.RecordType.session:
             if let v = ShoppingSession(record: record) { sessions.append(v) }
             else { print("[CK] ⚠️ failed to decode ShoppingSession from \(record.recordID.recordName), keys: \(record.allKeys())") }
+        case CK.RecordType.tripItem:
+            if let v = ShoppingTripItem(record: record) { tripItems.append(v) }
+            else { print("[CK] ⚠️ failed to decode ShoppingTripItem from \(record.recordID.recordName), keys: \(record.allKeys())") }
         case CK.RecordType.event:
             if let v = ItemEvent(record: record) { events.append(v) }
             else { print("[CK] ⚠️ failed to decode ItemEvent from \(record.recordID.recordName), keys: \(record.allKeys())") }

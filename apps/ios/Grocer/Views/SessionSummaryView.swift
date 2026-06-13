@@ -41,7 +41,9 @@ struct SessionSummaryView: View {
 
             Section("Cleanup") {
                 Toggle("Clear completed items", isOn: $clearCompleted)
+                    .onChange(of: clearCompleted) { _, _ in Haptics.selection() }
                 Toggle("Keep out-of-stock items for next trip", isOn: $keepOutOfStock)
+                    .onChange(of: keepOutOfStock) { _, _ in Haptics.selection() }
             }
         }
         .navigationTitle("Trip Summary")
@@ -49,6 +51,7 @@ struct SessionSummaryView: View {
         .navigationBarBackButtonHidden(true)
         .safeAreaInset(edge: .bottom) {
             Button {
+                Haptics.success()
                 if !finished {
                     finished = true
                     // Finish runs without blocking; the APNs end push is fire-and-forget.

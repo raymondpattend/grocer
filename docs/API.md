@@ -61,14 +61,22 @@ All responses are JSON. Invalid bodies return `400` with
 { "ok": true, "service": "grocery-api", "timestamp": "ISO_DATE" }
 ```
 
-### `GET /config/ios`
+### `GET /config/ios?build=1`
 ```json
 {
   "minimumSupportedBuild": 1,
   "latestBuild": 1,
+  "upgradeRequired": false,
+  "status": "ok",
+  "updateUrl": "https://narro.org/grocer",
   "features": { "suggestions": true, "parseList": true, "feedback": true, "liveActivities": true }
 }
 ```
+
+Pass the app's numeric `CFBundleVersion` as `build`. When it is below
+`minimumSupportedBuild`, the API returns `"status": "upgrade_required"` and
+`upgradeRequired: true`; the iOS app must show a forced update prompt that opens
+`updateUrl`.
 
 ### `POST /feedback`
 ```json

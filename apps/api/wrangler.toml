@@ -50,6 +50,8 @@ APNS_KEY_ID="PCFC9F5R25"
 APNS_BUNDLE_ID="org.narro.grocer"
 IOS_MIN_BUILD = "1"
 IOS_LATEST_BUILD = "1"
+IOS_UPDATE_URL = "https://narro.org/grocer"
+POSTHOG_HOST = "https://us.i.posthog.com"
 
 [observability]
 enabled = true

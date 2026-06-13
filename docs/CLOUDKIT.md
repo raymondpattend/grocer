@@ -93,6 +93,26 @@ A group *is* the grocery list — it carries the store, icon, and color theme.
 | `startedAt` / `endedAt` / `updatedAt` | Date/Time |
 | `status` | String (Queryable) |
 
+### ShoppingTripItem
+An immutable per-item snapshot of one finished trip, written when the trip ends
+(the live `GroceryItem` is reused across trips, so its `activeSessionId` link
+can't serve as history). Record name is `"<sessionId>_<itemId>"`. `status`
+holds the outcome (`Found`/`Replaced`/`Out of Stock`/`Skipped`/`Removed`, or
+`Needed` for items left unfound).
+| Field | Type |
+| --- | --- |
+| `householdId` | String (Queryable) |
+| `sessionId` | String (Queryable) |
+| `itemId` | String |
+| `name` | String |
+| `quantity` | String |
+| `category` | String |
+| `status` | String (outcome) |
+| `replacementItemName` | String |
+| `requestedByMemberId` | String |
+| `requestedByDisplayName` | String |
+| `createdAt` | Date/Time (capture time == trip end) |
+
 ### ItemEvent
 | Field | Type |
 | --- | --- |
@@ -109,8 +129,9 @@ A group *is* the grocery list — it carries the store, icon, and color theme.
 
 In the CloudKit Console, add **Queryable** indexes for the fields marked above
 (at minimum `householdId`, `listId`, `status`, `activeSessionId`, `sessionId`,
-`itemId`) and the system **recordName** index per record type. The app queries
-by zone + record type, so per-type recordName queryability is required.
+`itemId`) and the system **recordName** index per record type. For
+`ShoppingTripItem`, index `householdId` and `sessionId`. The app queries by zone
++ record type, so per-type recordName queryability is required.
 
 ## 5. Family Sharing flow
 

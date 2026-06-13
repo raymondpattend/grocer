@@ -23,5 +23,12 @@
 	<!-- Push Notifications: needed for ActivityKit push-to-start / updates. -->
 	<key>aps-environment</key>
 	<string>development</string>
+
+	<!-- App Group: shares the widget snapshot + product image cache with the
+	     GrocerWidget extension. Must match GrocerWidget.entitlements. -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.org.narro.grocer</string>
+	</array>
 </dict>
 </plist>

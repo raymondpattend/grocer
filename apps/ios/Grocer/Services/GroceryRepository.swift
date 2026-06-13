@@ -1,6 +1,7 @@
 import CloudKit
 import Foundation
 import Observation
+import WidgetKit
 
 private enum PendingCloudOperation: String, Codable {
     case save
@@ -13,6 +14,7 @@ private enum PendingCloudRecord: Codable, Equatable {
     case list(GroceryList)
     case item(GroceryItem)
     case session(ShoppingSession)
+    case tripItem(ShoppingTripItem)
     case event(ItemEvent)
 
     var recordType: String {
@@ -22,6 +24,7 @@ private enum PendingCloudRecord: Codable, Equatable {
         case .list: return CK.RecordType.list
         case .item: return CK.RecordType.item
         case .session: return CK.RecordType.session
+        case .tripItem: return CK.RecordType.tripItem
         case .event: return CK.RecordType.event
         }
     }
@@ -33,6 +36,7 @@ private enum PendingCloudRecord: Codable, Equatable {
         case .list(let value): return value.id
         case .item(let value): return value.id
         case .session(let value): return value.id
+        case .tripItem(let value): return value.id
         case .event(let value): return value.id
         }
     }
@@ -44,6 +48,7 @@ private enum PendingCloudRecord: Codable, Equatable {
         case .list(let value): return value.householdId
         case .item(let value): return value.householdId
         case .session(let value): return value.householdId
+        case .tripItem(let value): return value.householdId
         case .event(let value): return value.householdId
         }
     }
@@ -60,6 +65,7 @@ private enum PendingCloudRecord: Codable, Equatable {
         case .list(let value): snapshot.lists = [value]
         case .item(let value): snapshot.items = [value]
         case .session(let value): snapshot.sessions = [value]
+        case .tripItem(let value): snapshot.tripItems = [value]
         case .event(let value): snapshot.events = [value]
         }
         return snapshot
@@ -80,6 +86,7 @@ private enum PendingCloudRecord: Codable, Equatable {
         case .list(let value): value.apply(to: record)
         case .item(let value): value.apply(to: record)
         case .session(let value): value.apply(to: record)
+        case .tripItem(let value): value.apply(to: record)
         case .event(let value): value.apply(to: record)
         }
     }
@@ -104,9 +111,15 @@ enum CloudKitEnvironment {
     static let current: String = resolve()
 
     private static func resolve() -> String {
+        // Decode with ISO Latin-1, not ASCII: a .mobileprovision is a PKCS#7
+        // signed blob whose certificate/signature bytes are > 127, which makes
+        // `String(data:encoding:.ascii)` return nil for the whole file — every
+        // build would then fall through to "production" and share the prod
+        // cache. Latin-1 maps all 256 byte values, so the embedded plaintext
+        // plist is always recoverable.
         guard let url = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision"),
               let data = try? Data(contentsOf: url),
-              let raw = String(data: data, encoding: .ascii),
+              let raw = String(data: data, encoding: .isoLatin1),
               let start = raw.range(of: "<plist"),
               let end = raw.range(of: "</plist>"),
               let plistData = String(raw[start.lowerBound..<end.upperBound]).data(using: .utf8),
@@ -114,8 +127,15 @@ enum CloudKitEnvironment {
               let entitlements = plist["Entitlements"] as? [String: Any],
               let aps = entitlements["aps-environment"] as? String
         else {
-            // No embedded profile (App Store build) → Production.
+            // No embedded profile: either an App Store build (→ Production) or a
+            // Simulator build (no provisioning profile at all). Fall back to the
+            // compile configuration so Debug simulator runs still get the
+            // Development-scoped cache instead of sharing the prod one.
+            #if DEBUG
+            return "development"
+            #else
             return "production"
+            #endif
         }
         return aps == "development" ? "development" : "production"
     }
@@ -220,11 +240,19 @@ final class GroceryRepository {
     static func makePreview(
         households: [Household] = [],
         members: [HouseholdMember] = [],
+        lists: [GroceryList] = [],
+        items: [GroceryItem] = [],
+        sessions: [ShoppingSession] = [],
+        tripItems: [ShoppingTripItem] = [],
         joinedHouseholdId: String? = nil
     ) -> GroceryRepository {
         let repo = GroceryRepository()
         repo.households = households
         repo.members = members
+        repo.lists = lists
+        repo.items = items
+        repo.sessions = sessions
+        repo.tripItems = tripItems
         repo.joinedHouseholdId = joinedHouseholdId
         repo.hasCompletedInitialLoad = true
         return repo
@@ -236,6 +264,7 @@ final class GroceryRepository {
     private(set) var lists: [GroceryList] = []
     private(set) var items: [GroceryItem] = []
     private(set) var sessions: [ShoppingSession] = []
+    private(set) var tripItems: [ShoppingTripItem] = []
     private(set) var events: [ItemEvent] = []
 
     private(set) var selectedHouseholdId: String?
@@ -281,6 +310,11 @@ final class GroceryRepository {
     var currentList: GroceryList? {
         guard let hid = currentHousehold?.id else { return nil }
         return lists.first { $0.householdId == hid && !$0.archived }
+    }
+
+    /// The single (non-archived) list backing a given group.
+    func list(for household: Household) -> GroceryList? {
+        lists.first { $0.householdId == household.id && !$0.archived }
     }
 
     var currentMembers: [HouseholdMember] {
@@ -454,6 +488,41 @@ final class GroceryRepository {
         )
     }
 
+    // MARK: - Trip history
+
+    /// Finished (completed or cancelled) trips for a group, most recent first.
+    func completedTrips(for householdId: String?) -> [ShoppingSession] {
+        guard let householdId else { return [] }
+        return sessions
+            .filter { $0.householdId == householdId && $0.status != .active }
+            .sorted(by: ShoppingSession.recentDisplayOrder)
+    }
+
+    /// Finished trips for the currently selected group.
+    var currentCompletedTrips: [ShoppingSession] {
+        completedTrips(for: currentHousehold?.id)
+    }
+
+    /// The captured item snapshots for a finished trip, in display order.
+    func tripItems(for session: ShoppingSession) -> [ShoppingTripItem] {
+        tripItems
+            .filter { $0.sessionId == session.id }
+            .sorted(by: ShoppingTripItem.tripDisplayOrder)
+    }
+
+    /// Outcome tallies for a finished trip, derived from its captured snapshots.
+    func tripProgress(for session: ShoppingSession) -> SessionProgress {
+        let scoped = tripItems(for: session)
+        return SessionProgress(
+            total: scoped.count,
+            found: scoped.filter { $0.outcome == .found }.count,
+            replaced: scoped.filter { $0.outcome == .replaced }.count,
+            outOfStock: scoped.filter { $0.outcome == .outOfStock }.count,
+            skipped: scoped.filter { $0.outcome == .skipped }.count,
+            remaining: scoped.filter { $0.outcome == .needed }.count
+        )
+    }
+
     private func expireInactiveShoppingTrips(now: Date = Date()) async {
         let expired = sessions.filter { session in
             guard session.status == .active else { return false }
@@ -577,6 +646,7 @@ final class GroceryRepository {
         print("[Repo] refresh → \(households.count) households, \(members.count) members, \(lists.count) lists, \(items.count) items, \(events.count) events")
         ensureValidSelection()
         ensureCurrentUserMemberRecords()
+        repairOrphanedGroupOwners()
         syncPersonalProfileCache()
         await expireInactiveShoppingTrips()
         await backfillParentReferencesIfNeeded()
@@ -595,14 +665,14 @@ final class GroceryRepository {
     private func backfillParentReferencesIfNeeded() async {
         guard usingCloudKit else { return }
         let key = "grocer.migration.parentRefs.v2"
-        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        guard !GrocerAppGroup.defaults.bool(forKey: key) else { return }
 
         let ownedHouseholdIds = households
             .filter { $0.ownerMemberId == currentMemberId
                 && ($0.recordOwnerName ?? CKCurrentUserDefaultName) == CKCurrentUserDefaultName }
             .map(\.id)
         guard !ownedHouseholdIds.isEmpty else {
-            UserDefaults.standard.set(true, forKey: key)
+            GrocerAppGroup.defaults.set(true, forKey: key)
             return
         }
 
@@ -617,6 +687,9 @@ final class GroceryRepository {
             for session in sessions where session.householdId == hid {
                 await fetchAndSave(session, type: CK.RecordType.session, id: session.id, householdId: hid)
             }
+            for tripItem in tripItems where tripItem.householdId == hid {
+                await fetchAndSave(tripItem, type: CK.RecordType.tripItem, id: tripItem.id, householdId: hid)
+            }
             for event in events where event.householdId == hid {
                 await fetchAndSave(event, type: CK.RecordType.event, id: event.id, householdId: hid)
             }
@@ -624,7 +697,7 @@ final class GroceryRepository {
                 await saveMemberBestEffort(member)
             }
         }
-        UserDefaults.standard.set(true, forKey: key)
+        GrocerAppGroup.defaults.set(true, forKey: key)
         print("[Repo] ✅ parent-ref backfill complete")
     }
 
@@ -879,6 +952,7 @@ final class GroceryRepository {
         guard let household = households.first(where: { $0.id == member.householdId }) else { return }
         guard member.role != .owner else { return }
         members.removeAll { $0.id == member.id && $0.householdId == member.householdId }
+        repairOrphanedGroupOwners()
         guard usingCloudKit else {
             saveLocalSnapshot()
             return
@@ -928,21 +1002,65 @@ final class GroceryRepository {
         changed.forEach { persist($0) }
     }
 
+    /// Leaving the current group. The owner *deletes* the whole group for
+    /// everyone — its household, list, items, history, members, and the
+    /// CloudKit share. A member only removes themselves.
     func leaveCurrentGroup() {
         guard let house = currentHousehold else { return }
+        if isOwnerOfCurrentGroup {
+            deleteGroupAsOwner(house)
+        } else {
+            removeSelfFromGroup(house)
+        }
+    }
+
+    /// Member leaving a shared group: drop the local copy and delete only our
+    /// own member record from the owner's zone.
+    private func removeSelfFromGroup(_ house: Household) {
         let me = currentMember
-        households.removeAll { $0.id == house.id }
-        lists.removeAll { $0.householdId == house.id }
-        items.removeAll { $0.householdId == house.id }
-        events.removeAll { $0.householdId == house.id }
-        if let me { members.removeAll { $0.id == me.id && $0.householdId == house.id } }
-        selectedHouseholdId = households.first?.id
-        ensureValidSelection()
+        discardLocalGroup(house)
         if usingCloudKit, let me {
             enqueueDelete(.member(me))
         } else {
             saveLocalSnapshot()
         }
+    }
+
+    /// Owner leaving: tear the group down completely. Child records don't
+    /// cascade-delete with the household root (their `parent` link uses
+    /// `.none`), so each is deleted explicitly; deleting the household root
+    /// also removes the `CKShare`, revoking every participant's access.
+    private func deleteGroupAsOwner(_ house: Household) {
+        guard usingCloudKit else {
+            discardLocalGroup(house)
+            saveLocalSnapshot()
+            return
+        }
+        // Enqueue while the household is still in local state so child record
+        // IDs resolve to the correct zone, then drop it locally.
+        items.filter { $0.householdId == house.id }.forEach { enqueueDelete(.item($0)) }
+        sessions.filter { $0.householdId == house.id }.forEach { enqueueDelete(.session($0)) }
+        tripItems.filter { $0.householdId == house.id }.forEach { enqueueDelete(.tripItem($0)) }
+        events.filter { $0.householdId == house.id }.forEach { enqueueDelete(.event($0)) }
+        lists.filter { $0.householdId == house.id }.forEach { enqueueDelete(.list($0)) }
+        members.filter { $0.householdId == house.id }.forEach { enqueueDelete(.member($0)) }
+        enqueueDelete(.household(house))
+        discardLocalGroup(house)
+        saveLocalSnapshot()
+    }
+
+    /// Removes every trace of a group from in-memory state and reselects a
+    /// remaining group.
+    private func discardLocalGroup(_ house: Household) {
+        households.removeAll { $0.id == house.id }
+        lists.removeAll { $0.householdId == house.id }
+        items.removeAll { $0.householdId == house.id }
+        sessions.removeAll { $0.householdId == house.id }
+        tripItems.removeAll { $0.householdId == house.id }
+        events.removeAll { $0.householdId == house.id }
+        members.removeAll { $0.householdId == house.id }
+        selectedHouseholdId = households.first?.id
+        ensureValidSelection()
     }
 
     // MARK: - Item CRUD
@@ -1016,6 +1134,61 @@ final class GroceryRepository {
                  sessionId: activeSession(for: item.listId)?.id, metadata: ["name": item.name])
     }
 
+    // MARK: - Siri / App Intents entry point
+
+    /// Returns a repository ready to serve an App Intent. Reuses the live
+    /// instance when the app is already running; otherwise spins one up and
+    /// bootstraps it so a cold, headless (Siri-triggered) launch loads the local
+    /// cache, the selected group, and enables CloudKit sync.
+    static func sharedForIntent() async -> GroceryRepository {
+        if let current { return current }
+        let repo = makeShared()
+        await repo.bootstrap()
+        return repo
+    }
+
+    /// Item-name suggestions for the App Intent resolver. These are optional:
+    /// Siri can still resolve arbitrary dictated text through
+    /// `GroceryItemNameQuery.entities(matching:)`.
+    func intentItemNameSuggestions(limit: Int = 20) -> [String] {
+        Array(currentItemSuggestions.map(\.name).prefix(limit))
+    }
+
+    /// Adds an item dictated through Siri / Shortcuts to the currently selected
+    /// group, mirroring the in-app default path (offline category + unit
+    /// guesses). Blocks until the CloudKit write is flushed so a background
+    /// launch isn't suspended mid-sync.
+    func addItemFromIntent(_ rawText: String) async -> IntentAddOutcome {
+        if !hasCompletedInitialLoad {
+            await bootstrap()
+        }
+        guard let list = currentList else { return .noList }
+
+        let parsed = SiriItemPhrase(parsing: rawText)
+        guard !parsed.name.isEmpty else { return .empty }
+
+        addItem(
+            name: parsed.name,
+            quantity: parsed.quantity,
+            category: CategoryGuess.guess(for: parsed.name),
+            notes: nil,
+            replacementPreference: nil
+        )
+        await flushOutboxNow()
+        // Name the group (e.g. "Home"), not the internal list (always
+        // "Groceries"), so multi-group users hear where it landed.
+        return .added(item: parsed.name, list: currentHousehold?.name ?? list.name)
+    }
+
+    /// Drains the CloudKit outbox and waits for the in-flight flush task so a
+    /// headless caller (App Intent) can guarantee the write reached CloudKit
+    /// before `perform()` returns. No-op when not syncing to CloudKit — the
+    /// write is still persisted to the local snapshot and flushes on next open.
+    func flushOutboxNow() async {
+        await cloudWriteTask?.value
+        await flushOutbox()
+    }
+
     // MARK: - Shopping status transitions
 
     func mark(_ item: GroceryItem, as status: ItemStatus, replacement: String? = nil) {
@@ -1072,6 +1245,12 @@ final class GroceryRepository {
         logEvent(.sessionStarted, householdId: session.householdId, sessionId: session.id,
                  metadata: ["store": session.storeName ?? ""])
 
+        // Ensure the shopper's avatar is in the App Group so the Live Activity can
+        // render it in place of the cart icon, even before the next roster sync.
+        if let memberId = member?.id, let avatar = member?.profileImageData ?? settings.profileImageData {
+            WidgetShopperAvatarStore.save(avatar, forMember: memberId)
+        }
+
         let content = contentState(for: session)
         let payload = startPayload(session: session, content: content)
         liveActivity.startLocalActivity(session: session, content: content)
@@ -1108,6 +1287,8 @@ final class GroceryRepository {
         let progress = progress(for: session)
         let payload = endPayload(session: ended, status: "completed", progress: progress)
         liveActivity.endLocalActivity(content: contentState(for: ended, overrideStatus: .completed))
+        // Snapshot the trip's items *before* cleanup wipes their activeSessionId.
+        captureTripItems(for: session, at: now)
         applyCleanup(session: session, clearCompleted: clearCompleted, keepOutOfStock: keepOutOfStock)
         Task { await api.endLiveActivity(payload) }
     }
@@ -1121,6 +1302,8 @@ final class GroceryRepository {
         replaceSession(cancelled)
         persist(cancelled)
         logEvent(.sessionCancelled, householdId: session.householdId, sessionId: session.id)
+        // A cancelled/auto-expired trip is still history; capture whatever was handled.
+        captureTripItems(for: session, at: now)
 
         let progress = progress(for: session)
         let payload = endPayload(session: cancelled, status: "cancelled", progress: progress)
@@ -1163,6 +1346,46 @@ final class GroceryRepository {
         changed.forEach { persist($0) }
     }
 
+    /// Writes an immutable per-item snapshot of a trip so its contents stay
+    /// reviewable after the live items are cleaned up / reused. Membership =
+    /// items handled during the trip (`activeSessionId == session.id`, any
+    /// outcome) plus items still on the list but left unfound (`.needed`). Must
+    /// be called *before* `applyCleanup`, which clears `activeSessionId`.
+    /// Re-capturing the same trip upserts via the deterministic record name.
+    private func captureTripItems(for session: ShoppingSession, at capturedAt: Date) {
+        let tripScopedItems = items.filter { item in
+            guard item.listId == session.listId else { return false }
+            return item.activeSessionId == session.id
+                || (item.status == .needed && item.deletedAt == nil)
+        }
+        guard !tripScopedItems.isEmpty else { return }
+
+        var captured: [ShoppingTripItem] = []
+        for item in tripScopedItems {
+            let snapshot = ShoppingTripItem(
+                id: ShoppingTripItem.recordName(sessionId: session.id, itemId: item.id),
+                householdId: session.householdId,
+                sessionId: session.id,
+                itemId: item.id,
+                name: item.name,
+                quantity: item.quantity,
+                category: item.category,
+                outcome: item.status,
+                replacementItemName: item.replacementItemName,
+                requestedByMemberId: item.requestedByMemberId,
+                requestedByDisplayName: item.requestedByDisplayName,
+                createdAt: capturedAt
+            )
+            if let idx = tripItems.firstIndex(where: { $0.id == snapshot.id }) {
+                tripItems[idx] = snapshot
+            } else {
+                tripItems.append(snapshot)
+            }
+            captured.append(snapshot)
+        }
+        captured.forEach { persist($0) }
+    }
+
     // MARK: - Live Activity payload helpers
 
     private func contentState(for session: ShoppingSession,
@@ -1190,6 +1413,7 @@ final class GroceryRepository {
     private func startPayload(session: ShoppingSession, content: GroceryActivityAttributes.ContentState) -> StartLiveActivityPayload {
         StartLiveActivityPayload(
             householdId: session.householdId, sessionId: session.id,
+            startedByMemberId: session.startedByMemberId,
             sourceDeviceId: settings.deviceId,
             storeName: content.storeName, shopperName: content.shopperName, status: content.status,
             itemsFound: content.itemsFound, itemsRemaining: content.itemsRemaining, totalItems: content.totalItems,
@@ -1312,14 +1536,14 @@ final class GroceryRepository {
         guard usingCloudKit else {
             print("[Repo] not using CloudKit, clearing local state only")
             resetLocalSyncState()
-            households = []; members = []; lists = []; items = []; sessions = []; events = []
+            households = []; members = []; lists = []; items = []; sessions = []; tripItems = []; events = []
             hasCompletedInitialLoad = false
             await bootstrap()
             return
         }
         try await cloud.deleteZone()
         resetLocalSyncState()
-        households = []; members = []; lists = []; items = []; sessions = []; events = []
+        households = []; members = []; lists = []; items = []; sessions = []; tripItems = []; events = []
         selectedHouseholdId = nil
         settings.selectedHouseholdId = ""
         hasCompletedInitialLoad = false
@@ -1345,6 +1569,7 @@ final class GroceryRepository {
             lists: lists,
             items: items,
             sessions: sessions,
+            tripItems: tripItems,
             events: events
         )
     }
@@ -1358,11 +1583,59 @@ final class GroceryRepository {
         ensureValidSelection()
         hasCompletedInitialLoad = true
         print("[Repo] loaded local cache — \(households.count) group(s), \(items.count) item(s), \(pendingCloudWrites.count) pending write(s)")
+        publishWidgetSnapshot()
     }
 
     private func saveLocalSnapshot() {
         localStore.saveSnapshot(currentSnapshot())
         localStore.saveOutbox(pendingCloudWrites)
+        publishWidgetSnapshot()
+    }
+
+    // MARK: - Home screen widget
+
+    private var lastPublishedWidgetSignature: Data?
+
+    /// Publishes a lightweight snapshot of every list (with pending item names)
+    /// to the App Group so the home-screen widget can render it, and nudges
+    /// WidgetKit to refresh. Called from the local-persistence chokepoints so it
+    /// stays current with every change; deduped so frequent outbox flushes don't
+    /// spam WidgetCenter.
+    private func publishWidgetSnapshot() {
+        let summaries: [WidgetListSummary] = households
+            .sorted(by: Household.stableDisplayOrder)
+            .map { household in
+                let listId = lists.first { $0.householdId == household.id && !$0.archived }?.id
+                let pending = listId.map { id in
+                    items.filter { $0.listId == id && $0.status == .needed }
+                        .sorted(by: GroceryItem.listDisplayOrder)
+                } ?? []
+                return WidgetListSummary(
+                    id: household.id,
+                    name: household.name,
+                    icon: household.icon,
+                    colorThemeRaw: household.colorTheme.rawValue,
+                    storeName: household.storeName,
+                    pendingCount: pending.count,
+                    itemNames: pending.prefix(12).map(\.name)
+                )
+            }
+
+        // Dedupe on the list content only (not the generated timestamp) so an
+        // unchanged list doesn't trigger a redundant timeline reload.
+        guard let signature = try? JSONEncoder().encode(summaries),
+              signature != lastPublishedWidgetSignature else { return }
+        lastPublishedWidgetSignature = signature
+
+        WidgetSnapshotStore.save(WidgetSnapshot(lists: summaries, generatedAt: Date()))
+        WidgetCenter.shared.reloadAllTimelines()
+
+        // Warm the shared image cache for the items the widget will show so they
+        // appear without each widget having to fetch them itself.
+        let names = Array(Set(summaries.flatMap { $0.itemNames })).prefix(24)
+        for name in names {
+            Task { _ = await ProductImageLoader.shared.image(for: name) }
+        }
     }
 
     private func applySnapshot(_ snapshot: CloudSnapshot) {
@@ -1372,11 +1645,68 @@ final class GroceryRepository {
         // With the ~5s foreground refresh loop that meant the toolbar group
         // menu (and its liquid-glass material) visibly flashed each cycle.
         assignIfChanged(&households, snapshot.households.sorted(by: Household.stableDisplayOrder))
-        assignIfChanged(&members, snapshot.members.sorted(by: HouseholdMember.stableDisplayOrder))
+        let sortedMembers = snapshot.members.sorted(by: HouseholdMember.stableDisplayOrder)
+        if members != sortedMembers {
+            members = sortedMembers
+            // Publish member avatars to the App Group so Live Activities on family
+            // devices can render the shopper's picture (keyed by member id).
+            WidgetShopperAvatarStore.sync(members.map { ($0.id, $0.profileImageData) })
+        }
         assignIfChanged(&lists, snapshot.lists.sorted(by: GroceryList.stableDisplayOrder))
         assignIfChanged(&items, snapshot.items.sorted(by: GroceryItem.listDisplayOrder))
         assignIfChanged(&sessions, snapshot.sessions.sorted(by: ShoppingSession.stableDisplayOrder))
+        assignIfChanged(&tripItems, snapshot.tripItems.sorted(by: ShoppingTripItem.tripDisplayOrder))
         assignIfChanged(&events, snapshot.events.sorted(by: ItemEvent.stableDisplayOrder))
+        repairOrphanedGroupOwners()
+    }
+
+    private func repairOrphanedGroupOwners() {
+        guard !households.isEmpty, !members.isEmpty else { return }
+
+        let now = Date()
+        var householdsToPersist: [Household] = []
+        var membersToPersist: [HouseholdMember] = []
+
+        for householdIndex in households.indices {
+            let household = households[householdIndex]
+            let memberIndexes = members.indices.filter { members[$0].householdId == household.id }
+            guard !memberIndexes.isEmpty else { continue }
+
+            let currentOwnerIndex = memberIndexes.first { members[$0].id == household.ownerMemberId }
+            let nextOwnerIndex: Int
+            if let currentOwnerIndex {
+                nextOwnerIndex = currentOwnerIndex
+            } else if let promotedIndex = memberIndexes.sorted(by: {
+                Self.memberOwnerPromotionOrder(members[$0], members[$1])
+            }).first {
+                nextOwnerIndex = promotedIndex
+                households[householdIndex].ownerMemberId = members[promotedIndex].id
+                households[householdIndex].updatedAt = now
+                householdsToPersist.append(households[householdIndex])
+                print("[Repo] repaired group owner for \(household.name): \(members[promotedIndex].displayName)")
+            } else {
+                continue
+            }
+
+            for memberIndex in memberIndexes {
+                let repairedRole: MemberRole = memberIndex == nextOwnerIndex ? .owner : .member
+                guard members[memberIndex].role != repairedRole else { continue }
+                members[memberIndex].role = repairedRole
+                membersToPersist.append(members[memberIndex])
+            }
+        }
+
+        householdsToPersist.forEach { persistHousehold($0) }
+        membersToPersist.forEach { persist($0) }
+    }
+
+    private static func memberOwnerPromotionOrder(_ lhs: HouseholdMember, _ rhs: HouseholdMember) -> Bool {
+        let lhsName = lhs.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rhsName = rhs.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if lhsName.isEmpty != rhsName.isEmpty { return !lhsName.isEmpty }
+        let nameComparison = lhsName.localizedCaseInsensitiveCompare(rhsName)
+        if nameComparison != .orderedSame { return nameComparison == .orderedAscending }
+        return lhs.id < rhs.id
     }
 
     /// Writes `newValue` to `storage` only when it differs, avoiding spurious
@@ -1466,6 +1796,10 @@ final class GroceryRepository {
 
     private func persist(_ session: ShoppingSession) {
         enqueueSave(.session(session))
+    }
+
+    private func persist(_ tripItem: ShoppingTripItem) {
+        enqueueSave(.tripItem(tripItem))
     }
     private func persist(_ member: HouseholdMember) {
         enqueueSave(.member(member))
@@ -1669,8 +2003,8 @@ final class GroceryRepository {
 
     private func resetLocalSyncState() {
         cloud.clearSubscriptionRegistrationFlag()
-        UserDefaults.standard.removeObject(forKey: "grocer.migration.parentRefs.v1")
-        UserDefaults.standard.removeObject(forKey: "grocer.migration.parentRefs.v2")
+        GrocerAppGroup.defaults.removeObject(forKey: "grocer.migration.parentRefs.v1")
+        GrocerAppGroup.defaults.removeObject(forKey: "grocer.migration.parentRefs.v2")
         cloudWriteTask?.cancel()
         cloudWriteTask = nil
         pendingCloudWrites.removeAll()
@@ -1748,6 +2082,8 @@ final class GroceryRepository {
             return childRecordID(item.id, householdId: item.householdId)
         case .session(let session):
             return childRecordID(session.id, householdId: session.householdId)
+        case .tripItem(let tripItem):
+            return childRecordID(tripItem.id, householdId: tripItem.householdId)
         case .event(let event):
             return childRecordID(event.id, householdId: event.householdId)
         }
@@ -1836,13 +2172,13 @@ private extension String {
 
 private extension SettingsStore {
     var memberId: String {
-        get { UserDefaults.standard.string(forKey: "grocer.memberId") ?? "" }
-        set { UserDefaults.standard.set(newValue, forKey: "grocer.memberId") }
+        get { GrocerAppGroup.defaults.string(forKey: "grocer.memberId") ?? "" }
+        set { GrocerAppGroup.defaults.set(newValue, forKey: "grocer.memberId") }
     }
     var memberIdOrDevice: String { memberId.isEmpty ? deviceId : memberId }
 
     var selectedHouseholdId: String {
-        get { UserDefaults.standard.string(forKey: "grocer.selectedHouseholdId") ?? "" }
-        set { UserDefaults.standard.set(newValue, forKey: "grocer.selectedHouseholdId") }
+        get { GrocerAppGroup.defaults.string(forKey: "grocer.selectedHouseholdId") ?? "" }
+        set { GrocerAppGroup.defaults.set(newValue, forKey: "grocer.selectedHouseholdId") }
     }
 }

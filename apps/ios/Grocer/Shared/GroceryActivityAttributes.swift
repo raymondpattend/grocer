@@ -38,4 +38,9 @@ struct GroceryActivityAttributes: ActivityAttributes {
     // Static attributes — set once when the activity starts.
     var householdId: String
     var sessionId: String
+    /// `ShoppingSession.startedByMemberId`. Lets the widget look up the shopper's
+    /// avatar in the App Group cache (keyed by member id) so family devices that
+    /// have synced the roster can render it. Optional so activities started by an
+    /// older build (without this field) still decode.
+    var startedByMemberId: String?
 }

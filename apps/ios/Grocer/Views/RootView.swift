@@ -2,13 +2,16 @@ import PhotosUI
 import SwiftUI
 import UIKit
 
-/// Top-level navigation. Defaults to the planning list; the shopper can drill
-/// into the focused Shopping Session screen when one is active.
+/// Top-level navigation. Defaults to the Home grid of groups; tapping a group
+/// drills into its planning list, and the shopper can drill further into the
+/// focused Shopping Session screen when one is active.
 struct RootView: View {
     /// Flip to `true` while debugging to show onboarding even after groups exist.
     static var forceShowOnboardingForDebug = false
 
     @Environment(GroceryRepository.self) private var repo
+    @Environment(AppUpdateGate.self) private var appUpdateGate
+    @Environment(\.openURL) private var openURL
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -18,14 +21,17 @@ struct RootView: View {
                     OnboardingView()
                 }
             } else {
-                NavigationStack {
-                    GroceryListView()
-                }
+                // HomeView owns its NavigationStack (it drives the push path
+                // for the zoom transition into a group's list).
+                HomeView()
             }
         }
         .background(KeyboardWarmer())
         .onAppear {
             repo.startForegroundRefreshLoop()
+        }
+        .task {
+            await appUpdateGate.refresh()
         }
         .onDisappear {
             repo.stopForegroundRefreshLoop()
@@ -33,7 +39,10 @@ struct RootView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 repo.startForegroundRefreshLoop()
-                Task { await repo.refreshAfterActivation() }
+                Task {
+                    await appUpdateGate.refresh()
+                    await repo.refreshAfterActivation()
+                }
             } else {
                 repo.stopForegroundRefreshLoop()
             }
@@ -44,10 +53,69 @@ struct RootView: View {
         )) {
             JoinedGroupSheet()
         }
+        .fullScreenCover(item: Binding(
+            get: { appUpdateGate.requiredUpdate },
+            set: { _ in }
+        )) { update in
+            RequiredAppUpdateView(update: update) {
+                openURL(update.updateURL)
+            }
+            .interactiveDismissDisabled(true)
+        }
     }
 
     private var shouldShowOnboarding: Bool {
         Self.forceShowOnboardingForDebug || (repo.hasCompletedInitialLoad && repo.households.isEmpty)
+    }
+}
+
+private struct RequiredAppUpdateView: View {
+    let update: RequiredAppUpdate
+    let openUpdate: () -> Void
+
+    var body: some View {
+        VStack(spacing: 28) {
+            Spacer()
+
+            Image(systemName: "arrow.down.app.fill")
+                .font(.system(size: 52, weight: .semibold))
+                .foregroundStyle(.green)
+                .symbolRenderingMode(.hierarchical)
+
+            VStack(spacing: 10) {
+                Text("App Update Required")
+                    .font(.title.bold())
+                    .multilineTextAlignment(.center)
+
+                Text("This version of Grocer is no longer supported. Install the latest update to keep using the app.")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Button(action: openUpdate) {
+                Label("Update App", systemImage: "arrow.up.forward.app.fill")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .tint(.green)
+
+            Text("Current build \(update.currentBuild). Required build \(update.minimumSupportedBuild).")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+
+            Spacer()
+        }
+        .padding(.horizontal, 28)
+        .padding(.vertical, 24)
+        .frame(maxWidth: 440)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemBackground))
     }
 }
 

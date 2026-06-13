@@ -68,14 +68,6 @@ enum ItemPriority: String, CaseIterable, Codable, Hashable, Identifiable {
 
     var id: String { rawValue }
 
-    var systemImage: String {
-        switch self {
-        case .low: return "arrow.down"
-        case .normal: return "minus"
-        case .high: return "exclamationmark"
-        }
-    }
-
     var sortOrder: Int {
         switch self {
         case .high: return 0
@@ -193,6 +185,32 @@ struct ShoppingSession: Identifiable, Codable, Hashable {
     var status: SessionStatus
 }
 
+/// Immutable snapshot of one item's outcome within one shopping trip, captured
+/// when the trip ends. The live `GroceryItem` is reused (and its `activeSessionId`
+/// cleared) across trips, so these records are what make a finished trip's
+/// contents durably reviewable. `outcome == .needed` means the item was on the
+/// list but left unfound. Record name is `"<sessionId>_<itemId>"` so re-capturing
+/// a trip upserts rather than duplicates.
+struct ShoppingTripItem: Identifiable, Codable, Hashable {
+    var id: String
+    var householdId: String
+    var sessionId: String
+    var itemId: String
+    var name: String
+    var quantity: String?
+    var category: GroceryCategory
+    var outcome: ItemStatus
+    var replacementItemName: String?
+    var requestedByMemberId: String
+    var requestedByDisplayName: String
+    var createdAt: Date
+
+    /// Deterministic record name pairing a trip with one of its items.
+    static func recordName(sessionId: String, itemId: String) -> String {
+        "\(sessionId)_\(itemId)"
+    }
+}
+
 enum ItemEventType: String, Codable, Hashable {
     case itemAdded, itemEdited, itemFound, itemReplaced, itemOutOfStock
     case itemSkipped, itemRemoved
@@ -269,6 +287,23 @@ extension GroceryItem {
 extension ShoppingSession {
     static func stableDisplayOrder(_ lhs: ShoppingSession, _ rhs: ShoppingSession) -> Bool {
         stableDateOrder(lhs.startedAt, rhs.startedAt, lhsID: lhs.id, rhsID: rhs.id)
+    }
+
+    /// Most-recent-first ordering for the trip history list.
+    static func recentDisplayOrder(_ lhs: ShoppingSession, _ rhs: ShoppingSession) -> Bool {
+        stableRecentDateOrder(lhs.startedAt, rhs.startedAt, lhsID: lhs.id, rhsID: rhs.id)
+    }
+}
+
+extension ShoppingTripItem {
+    /// Stable display order within a trip: by category, then name, then id.
+    static func tripDisplayOrder(_ lhs: ShoppingTripItem, _ rhs: ShoppingTripItem) -> Bool {
+        let lhsCat = GroceryCategory.ordered.firstIndex(of: lhs.category) ?? Int.max
+        let rhsCat = GroceryCategory.ordered.firstIndex(of: rhs.category) ?? Int.max
+        if lhsCat != rhsCat { return lhsCat < rhsCat }
+        let nameComparison = lhs.name.localizedCaseInsensitiveCompare(rhs.name)
+        if nameComparison != .orderedSame { return nameComparison == .orderedAscending }
+        return lhs.id < rhs.id
     }
 }
 

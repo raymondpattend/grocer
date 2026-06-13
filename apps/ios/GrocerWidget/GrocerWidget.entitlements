@@ -2,8 +2,11 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- Widget extension currently needs no special entitlements for Live
-	     Activities. Add an App Group here if you later share data via a
-	     shared container. -->
+	<!-- App Group: lets the widget read the snapshot + product image cache the
+	     app publishes. Must match Grocer.entitlements. -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.org.narro.grocer</string>
+	</array>
 </dict>
 </plist>
