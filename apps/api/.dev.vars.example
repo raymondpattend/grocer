@@ -12,6 +12,10 @@ APNS_TEAM_ID="ABCDE12345"
 APNS_KEY_ID="FGHIJ67890"
 APNS_BUNDLE_ID="org.narro.grocer"
 
+IOS_MIN_BUILD="1"
+IOS_LATEST_BUILD="1"
+IOS_UPDATE_URL="https://narro.org/grocer"
+
 # Local Wrangler/Miniflare fetch cannot speak APNs' required HTTP/2 transport.
 # `pnpm dev:api` starts this bridge automatically and injects the URL with
 # `wrangler dev --var`; set it manually only if you run Wrangler yourself.

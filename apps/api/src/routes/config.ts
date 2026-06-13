@@ -13,7 +13,7 @@ function buildNumber(value: string | undefined): number | undefined {
 
 function envNumber(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : fallback;
+  return Number.isInteger(parsed) ? parsed : fallback;
 }
 
 configRoute.get("/config/ios", (c) => {
