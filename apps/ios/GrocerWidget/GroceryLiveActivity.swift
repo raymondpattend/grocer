@@ -74,11 +74,11 @@ struct GroceryLiveActivity: Widget {
         "\(s.itemsFound)/\(s.totalItems)"
     }
     private func finalHeadline(_ s: GroceryActivityAttributes.ContentState) -> String {
-        s.isCancelled ? "Shopping Cancelled" : "Shopping Complete"
+        s.isCancelled ? String(localized: "Shopping Cancelled") : String(localized: "Shopping Complete")
     }
     private func finalDetail(_ s: GroceryActivityAttributes.ContentState) -> String {
-        if s.isCancelled { return "No longer active" }
-        return "\(s.itemsFound) found · \(s.replacedCount) replaced · \(s.outOfStockCount) unavailable"
+        if s.isCancelled { return String(localized: "No longer active") }
+        return String(localized: "\(s.itemsFound) found · \(s.replacedCount) replaced · \(s.outOfStockCount) unavailable")
     }
 }
 
@@ -92,7 +92,7 @@ private struct LockScreenView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Label {
-                    Text("\(state.shopperName) \(state.isCancelled ? "cancelled" : "is") shopping")
+                    Text(shopperStatus(state))
                 } icon: {
                     ShopperAvatarIcon(memberId: startedByMemberId, size: 22)
                 }
@@ -104,10 +104,10 @@ private struct LockScreenView: View {
             }
 
             if state.isCompleted || state.isCancelled {
-                Text(state.isCancelled ? "Shopping Cancelled" : "Shopping Complete")
+                Text(state.isCancelled ? String(localized: "Shopping Cancelled") : String(localized: "Shopping Complete"))
                     .font(.title3.bold())
                 if !state.isCancelled {
-                    Text("\(state.itemsFound) found · \(state.replacedCount) replaced · \(state.outOfStockCount) unavailable")
+                    Text(String(localized: "\(state.itemsFound) found · \(state.replacedCount) replaced · \(state.outOfStockCount) unavailable"))
                         .font(.subheadline).foregroundStyle(.secondary)
                 }
             } else {
@@ -125,6 +125,13 @@ private struct LockScreenView: View {
             }
         }
         .padding()
+    }
+
+    private func shopperStatus(_ state: GroceryActivityAttributes.ContentState) -> String {
+        if state.isCancelled {
+            return String(localized: "\(state.shopperName) cancelled shopping")
+        }
+        return String(localized: "\(state.shopperName) is shopping")
     }
 }
 

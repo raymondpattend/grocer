@@ -238,10 +238,10 @@ struct GrocerProPaywallView: View {
 
     private var footerLinks: some View {
         HStack(spacing: 22) {
-            footerLink("Restore", action: restorePurchases)
-            footerLink("Terms") { if let termsURL { openURL(termsURL) } }
-            footerLink("Privacy") { if let privacyURL { openURL(privacyURL) } }
-            footerLink("Redeem", action: redeemCode)
+            footerLink(String(localized: "Restore"), action: restorePurchases)
+            footerLink(String(localized: "Terms")) { if let termsURL { openURL(termsURL) } }
+            footerLink(String(localized: "Privacy")) { if let privacyURL { openURL(privacyURL) } }
+            footerLink(String(localized: "Redeem"), action: redeemCode)
         }
         .frame(maxWidth: .infinity)
         .padding(.top, 2)
@@ -336,7 +336,7 @@ struct GrocerProPaywallView: View {
             // restore turned up nothing (and didn't error), tell the user so the
             // tap isn't a silent no-op.
             if !subscriptions.hasGrocerPro, subscriptions.lastErrorMessage == nil {
-                infoMessage = "No previous purchases were found to restore."
+                infoMessage = String(localized: "No previous purchases were found to restore.")
             }
         }
     }
@@ -396,29 +396,29 @@ struct GrocerProPaywallView: View {
     // MARK: - CTA copy
 
     private var ctaTitle: String {
-        guard let package = selectedPackage else { return "Continue" }
-        if PackagePricing.trialText(for: package) != nil { return "Try for $0.00" }
-        if package.packageType == .lifetime { return "Unlock Lifetime" }
-        return "Subscribe"
+        guard let package = selectedPackage else { return String(localized: "Continue") }
+        if PackagePricing.trialText(for: package) != nil { return String(localized: "Try for $0.00") }
+        if package.packageType == .lifetime { return String(localized: "Unlock Lifetime") }
+        return String(localized: "Subscribe")
     }
 
     private var ctaSubtitle: String? {
         guard let package = selectedPackage else { return nil }
         let summary = PackagePricing.priceSummary(for: package)
         if let trial = PackagePricing.trialText(for: package) {
-            return "Free trial \(trial), then \(summary)\nCancel anytime · No payment now"
+            return String(localized: "Free trial \(trial), then \(summary)\nCancel anytime · No payment now")
         }
         if package.packageType == .lifetime {
-            return "One-time payment · No subscription"
+            return String(localized: "One-time payment · No subscription")
         }
-        return "\(summary) · Cancel anytime, no commitment"
+        return String(localized: "\(summary) · Cancel anytime, no commitment")
     }
 
     private func display(for package: Package) -> PlanDisplay {
         PlanDisplay(
             package: package,
             isRecommended: package.identifier == recommendedPackage?.identifier,
-            headline: PackagePricing.trialText(for: package).map { "Free Trial \($0), then" },
+            headline: PackagePricing.trialText(for: package).map { String(localized: "Free Trial \($0), then") },
             title: PackagePricing.cardTitle(for: package),
             caption: PackagePricing.cardCaption(for: package, isRecommended: package.identifier == recommendedPackage?.identifier)
         )
@@ -434,20 +434,20 @@ struct GrocerProPaywallView: View {
     }
 
     private static let features: [Feature] = [
-        Feature(icon: "list.bullet.rectangle.portrait", title: "Unlimited Lists",
-                subtitle: "Create as many grocery lists as you need."),
-        Feature(icon: "person.2.fill", title: "Shared Lists",
-                subtitle: "Share your lists with as many people as you want."),
-        Feature(icon: "bolt.horizontal.circle", title: "Live Activities",
-                subtitle: "Track shopping trips in real time."),
-        Feature(icon: "square.grid.2x2", title: "Smart Categories",
-                subtitle: "Items auto-sort by aisle as you shop."),
-        Feature(icon: "clock.arrow.circlepath", title: "Trip History",
-                subtitle: "Look back at past shopping trips."),
-        Feature(icon: "person.3.fill", title: "Family Sharing",
-                subtitle: "Your Pro plan is automatically shared with your iCloud Family."),
-        Feature(icon: "sparkles", title: "Future Updates",
-                subtitle: "Every new Pro feature, included."),
+        Feature(icon: "list.bullet.rectangle.portrait", title: String(localized: "Unlimited Lists"),
+                subtitle: String(localized: "Create as many grocery lists as you need.")),
+        Feature(icon: "person.2.fill", title: String(localized: "Shared Lists"),
+                subtitle: String(localized: "Share your lists with as many people as you want.")),
+        Feature(icon: "bolt.horizontal.circle", title: String(localized: "Live Activities"),
+                subtitle: String(localized: "Track shopping trips in real time.")),
+        Feature(icon: "square.grid.2x2", title: String(localized: "Smart Categories"),
+                subtitle: String(localized: "Items auto-sort by aisle as you shop.")),
+        Feature(icon: "clock.arrow.circlepath", title: String(localized: "Trip History"),
+                subtitle: String(localized: "Look back at past shopping trips.")),
+        Feature(icon: "person.3.fill", title: String(localized: "Family Sharing"),
+                subtitle: String(localized: "Your Pro plan is automatically shared with your iCloud Family.")),
+        Feature(icon: "sparkles", title: String(localized: "Future Updates"),
+                subtitle: String(localized: "Every new Pro feature, included.")),
     ]
 
     private struct Quote: Identifiable {
@@ -458,12 +458,12 @@ struct GrocerProPaywallView: View {
     }
 
     private static let quotes: [Quote] = [
-        Quote(text: "Grocer keeps our whole family on the same page. No more fridge sticky notes!",
-              name: "Sarah Johnson", emoji: "🥰"),
-        Quote(text: "The smartest grocery app I've used. Shopping trips are so easy now.",
-              name: "Michael Thompson", emoji: "🎉"),
-        Quote(text: "I love seeing what my family grabs in real time. Total game changer.",
-              name: "Emily Davis", emoji: "👋"),
+        Quote(text: String(localized: "Grocer keeps our whole family on the same page. No more fridge sticky notes!"),
+              name: String(localized: "Sarah Johnson"), emoji: "🥰"),
+        Quote(text: String(localized: "The smartest grocery app I've used. Shopping trips are so easy now."),
+              name: String(localized: "Michael Thompson"), emoji: "🎉"),
+        Quote(text: String(localized: "I love seeing what my family grabs in real time. Total game changer."),
+              name: String(localized: "Emily Davis"), emoji: "👋"),
     ]
 }
 
@@ -583,13 +583,13 @@ private enum PackagePricing {
             return price
         case .annual:
             if let perMonth = perMonthString(for: package) {
-                return "\(price)/yr (\(perMonth)/mo)"
+                return String(localized: "\(price)/yr (\(perMonth)/mo)")
             }
-            return "\(price)/yr"
+            return String(localized: "\(price)/yr")
         case .monthly:
-            return "\(price) / Monthly"
+            return String(localized: "\(price) / Monthly")
         case .weekly:
-            return "\(price) / Weekly"
+            return String(localized: "\(price) / Weekly")
         default:
             return price
         }
@@ -598,17 +598,17 @@ private enum PackagePricing {
     static func cardCaption(for package: Package, isRecommended: Bool) -> String {
         switch package.packageType {
         case .lifetime:
-            return "Pay once · Yours forever"
+            return String(localized: "Pay once · Yours forever")
         case .annual:
             return isRecommended
-                ? "Best Value · Just \(package.storeProduct.localizedPriceString)/year"
-                : "Billed annually"
+                ? String(localized: "Best Value · Just \(package.storeProduct.localizedPriceString)/year")
+                : String(localized: "Billed annually")
         case .monthly:
-            return "Monthly Flex · Cancel anytime"
+            return String(localized: "Monthly Flex · Cancel anytime")
         case .weekly:
-            return "Billed weekly"
+            return String(localized: "Billed weekly")
         default:
-            return "Cancel anytime"
+            return String(localized: "Cancel anytime")
         }
     }
 
@@ -616,9 +616,9 @@ private enum PackagePricing {
     static func priceSummary(for package: Package) -> String {
         let price = package.storeProduct.localizedPriceString
         switch package.packageType {
-        case .annual: return "\(price)/yr"
-        case .monthly: return "\(price)/mo"
-        case .weekly: return "\(price)/wk"
+        case .annual: return String(localized: "\(price)/yr")
+        case .monthly: return String(localized: "\(price)/mo")
+        case .weekly: return String(localized: "\(price)/wk")
         case .lifetime: return price
         default: return price
         }
@@ -641,10 +641,10 @@ private enum PackagePricing {
     private static func periodText(_ period: SubscriptionPeriod) -> String {
         let value = period.value
         switch period.unit {
-        case .day: return "\(value) \(value == 1 ? "Day" : "Days")"
-        case .week: return "\(value * 7) Days"
-        case .month: return "\(value) \(value == 1 ? "Month" : "Months")"
-        case .year: return "\(value) \(value == 1 ? "Year" : "Years")"
+        case .day: return value == 1 ? String(localized: "\(value) Day") : String(localized: "\(value) Days")
+        case .week: return String(localized: "\(value * 7) Days")
+        case .month: return value == 1 ? String(localized: "\(value) Month") : String(localized: "\(value) Months")
+        case .year: return value == 1 ? String(localized: "\(value) Year") : String(localized: "\(value) Years")
         @unknown default: return "\(value)"
         }
     }

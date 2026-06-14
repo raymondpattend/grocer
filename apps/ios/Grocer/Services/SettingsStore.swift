@@ -59,7 +59,7 @@ final class SettingsStore {
         // members opt in — they can toggle this here).
         familyLiveActivitiesEnabled = defaults.object(forKey: Keys.familyLiveActivities) as? Bool ?? true
         notificationsEnabled = defaults.object(forKey: Keys.notifications) as? Bool ?? true
-        displayName = defaults.string(forKey: Keys.displayName) ?? "Me"
+        displayName = defaults.string(forKey: Keys.displayName) ?? String(localized: "Me")
         profileImageData = defaults.data(forKey: Keys.profileImageData)
     }
 

@@ -22,7 +22,7 @@ struct ItemDetailView: View {
                         Text(item.name)
                             .font(.title2.weight(.bold))
                             .multilineTextAlignment(.center)
-                        Text(item.category.rawValue)
+                        Text(item.category.localizedName)
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
@@ -51,7 +51,7 @@ struct ItemDetailView: View {
             }
 
             Section("Status") {
-                LabeledContent("Current", value: item.status.rawValue)
+                LabeledContent("Current", value: item.status.localizedName)
                 if let pref = item.replacementPreference {
                     LabeledContent("Replacement preference", value: pref)
                 }
@@ -186,11 +186,11 @@ struct EditItemView: View {
                     )
                 }
                 Picker("Category", selection: $item.category) {
-                    ForEach(GroceryCategory.ordered) { Text($0.rawValue).tag($0) }
+                    ForEach(GroceryCategory.ordered) { Text($0.localizedName).tag($0) }
                 }
                 Picker("Priority", selection: $item.priority) {
                     ForEach(ItemPriority.allCases) { p in
-                        Text(p.rawValue).tag(p)
+                        Text(p.localizedName).tag(p)
                     }
                 }
             }

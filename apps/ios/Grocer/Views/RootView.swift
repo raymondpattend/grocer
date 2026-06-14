@@ -205,7 +205,7 @@ private struct JoinedGroupSheet: View {
                         Text(member.displayName)
                             .font(.body)
                         Spacer()
-                        Text(member.role.rawValue)
+                        Text(member.role.localizedName)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -498,7 +498,9 @@ private struct OnboardingProfileSheet: View {
 
     private func loadProfile() {
         guard displayName.isEmpty else { return }
-        let savedName = settings.displayName == "Me" ? "" : settings.displayName
+        let savedName = (settings.displayName == String(localized: "Me") || settings.displayName == "Me")
+            ? ""
+            : settings.displayName
         displayName = savedName
     }
 
@@ -653,7 +655,7 @@ struct SyncStatusBar: View {
         case .idle, .syncing:
             EmptyView()
         case .offline, .error:
-            label("Offline — changes will sync later", systemImage: "icloud.slash", tint: .gray)
+            label(String(localized: "Offline — changes will sync later"), systemImage: "icloud.slash", tint: .gray)
         }
         // Errors are not handled here because they are often unreliable or inaccurate
     }
@@ -675,7 +677,7 @@ struct SyncStatusBar: View {
 struct CategoryHeader: View {
     let category: GroceryCategory
     var body: some View {
-        Label(category.rawValue, systemImage: category.systemImage)
+        Label(category.localizedName, systemImage: category.systemImage)
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(.secondary)
             .textCase(nil)

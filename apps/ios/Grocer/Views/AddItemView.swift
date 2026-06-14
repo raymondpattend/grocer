@@ -40,12 +40,12 @@ struct AddItemView: View {
                     )
                 }
                 Picker("Category", selection: $category) {
-                    ForEach(GroceryCategory.ordered) { Text($0.rawValue).tag($0) }
+                    ForEach(GroceryCategory.ordered) { Text($0.localizedName).tag($0) }
                 }
                 .onChange(of: category) { _, _ in categoryEditedManually = true }
                 Picker("Priority", selection: $priority) {
                     ForEach(ItemPriority.allCases) { p in
-                        Text(p.rawValue).tag(p)
+                        Text(p.localizedName).tag(p)
                     }
                 }
                 TextField("Notes", text: $notes, axis: .vertical)
@@ -736,12 +736,12 @@ private struct ParsedGroceryDraftRow: View {
         Menu {
             Picker("Category", selection: Binding(get: { draft.category }, set: onCategoryChange)) {
                 ForEach(GroceryCategory.ordered) { category in
-                    Label(category.rawValue, systemImage: category.systemImage)
+                    Label(category.localizedName, systemImage: category.systemImage)
                         .tag(category)
                 }
             }
         } label: {
-            Label(draft.category.rawValue, systemImage: draft.category.systemImage)
+            Label(draft.category.localizedName, systemImage: draft.category.systemImage)
                 .font(.caption.weight(.semibold))
                 .lineLimit(1)
         }
@@ -935,8 +935,8 @@ private struct HistoryItemsView: View {
                 .font(.title)
                 .foregroundStyle(.tertiary)
             Text(search.isEmpty
-                 ? "No previous items yet"
-                 : "No items match \u{201C}\(search)\u{201D}")
+                 ? String(localized: "No previous items yet")
+                 : String(localized: "No items match \u{201C}\(search)\u{201D}"))
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -998,7 +998,7 @@ private struct HistoryItemRow: View {
                 Button {
                     toggleAdd()
                 } label: {
-                    Label(addedToList ? "Remove" : "Add",
+                    Label(addedToList ? String(localized: "Remove") : String(localized: "Add"),
                           systemImage: addedToList ? "minus" : "plus")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.primary)
@@ -1054,7 +1054,7 @@ private struct HistoryItemRow: View {
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 } else {
-                    Label(suggestion.category.rawValue, systemImage: suggestion.category.systemImage)
+                    Label(suggestion.category.localizedName, systemImage: suggestion.category.systemImage)
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
                 }

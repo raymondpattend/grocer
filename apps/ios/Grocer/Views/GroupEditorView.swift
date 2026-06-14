@@ -77,7 +77,7 @@ struct GroupEditorView: View {
             }
 
         }
-        .navigationTitle(isEditing ? "Edit Group" : "New Group")
+        .navigationTitle(isEditing ? String(localized: "Edit Group") : String(localized: "New Group"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) { Button("Cancel") { Haptics.selection(); dismiss() } }
@@ -115,7 +115,7 @@ struct GroupEditorView: View {
         if isEditing {
             guard repo.isOwnerOfCurrentGroup else {
                 Haptics.error()
-                saveError = "Only the group owner can edit group details."
+                saveError = String(localized: "Only the group owner can edit group details.")
                 return
             }
             repo.updateGroup(name: trimmedName, store: store, icon: icon, theme: theme)
@@ -136,8 +136,8 @@ struct GroupEditorView: View {
                 } else {
                     Haptics.error()
                     saveError = repo.usingCloudKit
-                        ? "This group couldn't be saved to iCloud. Check Settings → Diagnostics for sync status, then try again."
-                        : "Sign in to iCloud to save groups across devices."
+                        ? String(localized: "This group couldn't be saved to iCloud. Check Settings → Diagnostics for sync status, then try again.")
+                        : String(localized: "Sign in to iCloud to save groups across devices.")
                 }
             }
         }

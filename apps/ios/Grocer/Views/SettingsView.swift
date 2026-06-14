@@ -66,19 +66,22 @@ struct SettingsView: View {
             commitPendingChanges()
         }
         .confirmationDialog(
-            repo.isOwnerOfCurrentGroup ? "Delete this group?" : "Leave this group?",
+            repo.isOwnerOfCurrentGroup
+                ? String(localized: "Delete this group?")
+                : String(localized: "Leave this group?"),
             isPresented: $confirmLeave,
             titleVisibility: .visible
         ) {
-            Button(repo.isOwnerOfCurrentGroup ? "Delete Group" : "Leave Group", role: .destructive) {
+            Button(repo.isOwnerOfCurrentGroup ? String(localized: "Delete Group") : String(localized: "Leave Group"),
+                   role: .destructive) {
                 Haptics.warning()
                 repo.leaveCurrentGroup()
             }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text(repo.isOwnerOfCurrentGroup
-                 ? "As the owner, this deletes the group and its list for everyone."
-                 : "You’ll stop seeing this group’s lists on this device.")
+                 ? String(localized: "As the owner, this deletes the group and its list for everyone.")
+                 : String(localized: "You’ll stop seeing this group’s lists on this device."))
         }
         .confirmationDialog("Delete all data?", isPresented: $confirmPurge, titleVisibility: .visible) {
             Button("Delete Everything", role: .destructive) {
@@ -142,7 +145,7 @@ struct SettingsView: View {
         @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(title)
+                Text(title)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 4)
@@ -230,7 +233,7 @@ struct SettingsView: View {
 
                 Text(subscriptions.hasGrocerPro
                      ? subscriptions.displayStatus
-                     : "Get Pro to unlock all features")
+                     : String(localized: "Get Pro to unlock all features"))
                     .font(.body)
                     .foregroundStyle(.secondary)
 
@@ -238,7 +241,9 @@ struct SettingsView: View {
                     Haptics.selection()
                     showProPaywall = true
                 } label: {
-                    Text(subscriptions.hasGrocerPro ? "View Plans" : "Try for free")
+                    Text(subscriptions.hasGrocerPro
+                         ? String(localized: "View Plans")
+                         : String(localized: "Try for free"))
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(Color(.systemBackground))
                         .padding(.horizontal, 22)
@@ -256,7 +261,7 @@ struct SettingsView: View {
     // MARK: - General
 
     private var generalSection: some View {
-        settingsSection("Group") {
+        settingsSection(String(localized: "Group")) {
             card {
                 if repo.isOwnerOfCurrentGroup {
                     HStack(spacing: 14) {
@@ -281,7 +286,7 @@ struct SettingsView: View {
                             .frame(width: 24)
                         Text("Group")
                         Spacer()
-                        Text(repo.currentHousehold?.name ?? "Group")
+                        Text(repo.currentHousehold?.name ?? String(localized: "Group"))
                             .foregroundStyle(.secondary)
                     }
                     .padding(.horizontal, 16)
@@ -295,7 +300,7 @@ struct SettingsView: View {
                         Haptics.selection()
                         editingGroup = repo.currentHousehold
                     } label: {
-                        rowLabel("Customize Group", systemImage: "paintbrush", chevron: true)
+                        rowLabel(String(localized: "Customize Group"), systemImage: "paintbrush", chevron: true)
                     }
                     .buttonStyle(.plain)
                 }
@@ -305,7 +310,7 @@ struct SettingsView: View {
                 NavigationLink {
                     TripHistoryView()
                 } label: {
-                    rowLabel("Trip History", systemImage: "clock.arrow.circlepath", chevron: true)
+                    rowLabel(String(localized: "Trip History"), systemImage: "clock.arrow.circlepath", chevron: true)
                 }
                 .buttonStyle(.plain)
             }
@@ -316,13 +321,13 @@ struct SettingsView: View {
 
     private var membersSection: some View {
         let canInvite = repo.isOwnerOfCurrentGroup && repo.canShare
-        return settingsSection("Members", footer: membersFooter) {
+        return settingsSection(String(localized: "Members"), footer: membersFooter) {
             card {
                 Button {
                     Haptics.selection()
                     showInviteIntro = true
                 } label: {
-                    rowLabel("Invite to Group", systemImage: "person.crop.circle.badge.plus",
+                    rowLabel(String(localized: "Invite to Group"), systemImage: "person.crop.circle.badge.plus",
                              enabled: canInvite)
                 }
                 .buttonStyle(.plain)
@@ -340,11 +345,11 @@ struct SettingsView: View {
 
     private var membersFooter: String? {
         if !repo.isOwnerOfCurrentGroup {
-            return "Only the group owner can invite people."
+            return String(localized: "Only the group owner can invite people.")
         } else if let reason = repo.sharingUnavailableReason {
             return reason
         } else if repo.isOwnerOfCurrentGroup {
-            return "Swipe left on a member to remove them from this group."
+            return String(localized: "Swipe left on a member to remove them from this group.")
         }
         return nil
     }
@@ -352,7 +357,7 @@ struct SettingsView: View {
     // MARK: - Preferences
 
     private var preferencesSection: some View {
-        settingsSection("Preferences") {
+        settingsSection(String(localized: "Preferences")) {
             card {
                 Toggle(isOn: familyLiveActivitiesBinding) {
                     Label("Show Live Activities", systemImage: "bolt.horizontal.circle")
@@ -374,11 +379,11 @@ struct SettingsView: View {
     // MARK: - More / actions
 
     private var moreSection: some View {
-        settingsSection("More") {
+        settingsSection(String(localized: "More")) {
             card {
                 if repo.households.count > 1 || !repo.isOwnerOfCurrentGroup {
                     Button(role: .destructive) { confirmLeave = true } label: {
-                        rowLabel(repo.isOwnerOfCurrentGroup ? "Delete Group" : "Leave Group",
+                        rowLabel(repo.isOwnerOfCurrentGroup ? String(localized: "Delete Group") : String(localized: "Leave Group"),
                                  systemImage: repo.isOwnerOfCurrentGroup ? "trash" : "rectangle.portrait.and.arrow.right",
                                  destructive: true)
                     }
@@ -388,7 +393,7 @@ struct SettingsView: View {
 
                 Button(role: .destructive) { confirmPurge = true } label: {
                     HStack(spacing: 0) {
-                        rowLabel("Reset All Data", systemImage: "trash", destructive: true)
+                        rowLabel(String(localized: "Reset All Data"), systemImage: "trash", destructive: true)
                         if purging { ProgressView().padding(.trailing, 16) }
                     }
                 }
@@ -427,7 +432,7 @@ struct SettingsView: View {
             )
             Text(member.displayName)
             Spacer()
-            Text(member.role.rawValue)
+            Text(member.role.localizedName)
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

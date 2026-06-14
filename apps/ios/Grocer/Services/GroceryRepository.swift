@@ -622,26 +622,26 @@ final class GroceryRepository {
 
     var sharingUnavailableReason: String? {
         guard currentHousehold != nil else {
-            return "Create a group before inviting members."
+            return String(localized: "Create a group before inviting members.")
         }
         if case .error = syncState {
-            return "iCloud sync is unavailable right now. Sharing will be available after this group syncs to iCloud."
+            return String(localized: "iCloud sync is unavailable right now. Sharing will be available after this group syncs to iCloud.")
         }
         guard usingCloudKit else {
-            return "Sign in to iCloud to invite members. Group sharing needs CloudKit, which isn't available in this build/session."
+            return String(localized: "Sign in to iCloud to invite members. Group sharing needs CloudKit, which isn't available in this build/session.")
         }
         switch syncState {
         case .idle:
             break
         case .syncing:
-            return "Wait for iCloud sync to finish before inviting members."
+            return String(localized: "Wait for iCloud sync to finish before inviting members.")
         case .offline:
-            return "Reconnect to iCloud before inviting members."
+            return String(localized: "Reconnect to iCloud before inviting members.")
         case .error:
-            return "iCloud sync is unavailable right now. Sharing will be available after this group syncs to iCloud."
+            return String(localized: "iCloud sync is unavailable right now. Sharing will be available after this group syncs to iCloud.")
         }
         guard isOwnerOfCurrentGroup else {
-            return "Only the group owner can invite members."
+            return String(localized: "Only the group owner can invite members.")
         }
         return nil
     }
@@ -879,9 +879,9 @@ final class GroceryRepository {
             print("[Repo] ❌ bootstrap failed: \(error)")
             if households.isEmpty {
                 ensureValidSelection()
-                syncState = .error("Sync failed: \(Self.shortError(error))")
+                syncState = .error(String(localized: "Sync failed: \(Self.shortError(error))"))
             } else {
-                syncState = .error("Sync failed: \(Self.shortError(error))")
+                syncState = .error(String(localized: "Sync failed: \(Self.shortError(error))"))
             }
         }
         hasCompletedInitialLoad = true
@@ -1040,7 +1040,7 @@ final class GroceryRepository {
         guard usingCloudKit else { return }
         subscriptionStatus = await cloud.registerSubscriptions(force: force)
         guard !subscriptionStatus.isFullyRegistered else { return }
-        syncState = .error("CloudKit subscriptions failed. Pull to refresh still works.")
+        syncState = .error(String(localized: "CloudKit subscriptions failed. Pull to refresh still works."))
     }
 
     private func ensureValidSelection() {
@@ -1116,7 +1116,7 @@ final class GroceryRepository {
             return household
         } catch {
             print("[Repo] ❌ createGroup failed: \(error)")
-            syncState = .error("Couldn't save group: \(Self.shortError(error))")
+            syncState = .error(String(localized: "Couldn't save group: \(Self.shortError(error))"))
             return nil
         }
     }
@@ -1170,7 +1170,7 @@ final class GroceryRepository {
     /// Update the current group's appearance (name, store, icon, theme).
     func updateGroup(name: String, store: String?, icon: String, theme: ListColorTheme) {
         guard isOwnerOfCurrentGroup else {
-            syncState = .error("Only the group owner can edit group details.")
+            syncState = .error(String(localized: "Only the group owner can edit group details."))
             return
         }
         guard var house = currentHousehold else { return }
@@ -1185,7 +1185,7 @@ final class GroceryRepository {
 
     func renameGroup(_ name: String) {
         guard isOwnerOfCurrentGroup else {
-            syncState = .error("Only the group owner can rename this group.")
+            syncState = .error(String(localized: "Only the group owner can rename this group."))
             return
         }
         guard var house = currentHousehold else { return }
@@ -1199,7 +1199,7 @@ final class GroceryRepository {
 
     func removeMember(_ member: HouseholdMember) {
         guard isOwnerOfCurrentGroup else {
-            syncState = .error("Only the group owner can remove members.")
+            syncState = .error(String(localized: "Only the group owner can remove members."))
             return
         }
         guard let household = households.first(where: { $0.id == member.householdId }) else { return }
@@ -2310,7 +2310,7 @@ final class GroceryRepository {
         if Self.isConnectivityError(error) {
             syncState = .offline
         } else {
-            syncState = .error("\(context): \(Self.shortError(error))")
+            syncState = .error(String(localized: "\(context): \(Self.shortError(error))"))
         }
     }
 

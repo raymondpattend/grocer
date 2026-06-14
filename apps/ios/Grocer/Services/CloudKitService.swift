@@ -720,8 +720,8 @@ struct CloudSubscriptionRegistrationResult: Equatable {
     }
 
     var statusText: String {
-        if isFullyRegistered { return "Subscribed" }
-        if errors.isEmpty { return "Not subscribed" }
+        if isFullyRegistered { return String(localized: "Subscribed") }
+        if errors.isEmpty { return String(localized: "Not subscribed") }
         return errors.joined(separator: " · ")
     }
 }

@@ -56,7 +56,9 @@ struct HomeView: View {
                     } label: {
                         Image(systemName: "plus")
                     }
-                    .accessibilityLabel(isAtFreeOwnedGroupLimit ? "Upgrade to add group" : "New group")
+                    .accessibilityLabel(isAtFreeOwnedGroupLimit
+                                        ? String(localized: "Upgrade to add group")
+                                        : String(localized: "New group"))
                 }
             }
             .navigationDestination(for: String.self) { householdId in
@@ -91,8 +93,8 @@ struct HomeView: View {
             }
         } else if separateShared && !sharedHouseholds.isEmpty {
             VStack(alignment: .leading, spacing: 24) {
-                groupSection(title: "My Groups", households: ownedHouseholds, includesProUpsell: true)
-                groupSection(title: "Shared with Me", households: sharedHouseholds)
+                groupSection(title: String(localized: "My Groups"), households: ownedHouseholds, includesProUpsell: true)
+                groupSection(title: String(localized: "Shared with Me"), households: sharedHouseholds)
             }
         } else if isAtFreeOwnedGroupLimit {
             VStack(spacing: 14) {

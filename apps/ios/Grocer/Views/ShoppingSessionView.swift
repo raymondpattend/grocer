@@ -237,14 +237,14 @@ struct ShoppingSessionView: View {
                             editingStore = true
                         } label: {
                             HStack(spacing: 6) {
-                                Text(session.storeName ?? "Set store").font(.title2.bold())
+                                Text(session.storeName ?? String(localized: "Set store")).font(.title2.bold())
                                     .foregroundStyle(session.storeName == nil ? .secondary : .primary)
                                 Image(systemName: "pencil").font(.caption).foregroundStyle(.secondary)
                             }
                         }
                         .buttonStyle(.plain)
                     } else {
-                        Text(session.storeName ?? "Store not set")
+                        Text(session.storeName ?? String(localized: "Store not set"))
                             .font(.title2.bold())
                             .foregroundStyle(session.storeName == nil ? .secondary : .primary)
                     }
@@ -258,10 +258,10 @@ struct ShoppingSessionView: View {
                 .tint(tint)
                 .animation(.easeInOut(duration: 0.4), value: progress.remaining)
             HStack(spacing: 16) {
-                stat("\(progress.remaining)", "left")
-                stat("\(progress.found)", "found")
-                if progress.replaced > 0 { stat("\(progress.replaced)", "replaced") }
-                if progress.outOfStock > 0 { stat("\(progress.outOfStock)", "unavailable") }
+                stat("\(progress.remaining)", String(localized: "left"))
+                stat("\(progress.found)", String(localized: "found"))
+                if progress.replaced > 0 { stat("\(progress.replaced)", String(localized: "replaced")) }
+                if progress.outOfStock > 0 { stat("\(progress.outOfStock)", String(localized: "unavailable")) }
             }
             .font(.subheadline)
             .contentTransition(.numericText())
@@ -446,8 +446,11 @@ private struct CompletedItemRow: View {
 
     private var subtitle: String {
         switch item.status {
-        case .replaced: return "Replaced with \(item.replacementItemName ?? "alternative")"
-        default: return item.status.rawValue
+        case .replaced:
+            let replacement = item.replacementItemName ?? String(localized: "alternative")
+            return String(localized: "Replaced with \(replacement)")
+        default:
+            return item.status.localizedName
         }
     }
 }
@@ -492,7 +495,7 @@ struct ShoppingItemDetailView: View {
                 .multilineTextAlignment(.center)
 
             HStack(spacing: 6) {
-                Label(item.category.rawValue, systemImage: item.category.systemImage)
+                Label(item.category.localizedName, systemImage: item.category.systemImage)
                     .font(.caption.weight(.medium))
                     .foregroundStyle(tint)
                     .padding(.horizontal, 10)

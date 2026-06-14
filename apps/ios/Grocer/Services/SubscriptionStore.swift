@@ -61,13 +61,13 @@ enum GrocerProPaywallContext {
         switch self {
         case .general:
             return GrocerProPaywallCopy(
-                headline: "Shop smarter\nwith Grocer Pro",
-                subtitle: "Unlimited groups, smarter shopping, history, and more, for the whole family."
+                headline: String(localized: "Shop smarter\nwith Grocer Pro"),
+                subtitle: String(localized: "Unlimited groups, smarter shopping, history, and more, for the whole family.")
             )
         case .groupLimit:
             return GrocerProPaywallCopy(
-                headline: "Pro users can make\nunlimited groups",
-                subtitle: "Start with 2 groups, upgrade to Pro to make as many as you need."
+                headline: String(localized: "Pro users can make\nunlimited groups"),
+                subtitle: String(localized: "Start with 2 groups, upgrade to Pro to make as many as you need.")
             )
         }
     }
@@ -97,14 +97,14 @@ final class SubscriptionStore {
 
     var displayStatus: String {
         if hasGrocerPro {
-            return "Active"
+            return String(localized: "Active")
         }
 
         if isLoading && customerInfo == nil {
-            return "Checking..."
+            return String(localized: "Checking...")
         }
 
-        return "Not active"
+        return String(localized: "Not active")
     }
 
     var availablePackages: [Package] {
@@ -134,9 +134,9 @@ final class SubscriptionStore {
 
     var homeGroupLimitCardCopy: GrocerProGroupUpsellCopy {
         let fallback = GrocerProGroupUpsellCopy(
-            title: "Upgrade to Grocer Pro",
-            subtitle: "Unlimited lists, live activities, and more.",
-            accessibilityLabel: "Upgrade to Grocer Pro. Create unlimited grocery groups."
+            title: String(localized: "Upgrade to Grocer Pro"),
+            subtitle: String(localized: "Unlimited lists, live activities, and more."),
+            accessibilityLabel: String(localized: "Upgrade to Grocer Pro. Create unlimited grocery groups.")
         )
         guard let cardCopy = currentOffering?.metadata["home_group_limit_card"] as? [String: Any] else {
             return fallback
@@ -294,21 +294,21 @@ final class SubscriptionStore {
 
         switch code {
         case .networkError, .offlineConnectionError:
-            return "Check your connection and try again."
+            return String(localized: "Check your connection and try again.")
         case .purchaseNotAllowedError:
-            return "Purchases are not allowed on this device."
+            return String(localized: "Purchases are not allowed on this device.")
         case .purchaseInvalidError:
-            return "The purchase could not be completed. Check the payment method and try again."
+            return String(localized: "The purchase could not be completed. Check the payment method and try again.")
         case .productNotAvailableForPurchaseError:
-            return "This product is not available for purchase yet."
+            return String(localized: "This product is not available for purchase yet.")
         case .productAlreadyPurchasedError:
-            return "This purchase is already active. Try Restore Purchases if access is missing."
+            return String(localized: "This purchase is already active. Try Restore Purchases if access is missing.")
         case .invalidCredentialsError, .configurationError:
-            return "RevenueCat is not configured correctly. Check the API key and dashboard setup."
+            return String(localized: "RevenueCat is not configured correctly. Check the API key and dashboard setup.")
         case .storeProblemError:
-            return "The App Store could not complete the request. Try again in a moment."
+            return String(localized: "The App Store could not complete the request. Try again in a moment.")
         case .paymentPendingError:
-            return "The payment is pending. Access will update after Apple approves it."
+            return String(localized: "The payment is pending. Access will update after Apple approves it.")
         default:
             return code.description
         }

@@ -21,11 +21,11 @@ struct TripDetailView: View {
                 }
             } else {
                 Section("Summary") {
-                    summaryRow("Found", progress.found, systemImage: "checkmark.circle.fill", tint: .green)
-                    summaryRow("Replaced", progress.replaced, systemImage: "arrow.triangle.2.circlepath.circle.fill", tint: .blue)
-                    summaryRow("Out of stock", progress.outOfStock, systemImage: "xmark.circle.fill", tint: .red)
-                    summaryRow("Skipped", progress.skipped, systemImage: "arrow.uturn.forward.circle.fill", tint: .orange)
-                    summaryRow("Not found", progress.remaining, systemImage: "circle.dashed", tint: .secondary)
+                    summaryRow(String(localized: "Found"), progress.found, systemImage: "checkmark.circle.fill", tint: .green)
+                    summaryRow(String(localized: "Replaced"), progress.replaced, systemImage: "arrow.triangle.2.circlepath.circle.fill", tint: .blue)
+                    summaryRow(String(localized: "Out of stock"), progress.outOfStock, systemImage: "xmark.circle.fill", tint: .red)
+                    summaryRow(String(localized: "Skipped"), progress.skipped, systemImage: "arrow.uturn.forward.circle.fill", tint: .orange)
+                    summaryRow(String(localized: "Not found"), progress.remaining, systemImage: "circle.dashed", tint: .secondary)
                 }
 
                 ForEach(Self.outcomeGroups) { group in
@@ -54,7 +54,7 @@ struct TripDetailView: View {
                 LabeledContent("Shopper", value: session.startedByDisplayName)
             }
             if session.status == .cancelled {
-                LabeledContent("Status", value: "Cancelled")
+                LabeledContent("Status", value: SessionStatus.cancelled.localizedName)
             }
         }
     }
@@ -107,12 +107,12 @@ struct TripDetailView: View {
 
     /// Display order of outcome buckets in the detail list.
     static let outcomeGroups: [OutcomeGroup] = [
-        OutcomeGroup(outcome: .found, title: "Found", systemImage: "checkmark.circle.fill", tint: .green),
-        OutcomeGroup(outcome: .replaced, title: "Replaced", systemImage: "arrow.triangle.2.circlepath.circle.fill", tint: .blue),
-        OutcomeGroup(outcome: .outOfStock, title: "Out of Stock", systemImage: "xmark.circle.fill", tint: .red),
-        OutcomeGroup(outcome: .skipped, title: "Skipped", systemImage: "arrow.uturn.forward.circle.fill", tint: .orange),
-        OutcomeGroup(outcome: .needed, title: "Not Found", systemImage: "circle.dashed", tint: .gray),
-        OutcomeGroup(outcome: .removed, title: "Removed", systemImage: "trash.circle.fill", tint: .gray),
+        OutcomeGroup(outcome: .found, title: String(localized: "Found"), systemImage: "checkmark.circle.fill", tint: .green),
+        OutcomeGroup(outcome: .replaced, title: String(localized: "Replaced"), systemImage: "arrow.triangle.2.circlepath.circle.fill", tint: .blue),
+        OutcomeGroup(outcome: .outOfStock, title: String(localized: "Out of Stock"), systemImage: "xmark.circle.fill", tint: .red),
+        OutcomeGroup(outcome: .skipped, title: String(localized: "Skipped"), systemImage: "arrow.uturn.forward.circle.fill", tint: .orange),
+        OutcomeGroup(outcome: .needed, title: String(localized: "Not Found"), systemImage: "circle.dashed", tint: .gray),
+        OutcomeGroup(outcome: .removed, title: String(localized: "Removed"), systemImage: "trash.circle.fill", tint: .gray),
     ]
 }
 

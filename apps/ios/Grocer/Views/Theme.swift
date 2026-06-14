@@ -88,7 +88,7 @@ extension ListColorTheme {
         }
     }
 
-    var displayName: String { rawValue.capitalized }
+    var displayName: String { localizedName }
 }
 
 extension Household {
@@ -113,7 +113,7 @@ struct PriorityCircle: View {
         Circle()
             .fill(priority.markerColor)
             .frame(width: size, height: size)
-            .accessibilityLabel("\(priority.rawValue) priority")
+            .accessibilityLabel(String(localized: "\(priority.localizedName) priority"))
     }
 }
 
@@ -130,7 +130,7 @@ struct PriorityLabel: View {
 
     var body: some View {
         if let color = chipColor {
-            Text(priority.rawValue.uppercased())
+            Text(priority.localizedName.uppercased())
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundColor(color)
                 .padding(.horizontal, 6)
@@ -139,7 +139,7 @@ struct PriorityLabel: View {
                     RoundedRectangle(cornerRadius: 4)
                         .stroke(color, lineWidth: 1)
                 )
-                .accessibilityLabel("\(priority.rawValue) priority")
+                .accessibilityLabel(String(localized: "\(priority.localizedName) priority"))
         }
     }
 }

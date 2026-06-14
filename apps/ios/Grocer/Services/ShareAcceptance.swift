@@ -244,8 +244,10 @@ final class ShoppingTripItemAddedAlertCoordinator: NSObject, AVAudioPlayerDelega
             }
 
             let content = UNMutableNotificationContent()
-            content.title = "Added to your trip"
-            content.body = "\(item.requestedByDisplayName.trimmedNonEmpty ?? "Someone") added \(itemDisplayName(item)) to your shopping trip."
+            let requester = item.requestedByDisplayName.trimmedNonEmpty ?? String(localized: "Someone")
+            let itemName = itemDisplayName(item)
+            content.title = String(localized: "Added to your trip")
+            content.body = String(localized: "\(requester) added \(itemName) to your shopping trip.")
             content.sound = .default
             content.threadIdentifier = "shopping-trip-\(session.householdId)"
             content.userInfo = [
@@ -291,7 +293,7 @@ final class ShoppingTripItemAddedAlertCoordinator: NSObject, AVAudioPlayerDelega
     }
 
     private func itemDisplayName(_ item: GroceryItem) -> String {
-        let name = item.name.trimmedNonEmpty ?? "an item"
+        let name = item.name.trimmedNonEmpty ?? String(localized: "an item")
         guard let quantity = item.quantity?.trimmedNonEmpty else { return name }
         return "\(quantity) \(name)"
     }

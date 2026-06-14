@@ -1,0 +1,1244 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "·" : {
+
+    },
+    "%@" : {
+
+    },
+    "%@ · Cancel anytime, no commitment" : {
+
+    },
+    "%@ · started %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ · started %2$@"
+          }
+        }
+      }
+    },
+    "%@ / Monthly" : {
+
+    },
+    "%@ / Weekly" : {
+
+    },
+    "%@ added %@ to your shopping trip." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ added %2$@ to your shopping trip."
+          }
+        }
+      }
+    },
+    "%@ cancelled shopping" : {
+
+    },
+    "%@ is already on your list. Add it again?" : {
+
+    },
+    "%@ is shopping" : {
+
+    },
+    "%@ is shopping at %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ is shopping at %2$@"
+          }
+        }
+      }
+    },
+    "%@ priority" : {
+
+    },
+    "%@ unavailable — replace with" : {
+
+    },
+    "%@: %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@: %2$@"
+          }
+        }
+      }
+    },
+    "%@'s list is on its way." : {
+
+    },
+    "%@/mo" : {
+
+    },
+    "%@/wk" : {
+
+    },
+    "%@/yr" : {
+
+    },
+    "%@/yr (%@/mo)" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@/yr (%2$@/mo)"
+          }
+        }
+      }
+    },
+    "%lld" : {
+
+    },
+    "%lld Day" : {
+
+    },
+    "%lld Days" : {
+
+    },
+    "%lld found" : {
+
+    },
+    "%lld found · %lld left" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$lld found · %2$lld left"
+          }
+        }
+      }
+    },
+    "%lld found · %lld replaced · %lld unavailable" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$lld found · %2$lld replaced · %3$lld unavailable"
+          }
+        }
+      }
+    },
+    "%lld left" : {
+
+    },
+    "%lld Month" : {
+
+    },
+    "%lld Months" : {
+
+    },
+    "%lld of %lld found" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$lld of %2$lld found"
+          }
+        }
+      }
+    },
+    "%lld Year" : {
+
+    },
+    "%lld Years" : {
+
+    },
+    "^[%lld item](inflect: true)" : {
+
+    },
+    "^[%lld item](inflect: true) on %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "^[%1$lld item](inflect: true) on %2$@"
+          }
+        }
+      }
+    },
+    "^[%lld item](inflect: true) on the list" : {
+
+    },
+    "+ %lld more" : {
+
+    },
+    "Active" : {
+
+    },
+    "Add" : {
+
+    },
+    "Add ${item} to my grocery list" : {
+
+    },
+    "Add Again" : {
+
+    },
+    "Add family and friends to share your grocery lists, see who’s shopping in real time, and get live updates when items are added or a trip wraps up." : {
+
+    },
+    "Add from history" : {
+
+    },
+    "Add from Previous Items" : {
+
+    },
+    "Add Grocery Item" : {
+
+    },
+    "Add Item" : {
+
+    },
+    "Add Items" : {
+
+    },
+    "Add Note" : {
+
+    },
+    "Add to List" : {
+
+    },
+    "Add what you need for %@." : {
+
+    },
+    "Added" : {
+
+    },
+    "Added %@ to %@." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Added %1$@ to %2$@."
+          }
+        }
+      }
+    },
+    "Added by %@" : {
+
+    },
+    "Added During Trip" : {
+
+    },
+    "Added to your trip" : {
+
+    },
+    "Adds an item to your grocery list." : {
+
+    },
+    "After purchase, you can manage and turn off auto-renewal in your Apple Account settings." : {
+
+    },
+    "Already on your list" : {
+
+    },
+    "alternative" : {
+
+    },
+    "an item" : {
+
+    },
+    "Any similar %@" : {
+
+    },
+    "Any similar item" : {
+
+    },
+    "App Update Required" : {
+
+    },
+    "As the owner, this deletes the group and its list for everyone." : {
+
+    },
+    "Ask a group owner to send an invite from Settings." : {
+
+    },
+    "Back" : {
+
+    },
+    "Bakery" : {
+
+    },
+    "Best Value · Just %@/year" : {
+
+    },
+    "Billed annually" : {
+
+    },
+    "Billed weekly" : {
+
+    },
+    "Blue" : {
+
+    },
+    "Brown" : {
+
+    },
+    "By" : {
+
+    },
+    "Cancel" : {
+
+    },
+    "Cancel anytime" : {
+
+    },
+    "Cancelled" : {
+
+    },
+    "Category" : {
+
+    },
+    "Change profile photo" : {
+
+    },
+    "Check your connection and try again." : {
+
+    },
+    "Checking..." : {
+
+    },
+    "Choose Contacts" : {
+
+    },
+    "Choose profile photo" : {
+
+    },
+    "Choose which grocery list to show." : {
+
+    },
+    "Cleanup" : {
+
+    },
+    "Clear completed items" : {
+
+    },
+    "Close" : {
+
+    },
+    "CloudKit subscriptions failed. Pull to refresh still works." : {
+
+    },
+    "Color" : {
+
+    },
+    "Completed" : {
+
+    },
+    "Completed (%lld)" : {
+
+    },
+    "Contact (optional)" : {
+
+    },
+    "Contacts Access Off" : {
+
+    },
+    "Continue" : {
+
+    },
+    "Couldn’t Invite" : {
+
+    },
+    "Couldn't Save Group" : {
+
+    },
+    "Couldn't save group: %@" : {
+
+    },
+    "Couldn’t start sharing" : {
+
+    },
+    "Create a group before inviting members." : {
+
+    },
+    "Create a group to start planning." : {
+
+    },
+    "Create as many grocery lists as you need." : {
+
+    },
+    "Current" : {
+
+    },
+    "Current build %lld. Required build %lld." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Current build %1$lld. Required build %2$lld."
+          }
+        }
+      }
+    },
+    "Custom replacement" : {
+
+    },
+    "Custom unit" : {
+
+    },
+    "Custom…" : {
+
+    },
+    "Customize Group" : {
+
+    },
+    "Dairy" : {
+
+    },
+    "Delete all data?" : {
+
+    },
+    "Delete Everything" : {
+
+    },
+    "Delete Group" : {
+
+    },
+    "Delete this group?" : {
+
+    },
+    "Details (optional)" : {
+
+    },
+    "Detecting items" : {
+
+    },
+    "Discard" : {
+
+    },
+    "Discard proposed items?" : {
+
+    },
+    "Done" : {
+
+    },
+    "Drinks" : {
+
+    },
+    "Edit" : {
+
+    },
+    "Edit Group" : {
+
+    },
+    "Edit Item" : {
+
+    },
+    "Email" : {
+
+    },
+    "Emily Davis" : {
+
+    },
+    "Enter a unit like “case” or “sticks”." : {
+
+    },
+    "Every new Pro feature, included." : {
+
+    },
+    "Family Sharing" : {
+
+    },
+    "Filter previous items" : {
+
+    },
+    "Finish Shopping" : {
+
+    },
+    "Finished shopping trips for this group will show up here." : {
+
+    },
+    "found" : {
+
+    },
+    "Found" : {
+
+    },
+    "Free Trial %@, then" : {
+
+    },
+    "Free trial %@, then %@\nCancel anytime · No payment now" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Free trial %1$@, then %2$@\nCancel anytime · No payment now"
+          }
+        }
+      }
+    },
+    "Frozen" : {
+
+    },
+    "Future Updates" : {
+
+    },
+    "Get a link instead" : {
+
+    },
+    "Get Pro to unlock all features" : {
+
+    },
+    "Gray" : {
+
+    },
+    "Green" : {
+
+    },
+    "Grocer" : {
+
+    },
+    "Grocer keeps our whole family on the same page. No more fridge sticky notes!" : {
+
+    },
+    "Grocer will add the shared group after iCloud accepts it." : {
+
+    },
+    "Grocery Item" : {
+
+    },
+    "Grocery List" : {
+
+    },
+    "Group" : {
+
+    },
+    "Group name" : {
+
+    },
+    "Group Name" : {
+
+    },
+    "Group Sharing" : {
+
+    },
+    "High" : {
+
+    },
+    "History" : {
+
+    },
+    "Household" : {
+
+    },
+    "I love seeing what my family grabs in real time. Total game changer." : {
+
+    },
+    "iCloud sync is unavailable right now. Sharing will be available after this group syncs to iCloud." : {
+
+    },
+    "Icon" : {
+
+    },
+    "If unavailable" : {
+
+    },
+    "Indigo" : {
+
+    },
+    "Invite %lld" : {
+
+    },
+    "Invite People" : {
+
+    },
+    "Invite to Group" : {
+
+    },
+    "It’s free, and saves you from ever texting “what do we still need?” again." : {
+
+    },
+    "Item" : {
+
+    },
+    "Items auto-sort by aisle as you shop." : {
+
+    },
+    "Join “%@” on Grocer so we can share the list: %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Join “%1$@” on Grocer so we can share the list: %2$@"
+          }
+        }
+      }
+    },
+    "Join a Group" : {
+
+    },
+    "Join an Existing Group" : {
+
+    },
+    "Join my Grocer group" : {
+
+    },
+    "Keep Editing" : {
+
+    },
+    "Keep out-of-stock items for next trip" : {
+
+    },
+    "Last: %@" : {
+
+    },
+    "Leave Group" : {
+
+    },
+    "Leave this group?" : {
+
+    },
+    "left" : {
+
+    },
+    "List" : {
+
+    },
+    "Live Activities" : {
+
+    },
+    "Loading plans…" : {
+
+    },
+    "Look back at past shopping trips." : {
+
+    },
+    "Low" : {
+
+    },
+    "Lowering the quantity to zero removes this item from your list." : {
+
+    },
+    "Mark Found" : {
+
+    },
+    "Me" : {
+
+    },
+    "Meat & Seafood" : {
+
+    },
+    "Member" : {
+
+    },
+    "Members" : {
+
+    },
+    "Michael Thompson" : {
+
+    },
+    "Mint" : {
+
+    },
+    "Monthly Flex · Cancel anytime" : {
+
+    },
+    "More" : {
+
+    },
+    "More Features" : {
+
+    },
+    "my grocery list" : {
+
+    },
+    "My Groups" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "My Lists"
+          }
+        }
+      }
+    },
+    "Name" : {
+
+    },
+    "Needed" : {
+
+    },
+    "New group" : {
+
+    },
+    "New Group" : {
+
+    },
+    "No Contacts" : {
+
+    },
+    "No groups yet" : {
+
+    },
+    "No items match “%@”" : {
+
+    },
+    "No items were recorded for this trip." : {
+
+    },
+    "No longer active" : {
+
+    },
+    "No previous items yet" : {
+
+    },
+    "No previous purchases were found to restore." : {
+
+    },
+    "No replacement — mark Out of Stock" : {
+
+    },
+    "No Trips Yet" : {
+
+    },
+    "None" : {
+
+    },
+    "Normal" : {
+
+    },
+    "Not active" : {
+
+    },
+    "Not found" : {
+
+    },
+    "Not Found" : {
+
+    },
+    "Not subscribed" : {
+
+    },
+    "Note" : {
+
+    },
+    "Notes" : {
+
+    },
+    "Nothing on the list" : {
+
+    },
+    "Offline — changes will sync later" : {
+
+    },
+    "OK" : {
+
+    },
+    "On list" : {
+
+    },
+    "One-time payment · No subscription" : {
+
+    },
+    "Only the group owner can edit group details." : {
+
+    },
+    "Only the group owner can invite members." : {
+
+    },
+    "Only the group owner can invite people." : {
+
+    },
+    "Only the group owner can remove members." : {
+
+    },
+    "Only the group owner can rename this group." : {
+
+    },
+    "Open Grocer to pick a list" : {
+
+    },
+    "Open Settings" : {
+
+    },
+    "Open the invite link on this iPhone." : {
+
+    },
+    "Orange" : {
+
+    },
+    "Other" : {
+
+    },
+    "Out" : {
+
+    },
+    "Out of stock" : {
+
+    },
+    "Out of Stock" : {
+
+    },
+    "Owner" : {
+
+    },
+    "Pantry" : {
+
+    },
+    "Pay once · Yours forever" : {
+
+    },
+    "Personal Care" : {
+
+    },
+    "Pet" : {
+
+    },
+    "Pick people from your contacts and we’ll text them an invite link. You can remove members at any time from Settings." : {
+
+    },
+    "Pink" : {
+
+    },
+    "Preferences" : {
+
+    },
+    "Previous Items" : {
+
+    },
+    "Previously added by the group" : {
+
+    },
+    "Priority" : {
+
+    },
+    "Privacy" : {
+
+    },
+    "Pro" : {
+
+    },
+    "Pro users can make\nunlimited groups" : {
+
+    },
+    "Produce" : {
+
+    },
+    "Proposed" : {
+
+    },
+    "Purchase Error" : {
+
+    },
+    "Purchases are not allowed on this device." : {
+
+    },
+    "Purple" : {
+
+    },
+    "Put Back on List" : {
+
+    },
+    "Quantity" : {
+
+    },
+    "Quick Actions" : {
+
+    },
+    "Ready to start a shopping trip?" : {
+
+    },
+    "Reconnect to iCloud before inviting members." : {
+
+    },
+    "Red" : {
+
+    },
+    "Redeem" : {
+
+    },
+    "Remove" : {
+
+    },
+    "Remove %@" : {
+
+    },
+    "Remove %@?" : {
+
+    },
+    "Removed" : {
+
+    },
+    "Replace" : {
+
+    },
+    "replaced" : {
+
+    },
+    "Replaced" : {
+
+    },
+    "Replaced with %@" : {
+
+    },
+    "Replacement" : {
+
+    },
+    "Replacement item" : {
+
+    },
+    "Replacement preference" : {
+
+    },
+    "Requested" : {
+
+    },
+    "Reset All Data" : {
+
+    },
+    "Restore" : {
+
+    },
+    "Restore Purchases" : {
+
+    },
+    "RevenueCat is not configured correctly. Check the API key and dashboard setup." : {
+
+    },
+    "Sarah Johnson" : {
+
+    },
+    "Save" : {
+
+    },
+    "Search contacts" : {
+
+    },
+    "Search previous items" : {
+
+    },
+    "See a list's items at a glance, with photos." : {
+
+    },
+    "Select Contacts to Invite" : {
+
+    },
+    "Select List" : {
+
+    },
+    "Send" : {
+
+    },
+    "Send Feedback" : {
+
+    },
+    "Separate shared groups" : {
+
+    },
+    "Session ended" : {
+
+    },
+    "Set" : {
+
+    },
+    "Set store" : {
+
+    },
+    "Settings" : {
+
+    },
+    "Share your lists with as many people as you want." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Share your lists with unlimited people."
+          }
+        }
+      }
+    },
+    "Shared Lists" : {
+
+    },
+    "Shared with Me" : {
+
+    },
+    "Shared with you" : {
+
+    },
+    "Shop smarter\nwith Grocer Pro" : {
+
+    },
+    "Shopper" : {
+
+    },
+    "Shopping" : {
+
+    },
+    "Shopping Cancelled" : {
+
+    },
+    "Shopping Complete" : {
+
+    },
+    "Shopping notifications" : {
+
+    },
+    "Show all plans" : {
+
+    },
+    "Show Live Activities" : {
+
+    },
+    "Sign in to iCloud to invite members. Group sharing needs CloudKit, which isn't available in this build/session." : {
+
+    },
+    "Sign in to iCloud to save groups across devices." : {
+
+    },
+    "Skip" : {
+
+    },
+    "Skipped" : {
+
+    },
+    "Smart Categories" : {
+
+    },
+    "Snacks" : {
+
+    },
+    "Someone" : {
+
+    },
+    "Sorry, I didn't catch what to add." : {
+
+    },
+    "Start Shopping" : {
+
+    },
+    "Start typing — items you add will appear here" : {
+
+    },
+    "Start with 2 groups, upgrade to Pro to make as many as you need." : {
+
+    },
+    "Status" : {
+
+    },
+    "Store" : {
+
+    },
+    "Store brand" : {
+
+    },
+    "Store name" : {
+
+    },
+    "Store name (optional)" : {
+
+    },
+    "Store not set" : {
+
+    },
+    "Subscribe" : {
+
+    },
+    "Subscribed" : {
+
+    },
+    "Summary" : {
+
+    },
+    "Swipe left on a member to remove them from this group." : {
+
+    },
+    "Swipe right → Found · Swipe left for more" : {
+
+    },
+    "Sync failed: %@" : {
+
+    },
+    "Syncing group…" : {
+
+    },
+    "Teal" : {
+
+    },
+    "Terms" : {
+
+    },
+    "Thanks for the feedback!" : {
+
+    },
+    "The App Store could not complete the request. Try again in a moment." : {
+
+    },
+    "The payment is pending. Access will update after Apple approves it." : {
+
+    },
+    "The purchase could not be completed. Check the payment method and try again." : {
+
+    },
+    "The smartest grocery app I've used. Shopping trips are so easy now." : {
+
+    },
+    "this group" : {
+
+    },
+    "This group" : {
+
+    },
+    "This group couldn't be saved to iCloud. Check Settings → Diagnostics for sync status, then try again." : {
+
+    },
+    "This is how your group will see you." : {
+
+    },
+    "This permanently deletes all groups, lists, and items from iCloud. You can create or join a group again afterward." : {
+
+    },
+    "This product is not available for purchase yet." : {
+
+    },
+    "This purchase is already active. Try Restore Purchases if access is missing." : {
+
+    },
+    "This shopping trip is no longer active." : {
+
+    },
+    "This version of Grocer is no longer supported. Install the latest update to keep using the app." : {
+
+    },
+    "Track shopping trips in real time." : {
+
+    },
+    "Trip" : {
+
+    },
+    "Trip History" : {
+
+    },
+    "Trip Summary" : {
+
+    },
+    "Try for $0.00" : {
+
+    },
+    "Try for free" : {
+
+    },
+    "Turn on Contacts for Grocer in Settings to pick people to invite, or use “Get a link instead.”" : {
+
+    },
+    "Type your list freely — milk, eggs, bananas, e.t.c." : {
+
+    },
+    "unavailable" : {
+
+    },
+    "unit" : {
+
+    },
+    "Unit" : {
+
+    },
+    "Unlimited groups, smarter shopping, history, and more, for the whole family." : {
+
+    },
+    "Unlimited Lists" : {
+
+    },
+    "Unlimited lists, live activities, and more." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Unlimited lists, family sharing, widgets, and more."
+          }
+        }
+      }
+    },
+    "Unlock Lifetime" : {
+
+    },
+    "Update App" : {
+
+    },
+    "Upgrade to add group" : {
+
+    },
+    "Upgrade to Grocer Pro" : {
+
+    },
+    "Upgrade to Grocer Pro. Create unlimited grocery groups." : {
+
+    },
+    "Upon confirmation, the payment will be charged to your Apple Account. Your subscription automatically renews unless it is cancelled at least 24 hours before the end of the current period." : {
+
+    },
+    "Use" : {
+
+    },
+    "View" : {
+
+    },
+    "View Details" : {
+
+    },
+    "View Plans" : {
+
+    },
+    "Wait for iCloud sync to finish before inviting members." : {
+
+    },
+    "What would you like to add?" : {
+
+    },
+    "What's on your mind?" : {
+
+    },
+    "When" : {
+
+    },
+    "Where are you shopping for this trip?" : {
+
+    },
+    "Yellow" : {
+
+    },
+    "You don't have a grocery list yet. Open Grocer to create one." : {
+
+    },
+    "You have items ready to add. Close without adding them?" : {
+
+    },
+    "You’ll stop seeing this group’s lists on this device." : {
+
+    },
+    "You’ve joined “%@”" : {
+
+    },
+    "Your feedback" : {
+
+    },
+    "Your Grocery List.\nWith Magic Powers." : {
+
+    },
+    "Your Name" : {
+
+    },
+    "Your Pro plan is automatically shared with your iCloud Family." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Share Pro with your entire iCloud Family."
+          }
+        }
+      }
+    },
+    "Your Profile" : {
+
+    }
+  },
+  "version" : "1.0"
+}

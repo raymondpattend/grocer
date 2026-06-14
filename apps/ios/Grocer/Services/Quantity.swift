@@ -220,7 +220,7 @@ struct QuantityStepperField: View {
             }
         } label: {
             HStack(spacing: 4) {
-                Text(effectiveUnit.isEmpty ? "unit" : effectiveUnit)
+                Text(effectiveUnit.isEmpty ? String(localized: "unit") : effectiveUnit)
                     .foregroundStyle(effectiveUnit.isEmpty ? .secondary : .primary)
                     .lineLimit(1)
                 Image(systemName: "chevron.up.chevron.down")

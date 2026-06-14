@@ -33,10 +33,10 @@ struct SessionSummaryView: View {
             }
 
             Section("Summary") {
-                summaryRow("Found", progress.found, systemImage: "checkmark.circle.fill", tint: .green)
-                summaryRow("Replaced", progress.replaced, systemImage: "arrow.triangle.2.circlepath.circle.fill", tint: .blue)
-                summaryRow("Out of stock", progress.outOfStock, systemImage: "xmark.circle.fill", tint: .red)
-                summaryRow("Skipped", progress.skipped, systemImage: "arrow.uturn.forward.circle.fill", tint: .orange)
+                summaryRow(String(localized: "Found"), progress.found, systemImage: "checkmark.circle.fill", tint: .green)
+                summaryRow(String(localized: "Replaced"), progress.replaced, systemImage: "arrow.triangle.2.circlepath.circle.fill", tint: .blue)
+                summaryRow(String(localized: "Out of stock"), progress.outOfStock, systemImage: "xmark.circle.fill", tint: .red)
+                summaryRow(String(localized: "Skipped"), progress.skipped, systemImage: "arrow.uturn.forward.circle.fill", tint: .orange)
             }
 
             Section("Cleanup") {

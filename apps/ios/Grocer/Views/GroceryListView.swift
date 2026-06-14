@@ -6,10 +6,12 @@ import SwiftUI
 /// Shopping CTA themed to the group.
 struct GroceryListView: View {
     @Environment(GroceryRepository.self) private var repo
+    @Environment(\.dismiss) private var dismiss
 
     @State private var showingAddSearch = false
     @State private var showingSettings = false
     @State private var sessionForNav: ShoppingSession?
+    @State private var selectedItem: GroceryItem?
     @State private var showStartTrip = false
 
     private var tint: Color { repo.currentHousehold?.tint ?? .green }
@@ -30,7 +32,7 @@ struct GroceryListView: View {
                 ForEach(repo.pendingItemGroups, id: \.category) { group in
                     Section {
                         ForEach(group.items) { item in
-                            itemNavigationLink(item)
+                            itemButton(item)
                         }
                     } header: {
                         CategoryHeader(category: group.category)
@@ -39,7 +41,7 @@ struct GroceryListView: View {
 
                 if repo.pendingItems.isEmpty {
                     ContentUnavailableView("Nothing on the list", systemImage: "checklist",
-                                           description: Text("Add what you need for \(repo.currentHousehold?.name ?? "this group")."))
+                                           description: Text("Add what you need for \(repo.currentHousehold?.name ?? String(localized: "this group"))."))
                     .padding(.top, 40)
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
@@ -60,7 +62,7 @@ struct GroceryListView: View {
                 // a freshly joined shared group whose records are still
                 // syncing. Showing "No groups yet" here would be misleading.
                 ContentUnavailableView("Syncing group…", systemImage: "icloud.and.arrow.down",
-                                       description: Text("\(repo.currentHousehold?.name ?? "This group")'s list is on its way."))
+                                       description: Text("\(repo.currentHousehold?.name ?? String(localized: "This group"))'s list is on its way."))
                 .padding(.top, 40)
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
@@ -82,11 +84,15 @@ struct GroceryListView: View {
         .contentMargins(.top, 8, for: .scrollContent)
         .background(Color(.systemGroupedBackground))
         .refreshable { await repo.manualRefresh() }
-        .navigationTitle(repo.currentHousehold?.name ?? "Grocer")
+        .navigationTitle(repo.currentHousehold?.name ?? String(localized: "Grocer"))
         .navigationBarTitleDisplayMode(.large)
+        .navigationBarBackButtonHidden(true)
         .tint(tint)
         .navigationDestination(item: $sessionForNav) { session in
             ShoppingSessionView(sessionId: session.id) { sessionForNav = nil }
+        }
+        .navigationDestination(item: $selectedItem) { item in
+            ItemDetailView(item: item)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
@@ -97,6 +103,11 @@ struct GroceryListView: View {
             }
         }
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button { Haptics.selection(); dismiss() } label: {
+                    Image(systemName: "chevron.backward")
+                }
+            }
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button { Haptics.tap(); showingAddSearch = true } label: { Image(systemName: "plus") }
                     .disabled(repo.currentList == nil)
@@ -109,7 +120,7 @@ struct GroceryListView: View {
         .navigationDestination(isPresented: $showingSettings) { SettingsView() }
         .sheet(isPresented: $showStartTrip) {
             StartTripSheet(
-                groupName: repo.currentHousehold?.name ?? "this group",
+                groupName: repo.currentHousehold?.name ?? String(localized: "this group"),
                 itemCount: repo.pendingItems.count,
                 tint: tint
             ) {
@@ -137,20 +148,19 @@ struct GroceryListView: View {
         .disabled(repo.pendingItems.isEmpty)
     }
 
-    private func itemNavigationLink(_ item: GroceryItem) -> some View {
-        NavigationLink {
-            ItemDetailView(item: item)
+    private func itemButton(_ item: GroceryItem) -> some View {
+        Button {
+            Haptics.selection()
+            selectedItem = item
         } label: {
             GroceryItemRow(
                 item: item,
                 member: repo.member(for: item)
             )
         }
+        .buttonStyle(.plain)
         .listRowInsets(EdgeInsets())
         .alignmentGuide(.listRowSeparatorLeading) { _ in 76 }
-        .simultaneousGesture(TapGesture().onEnded {
-            Haptics.selection()
-        })
         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
             Button(role: .destructive) {
                 removeItem(item)
@@ -342,9 +352,9 @@ struct ActiveSessionBanner: View {
                     .frame(width: 44, height: 44)
                     .background(Circle().fill(tint))
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("\(session.startedByDisplayName) is shopping\(session.storeName.map { " at \($0)" } ?? "")")
+                    Text(headline)
                         .font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
-                    Text("\(progress.found) found · \(progress.remaining) left")
+                    Text(String(localized: "\(progress.found) found · \(progress.remaining) left"))
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -360,5 +370,12 @@ struct ActiveSessionBanner: View {
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
         .buttonStyle(.plain)
+    }
+
+    private var headline: String {
+        if let storeName = session.storeName {
+            return String(localized: "\(session.startedByDisplayName) is shopping at \(storeName)")
+        }
+        return String(localized: "\(session.startedByDisplayName) is shopping")
     }
 }

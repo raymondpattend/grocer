@@ -98,7 +98,9 @@ struct InviteContactsView: View {
 
     private var inviteButton: some View {
         Button(action: invite) {
-            Text(selected.isEmpty ? "Select Contacts to Invite" : "Invite \(selected.count)")
+            Text(selected.isEmpty
+                 ? String(localized: "Select Contacts to Invite")
+                 : String(localized: "Invite \(selected.count)"))
                 .font(.headline)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 6)
@@ -167,10 +169,10 @@ struct InviteContactsView: View {
         }
 
         prepareLink { url in
-            let groupName = repo.currentHousehold?.name ?? "my grocery list"
+            let groupName = repo.currentHousehold?.name ?? String(localized: "my grocery list")
             messagePayload = MessagePayload(
                 recipients: recipients,
-                body: "Join \u{201C}\(groupName)\u{201D} on Grocer so we can share the list: \(url.absoluteString)"
+                body: String(localized: "Join \u{201C}\(groupName)\u{201D} on Grocer so we can share the list: \(url.absoluteString)")
             )
         }
     }

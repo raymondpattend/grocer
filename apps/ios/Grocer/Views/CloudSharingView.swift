@@ -10,7 +10,7 @@ enum ShareSheetPresenter {
 
     static func presentInvite(url: URL) {
         let controller = UIActivityViewController(activityItems: [url], applicationActivities: nil)
-        controller.setValue("Join my Grocer group", forKey: "subject")
+        controller.setValue(String(localized: "Join my Grocer group"), forKey: "subject")
         present(controller)
     }
 
@@ -49,7 +49,7 @@ private final class CloudSharingDelegate: NSObject, UICloudSharingControllerDele
     }
 
     func itemTitle(for csc: UICloudSharingController) -> String? {
-        GroceryRepository.current?.currentHousehold?.name ?? "Grocer"
+        GroceryRepository.current?.currentHousehold?.name ?? String(localized: "Grocer")
     }
 
     func cloudSharingControllerDidSaveShare(_ csc: UICloudSharingController) {

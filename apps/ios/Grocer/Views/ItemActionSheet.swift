@@ -24,21 +24,21 @@ struct ItemActionSheet: View {
                 }
 
                 Section {
-                    actionRow("Mark Found", systemImage: "checkmark.circle.fill", tint: .green) {
+                    actionRow(String(localized: "Mark Found"), systemImage: "checkmark.circle.fill", tint: .green) {
                         Haptics.success()
                         moveItem { repo.mark(item, as: .found) }
                         dismiss()
                     }
-                    actionRow("Replace", systemImage: "arrow.triangle.2.circlepath.circle.fill", tint: .blue) {
+                    actionRow(String(localized: "Replace"), systemImage: "arrow.triangle.2.circlepath.circle.fill", tint: .blue) {
                         Haptics.selection()
                         dismiss(); onReplace()
                     }
-                    actionRow("Out of Stock", systemImage: "xmark.circle.fill", tint: .red) {
+                    actionRow(String(localized: "Out of Stock"), systemImage: "xmark.circle.fill", tint: .red) {
                         Haptics.warning()
                         moveItem { repo.mark(item, as: .outOfStock) }
                         dismiss()
                     }
-                    actionRow("Skip", systemImage: "arrow.uturn.forward.circle.fill", tint: .orange) {
+                    actionRow(String(localized: "Skip"), systemImage: "arrow.uturn.forward.circle.fill", tint: .orange) {
                         Haptics.warning()
                         moveItem { repo.mark(item, as: .skipped) }
                         dismiss()
@@ -104,7 +104,11 @@ struct ReplacementSheet: View {
         // Use the item's stored preference plus a couple of generic options.
         var options: [String] = []
         if let pref = item.replacementPreference, !pref.isEmpty { options.append(pref) }
-        options.append(contentsOf: ["Any similar \(item.category.rawValue.lowercased())", "Store brand", "Any similar item"])
+        options.append(contentsOf: [
+            String(localized: "Any similar \(item.category.localizedName.lowercased())"),
+            String(localized: "Store brand"),
+            String(localized: "Any similar item"),
+        ])
         return Array(NSOrderedSet(array: options)) as? [String] ?? options
     }
 
