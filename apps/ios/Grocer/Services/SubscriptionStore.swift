@@ -35,6 +35,44 @@ enum RevenueCatConfig {
     }
 }
 
+struct GrocerProPaywallCopy {
+    let headline: String
+    let subtitle: String
+}
+
+struct GrocerProGroupUpsellCopy {
+    let title: String
+    let subtitle: String
+    let accessibilityLabel: String
+}
+
+enum GrocerProPaywallContext {
+    case general
+    case groupLimit
+
+    fileprivate var metadataKey: String {
+        switch self {
+        case .general: return "general"
+        case .groupLimit: return "group_limit"
+        }
+    }
+
+    var defaultCopy: GrocerProPaywallCopy {
+        switch self {
+        case .general:
+            return GrocerProPaywallCopy(
+                headline: "Shop smarter\nwith Grocer Pro",
+                subtitle: "Unlimited groups, smarter shopping, history, and more, for the whole family."
+            )
+        case .groupLimit:
+            return GrocerProPaywallCopy(
+                headline: "Pro users can make\nunlimited groups",
+                subtitle: "Start with 2 groups, upgrade to Pro to make as many as you need."
+            )
+        }
+    }
+}
+
 @Observable
 final class SubscriptionStore {
     static let shared = SubscriptionStore()
@@ -79,6 +117,36 @@ final class SubscriptionStore {
         ])
 
         return preferred.isEmpty ? offering.availablePackages : preferred
+    }
+
+    func paywallCopy(for context: GrocerProPaywallContext) -> GrocerProPaywallCopy {
+        let fallback = context.defaultCopy
+        guard let paywallCopy = currentOffering?.metadata["paywall_copy"] as? [String: Any],
+              let contextCopy = paywallCopy[context.metadataKey] as? [String: Any] else {
+            return fallback
+        }
+
+        return GrocerProPaywallCopy(
+            headline: nonEmptyString(contextCopy["headline"]) ?? fallback.headline,
+            subtitle: nonEmptyString(contextCopy["subtitle"]) ?? fallback.subtitle
+        )
+    }
+
+    var homeGroupLimitCardCopy: GrocerProGroupUpsellCopy {
+        let fallback = GrocerProGroupUpsellCopy(
+            title: "Upgrade to Grocer Pro",
+            subtitle: "Unlimited lists, live activities, and more.",
+            accessibilityLabel: "Upgrade to Grocer Pro. Create unlimited grocery groups."
+        )
+        guard let cardCopy = currentOffering?.metadata["home_group_limit_card"] as? [String: Any] else {
+            return fallback
+        }
+
+        return GrocerProGroupUpsellCopy(
+            title: nonEmptyString(cardCopy["title"]) ?? fallback.title,
+            subtitle: nonEmptyString(cardCopy["subtitle"]) ?? fallback.subtitle,
+            accessibilityLabel: nonEmptyString(cardCopy["accessibility_label"]) ?? fallback.accessibilityLabel
+        )
     }
 
     @MainActor
@@ -196,6 +264,14 @@ final class SubscriptionStore {
             seen.insert(package.identifier)
             return package
         }
+    }
+
+    private func nonEmptyString(_ value: Any?) -> String? {
+        guard let string = value as? String,
+              !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return string
     }
 
     private static func isCancellation(_ error: Error) -> Bool {

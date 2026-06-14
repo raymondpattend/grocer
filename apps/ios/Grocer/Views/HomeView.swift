@@ -5,13 +5,18 @@ import SwiftUI
 /// can be split out into a "Shared with Me" section.
 struct HomeView: View {
     @Environment(GroceryRepository.self) private var repo
+    @Environment(SubscriptionStore.self) private var subscriptions
 
     @AppStorage("home.separateShared") private var separateShared = false
 
     @State private var path: [String] = []
     @State private var showNewGroup = false
+    @State private var showProPaywall = false
     @State private var editingGroup: Household?
     @Namespace private var zoomNamespace
+
+    private static let freeOwnedGroupLimit = 2
+    private static let proAccent = Color(red: 0.06, green: 0.72, blue: 0.51)
 
     private var ownedHouseholds: [Household] {
         repo.households.filter { !repo.isSharedWithMe($0) }
@@ -47,20 +52,28 @@ struct HomeView: View {
                     .accessibilityLabel("Separate shared groups")
 
                     Button {
-                        Haptics.tap()
-                        showNewGroup = true
+                        addGroupTapped()
                     } label: {
                         Image(systemName: "plus")
                     }
-                        .accessibilityLabel("New group")
+                    .accessibilityLabel(isAtFreeOwnedGroupLimit ? "Upgrade to add group" : "New group")
                 }
             }
             .navigationDestination(for: String.self) { householdId in
                 GroceryListView()
                     .groupZoomDestination(id: householdId, in: zoomNamespace)
             }
-            .sheet(isPresented: $showNewGroup) { NavigationStack { GroupEditorView(group: nil) } }
+            .sheet(isPresented: $showNewGroup) {
+                NavigationStack {
+                    GroupEditorView(group: nil) { created in
+                        path.append(created.id)
+                    }
+                }
+            }
             .sheet(item: $editingGroup) { group in NavigationStack { GroupEditorView(group: group) } }
+            .fullScreenCover(isPresented: $showProPaywall) {
+                GrocerProPaywallView(context: .groupLimit)
+            }
         }
     }
 
@@ -78,8 +91,16 @@ struct HomeView: View {
             }
         } else if separateShared && !sharedHouseholds.isEmpty {
             VStack(alignment: .leading, spacing: 24) {
-                groupSection(title: "My Groups", households: ownedHouseholds)
+                groupSection(title: "My Groups", households: ownedHouseholds, includesProUpsell: true)
                 groupSection(title: "Shared with Me", households: sharedHouseholds)
+            }
+        } else if isAtFreeOwnedGroupLimit {
+            VStack(spacing: 14) {
+                groupCollection(ownedHouseholds)
+                proGroupUpsellCard
+                if !sharedHouseholds.isEmpty {
+                    groupCollection(sharedHouseholds)
+                }
             }
         } else {
             groupCollection(repo.households)
@@ -87,7 +108,9 @@ struct HomeView: View {
     }
 
     @ViewBuilder
-    private func groupSection(title: String, households: [Household]) -> some View {
+    private func groupSection(title: String,
+                              households: [Household],
+                              includesProUpsell: Bool = false) -> some View {
         if !households.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
                 Text(title)
@@ -95,6 +118,9 @@ struct HomeView: View {
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 4)
                 groupCollection(households)
+                if includesProUpsell && isAtFreeOwnedGroupLimit {
+                    proGroupUpsellCard
+                }
             }
         }
     }
@@ -111,6 +137,93 @@ struct HomeView: View {
     /// Fixed card height so every grid tile lines up regardless of how many
     /// preview items it shows.
     private static let cardHeight: CGFloat = 190
+
+    // MARK: - Pro upsell
+
+    private var isAtFreeOwnedGroupLimit: Bool {
+        ownedHouseholds.count == Self.freeOwnedGroupLimit && !subscriptions.hasGrocerPro
+    }
+
+    private var groupUpsellCopy: GrocerProGroupUpsellCopy {
+        subscriptions.homeGroupLimitCardCopy
+    }
+
+    private var proGroupUpsellCard: some View {
+        Button {
+            Haptics.selection()
+            showProPaywall = true
+        } label: {
+            proGroupUpsellCardContent
+        }
+        .buttonStyle(.plain)
+        .transition(.opacity.combined(with: .move(edge: .bottom)))
+    }
+
+    private var proGroupUpsellCardContent: some View {
+        HStack(spacing: 14) {
+            VStack(alignment: .leading, spacing: 7) {
+                Text(groupUpsellCopy.title)
+                    .font(.system(.title2, design: .rounded).weight(.bold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+
+                Text(groupUpsellCopy.subtitle)
+                    .font(.body)
+                    .foregroundStyle(.white.opacity(0.68))
+                    .lineLimit(2)
+            }
+
+            Spacer(minLength: 12)
+
+            ZStack {
+                Image(systemName: "sparkle")
+                    .font(.system(size: 24, weight: .semibold))
+                    .offset(x: -22, y: -22)
+                Image(systemName: "lock.open")
+                    .font(.system(size: 42, weight: .medium))
+                    .rotationEffect(.degrees(8))
+            }
+            .foregroundStyle(.white)
+            .frame(width: 74, height: 62)
+        }
+        .padding(.leading, 20)
+        .padding(.trailing, 20)
+        .padding(.vertical, 20)
+        .frame(maxWidth: .infinity, minHeight: 112, alignment: .leading)
+        .background {
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .fill(Color(red: 0.05, green: 0.06, blue: 0.05))
+
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .fill(
+                    RadialGradient(
+                        colors: [Self.proAccent.opacity(0.72), .clear],
+                        center: .bottomTrailing,
+                        startRadius: 4,
+                        endRadius: 190
+                    )
+                )
+
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .fill(
+                    RadialGradient(
+                        colors: [Color.green.opacity(0.28), .clear],
+                        center: UnitPoint(x: 0.62, y: 0.86),
+                        startRadius: 0,
+                        endRadius: 150
+                    )
+                )
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .strokeBorder(Self.proAccent.opacity(0.34), lineWidth: 1)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .shadow(color: Self.proAccent.opacity(0.18), radius: 20, y: 8)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(groupUpsellCopy.accessibilityLabel)
+    }
 
     // MARK: - Grid card
 
@@ -240,6 +353,15 @@ struct HomeView: View {
         Haptics.selection()
         repo.selectHousehold(house.id)
         path.append(house.id)
+    }
+
+    private func addGroupTapped() {
+        Haptics.tap()
+        if isAtFreeOwnedGroupLimit {
+            showProPaywall = true
+        } else {
+            showNewGroup = true
+        }
     }
 
     private func pendingCount(for house: Household) -> Int {

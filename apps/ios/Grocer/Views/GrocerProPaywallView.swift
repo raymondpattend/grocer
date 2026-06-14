@@ -7,6 +7,8 @@ import SwiftUI
 /// Pricing, trial length, and the package list all come straight from
 /// RevenueCat so the UI always reflects what's configured in the dashboard.
 struct GrocerProPaywallView: View {
+    let context: GrocerProPaywallContext
+
     @Environment(SubscriptionStore.self) private var subscriptions
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
@@ -17,6 +19,14 @@ struct GrocerProPaywallView: View {
 
     private let termsURL = URL(string: "https://grocer.narro.org/terms")
     private let privacyURL = URL(string: "https://grocer.narro.org/privacy")
+
+    private var copy: GrocerProPaywallCopy {
+        subscriptions.paywallCopy(for: context)
+    }
+
+    init(context: GrocerProPaywallContext = .general) {
+        self.context = context
+    }
 
     var body: some View {
         ZStack {
@@ -94,7 +104,7 @@ struct GrocerProPaywallView: View {
                 } else {
                     Text("Restore")
                         .font(.subheadline.weight(.medium))
-                        .foregroundStyle(Palette.accent)
+                        .foregroundStyle(Palette.secondaryText)
                 }
             }
             .disabled(subscriptions.isRestoring)
@@ -129,12 +139,12 @@ struct GrocerProPaywallView: View {
 
     private var headline: some View {
         VStack(spacing: 12) {
-            Text("Shop smarter\nwith Grocer Pro.")
+            Text(copy.headline)
                 .font(.system(.largeTitle, design: .rounded).weight(.bold))
                 .multilineTextAlignment(.center)
                 .foregroundStyle(Palette.primaryText)
 
-            Text("Unlimited lists, smarter shopping, for your whole household.")
+            Text(copy.subtitle)
                 .font(.body)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(Palette.secondaryText)
@@ -164,7 +174,7 @@ struct GrocerProPaywallView: View {
                 } label: {
                     Text("Show all plans")
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(Palette.accent)
+                        .foregroundStyle(Palette.secondaryText)
                 }
                 .padding(.top, 2)
             }
@@ -401,7 +411,7 @@ struct GrocerProPaywallView: View {
         if package.packageType == .lifetime {
             return "One-time payment · No subscription"
         }
-        return "\(summary) · Cancel anytime"
+        return "\(summary) · Cancel anytime, no commitment"
     }
 
     private func display(for package: Package) -> PlanDisplay {
@@ -426,14 +436,16 @@ struct GrocerProPaywallView: View {
     private static let features: [Feature] = [
         Feature(icon: "list.bullet.rectangle.portrait", title: "Unlimited Lists",
                 subtitle: "Create as many grocery lists as you need."),
-        Feature(icon: "person.2.fill", title: "Family Sharing",
-                subtitle: "Share lists with your whole household."),
+        Feature(icon: "person.2.fill", title: "Shared Lists",
+                subtitle: "Share your lists with as many people as you want."),
         Feature(icon: "bolt.horizontal.circle", title: "Live Activities",
                 subtitle: "Track shopping trips in real time."),
         Feature(icon: "square.grid.2x2", title: "Smart Categories",
                 subtitle: "Items auto-sort by aisle as you shop."),
         Feature(icon: "clock.arrow.circlepath", title: "Trip History",
                 subtitle: "Look back at past shopping trips."),
+        Feature(icon: "person.3.fill", title: "Family Sharing",
+                subtitle: "Your Pro plan is automatically shared with your iCloud Family."),
         Feature(icon: "sparkles", title: "Future Updates",
                 subtitle: "Every new Pro feature, included."),
     ]
@@ -446,11 +458,11 @@ struct GrocerProPaywallView: View {
     }
 
     private static let quotes: [Quote] = [
-        Quote(text: "Grocer keeps our whole family on the same page. No more duplicate milk!",
+        Quote(text: "Grocer keeps our whole family on the same page. No more fridge sticky notes!",
               name: "Sarah Johnson", emoji: "🥰"),
-        Quote(text: "The smartest grocery app I've used. Shopping trips are so much faster now.",
+        Quote(text: "The smartest grocery app I've used. Shopping trips are so easy now.",
               name: "Michael Thompson", emoji: "🎉"),
-        Quote(text: "I love seeing what my partner grabs in real time. Total game changer.",
+        Quote(text: "I love seeing what my family grabs in real time. Total game changer.",
               name: "Emily Davis", emoji: "👋"),
     ]
 }

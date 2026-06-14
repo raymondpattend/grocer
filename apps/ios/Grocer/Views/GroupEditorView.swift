@@ -9,6 +9,10 @@ struct GroupEditorView: View {
     /// nil = create a new group; non-nil = edit an existing one.
     let group: Household?
 
+    /// Called with the freshly created group after a successful create, before
+    /// the editor dismisses — lets the presenter navigate into the new group.
+    var onCreate: ((Household) -> Void)? = nil
+
     @State private var name = ""
     @State private var storeName = ""
     @State private var icon = GROUP_ICON_CHOICES[0]
@@ -78,8 +82,12 @@ struct GroupEditorView: View {
         .toolbar {
             ToolbarItem(placement: .cancellationAction) { Button("Cancel") { Haptics.selection(); dismiss() } }
             ToolbarItem(placement: .confirmationAction) {
-                Button("Save", action: save).bold()
-                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || isSaving || (isEditing && !repo.isOwnerOfCurrentGroup))
+                if isSaving {
+                    ProgressView()
+                } else {
+                    Button("Save", action: save).bold()
+                        .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || (isEditing && !repo.isOwnerOfCurrentGroup))
+                }
             }
         }
         .onAppear(perform: load)
@@ -121,8 +129,9 @@ struct GroupEditorView: View {
             let created = await repo.createGroup(name: trimmedName, store: store, icon: icon, theme: theme)
             await MainActor.run {
                 isSaving = false
-                if created != nil {
+                if let created {
                     Haptics.success()
+                    onCreate?(created)
                     dismiss()
                 } else {
                     Haptics.error()
