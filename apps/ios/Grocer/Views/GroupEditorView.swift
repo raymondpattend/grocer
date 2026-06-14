@@ -72,21 +72,6 @@ struct GroupEditorView: View {
                 .padding(.vertical, 4)
             }
 
-            if isEditing, repo.households.count > 1 {
-                Section {
-                    Button(role: .destructive) {
-                        Haptics.warning()
-                        repo.leaveCurrentGroup(); dismiss()
-                    } label: {
-                        Label(repo.isOwnerOfCurrentGroup ? "Delete Group" : "Leave Group",
-                              systemImage: repo.isOwnerOfCurrentGroup ? "trash" : "rectangle.portrait.and.arrow.right")
-                    }
-                } footer: {
-                    Text(repo.isOwnerOfCurrentGroup
-                         ? "As the owner, this deletes the group and its list for everyone."
-                         : "Removes this group and its list from your device.")
-                }
-            }
         }
         .navigationTitle(isEditing ? "Edit Group" : "New Group")
         .navigationBarTitleDisplayMode(.inline)

@@ -343,13 +343,23 @@ final class GroceryRepository {
     @ObservationIgnored private var localPersistenceBatchDepth = 0
     @ObservationIgnored private var hasDeferredLocalSnapshotSave = false
     @ObservationIgnored private var hasDeferredOutboxFlushSchedule = false
+    private var derivedStateRevision = 0
 
     // MARK: - Derived caches
 
     private static let emptyProgress = SessionProgress(total: 0, found: 0, replaced: 0, outOfStock: 0, skipped: 0, remaining: 0)
 
+    private func trackDerivedState() {
+        _ = derivedStateRevision
+    }
+
+    private func markDerivedStateChanged() {
+        derivedStateRevision += 1
+    }
+
     private func rebuildHouseholdCaches() {
         householdById = Dictionary(uniqueKeysWithValues: households.map { ($0.id, $0) })
+        markDerivedStateChanged()
     }
 
     private func rebuildListCaches() {
@@ -360,6 +370,7 @@ final class GroceryRepository {
             }
         }
         listByHouseholdId = byHousehold
+        markDerivedStateChanged()
     }
 
     private func rebuildMemberCaches() {
@@ -370,6 +381,7 @@ final class GroceryRepository {
                 byId[member.id] = member
             }
         }
+        markDerivedStateChanged()
     }
 
     private func rebuildSessionCaches() {
@@ -390,6 +402,7 @@ final class GroceryRepository {
         }
         rebuildShoppingSessionItemCaches()
         rebuildSessionProgressCaches()
+        markDerivedStateChanged()
     }
 
     private func rebuildItemCaches() {
@@ -414,6 +427,7 @@ final class GroceryRepository {
         rebuildItemSuggestionCaches()
         rebuildShoppingSessionItemCaches()
         rebuildSessionProgressCaches()
+        markDerivedStateChanged()
     }
 
     private func rebuildShoppingSessionItemCaches() {
@@ -475,9 +489,12 @@ final class GroceryRepository {
         let grouped = Dictionary(grouping: tripItems, by: \.sessionId)
         tripItemsBySessionId = grouped.mapValues { $0.sorted(by: ShoppingTripItem.tripDisplayOrder) }
         tripProgressBySessionId = tripItemsBySessionId.mapValues { Self.progress(forTripItems: $0) }
+        markDerivedStateChanged()
     }
 
-    private func rebuildEventCaches() {}
+    private func rebuildEventCaches() {
+        markDerivedStateChanged()
+    }
 
     private func rebuildSessionProgressCaches() {
         guard !sessions.isEmpty else {
@@ -542,26 +559,31 @@ final class GroceryRepository {
     // MARK: - Current selection
 
     var currentHousehold: Household? {
-        selectedHouseholdId.flatMap { householdById[$0] } ?? households.first
+        trackDerivedState()
+        return selectedHouseholdId.flatMap { householdById[$0] } ?? households.first
     }
 
     /// The single (non-archived) list backing the current group.
     var currentList: GroceryList? {
+        trackDerivedState()
         guard let hid = currentHousehold?.id else { return nil }
         return listByHouseholdId[hid]
     }
 
     /// The single (non-archived) list backing a given group.
     func list(for household: Household) -> GroceryList? {
-        listByHouseholdId[household.id]
+        trackDerivedState()
+        return listByHouseholdId[household.id]
     }
 
     var currentMembers: [HouseholdMember] {
+        trackDerivedState()
         guard let hid = currentHousehold?.id else { return [] }
         return membersByHouseholdId[hid] ?? []
     }
 
     func member(id: String?, householdId: String?) -> HouseholdMember? {
+        trackDerivedState()
         guard let id, let householdId else { return nil }
         return memberByHouseholdAndId[householdId]?[id]
     }
@@ -637,6 +659,7 @@ final class GroceryRepository {
     // MARK: - Derived state (scoped to the current list)
 
     func activeSession(for listId: String?) -> ShoppingSession? {
+        trackDerivedState()
         guard let listId else { return nil }
         return activeSessionByListId[listId]
     }
@@ -644,7 +667,8 @@ final class GroceryRepository {
     var activeSession: ShoppingSession? { activeSession(for: currentList?.id) }
 
     func session(id: String) -> ShoppingSession? {
-        sessionsById[id]
+        trackDerivedState()
+        return sessionsById[id]
     }
 
     func isStartedByCurrentUser(_ session: ShoppingSession) -> Bool {
@@ -653,6 +677,7 @@ final class GroceryRepository {
     }
 
     func pendingItems(forList listId: String?) -> [GroceryItem] {
+        trackDerivedState()
         guard let listId else { return [] }
         return pendingItemsByListId[listId] ?? []
     }
@@ -660,6 +685,7 @@ final class GroceryRepository {
     var pendingItems: [GroceryItem] { pendingItems(forList: currentList?.id) }
 
     func pendingItemGroups(forList listId: String?) -> [(category: GroceryCategory, items: [GroceryItem])] {
+        trackDerivedState()
         guard let listId else { return [] }
         return pendingGroupsByListId[listId] ?? []
     }
@@ -684,6 +710,7 @@ final class GroceryRepository {
 
     /// Distinct item suggestions from this group/list, latest first.
     var currentItemSuggestions: [GroceryItemSuggestion] {
+        trackDerivedState()
         guard let listId = currentList?.id else { return [] }
         return itemSuggestionsByListId[listId] ?? []
     }
@@ -696,6 +723,7 @@ final class GroceryRepository {
     }
 
     func currentItemSuggestion(named name: String) -> GroceryItemSuggestion? {
+        trackDerivedState()
         guard let listId = currentList?.id else { return nil }
         return itemSuggestionLookupByListId[listId]?[name.itemSuggestionKey]
     }
@@ -705,25 +733,30 @@ final class GroceryRepository {
     }
 
     func addedDuringTrip(session: ShoppingSession) -> [GroceryItem] {
-        addedDuringTripBySessionId[session.id] ?? []
+        trackDerivedState()
+        return addedDuringTripBySessionId[session.id] ?? []
     }
 
     func pendingShoppingGroups(session: ShoppingSession) -> [(category: GroceryCategory, items: [GroceryItem])] {
-        shoppingPendingGroupsBySessionId[session.id] ?? []
+        trackDerivedState()
+        return shoppingPendingGroupsBySessionId[session.id] ?? []
     }
 
     func handledItems(session: ShoppingSession) -> [GroceryItem] {
-        handledItemsBySessionId[session.id] ?? []
+        trackDerivedState()
+        return handledItemsBySessionId[session.id] ?? []
     }
 
     func progress(for session: ShoppingSession) -> SessionProgress {
-        progressBySessionId[session.id] ?? Self.emptyProgress
+        trackDerivedState()
+        return progressBySessionId[session.id] ?? Self.emptyProgress
     }
 
     // MARK: - Trip history
 
     /// Finished (completed or cancelled) trips for a group, most recent first.
     func completedTrips(for householdId: String?) -> [ShoppingSession] {
+        trackDerivedState()
         guard let householdId else { return [] }
         return completedTripsByHouseholdId[householdId] ?? []
     }
@@ -735,12 +768,14 @@ final class GroceryRepository {
 
     /// The captured item snapshots for a finished trip, in display order.
     func tripItems(for session: ShoppingSession) -> [ShoppingTripItem] {
-        tripItemsBySessionId[session.id] ?? []
+        trackDerivedState()
+        return tripItemsBySessionId[session.id] ?? []
     }
 
     /// Outcome tallies for a finished trip, derived from its captured snapshots.
     func tripProgress(for session: ShoppingSession) -> SessionProgress {
-        tripProgressBySessionId[session.id] ?? Self.emptyProgress
+        trackDerivedState()
+        return tripProgressBySessionId[session.id] ?? Self.emptyProgress
     }
 
     private func expireInactiveShoppingTrips(now: Date = Date()) async {

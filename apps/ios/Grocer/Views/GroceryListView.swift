@@ -7,117 +7,80 @@ import SwiftUI
 struct GroceryListView: View {
     @Environment(GroceryRepository.self) private var repo
 
-    /// The owning `HomeView`'s push path and this view's group id, used to tell
-    /// when this screen is being popped back to Home. While it animates out, a
-    /// stray tap on a row could otherwise re-push an item detail screen, so the
-    /// row actions check `isTopOfStack` before firing.
-    ///
-    /// Important: this is only read inside action closures, never during `body`.
-    /// Reading it in `body` would make the view re-render the instant the back
-    /// button mutates the path — mid zoom-out — which visibly glitches the rows
-    /// as they morph back into the Home card.
-    @Binding var navigationPath: [String]
-    let householdId: String
-
     @State private var showingAddSearch = false
     @State private var showingSettings = false
     @State private var sessionForNav: ShoppingSession?
-    @State private var itemForNav: GroceryItem?
     @State private var showStartTrip = false
 
     private var tint: Color { repo.currentHousehold?.tint ?? .green }
 
-    /// True while this group's list is the top of the push stack. Goes false the
-    /// moment a pop back to Home begins, before the animation finishes.
-    private var isTopOfStack: Bool { navigationPath.last == householdId }
-
     var body: some View {
-        ScrollView {
-            LazyVStack(spacing: 0) {
-                if let session = repo.activeSession {
-                    ActiveSessionBanner(session: session, progress: repo.progress(for: session), tint: tint) {
-                        Haptics.selection()
-                        sessionForNav = session
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 12)
+        List {
+            if let session = repo.activeSession {
+                ActiveSessionBanner(session: session, progress: repo.progress(for: session), tint: tint) {
+                    Haptics.selection()
+                    sessionForNav = session
                 }
-
-                if repo.currentList != nil {
-                    ForEach(repo.pendingItemGroups, id: \.category) { group in
-                        VStack(alignment: .leading, spacing: 0) {
-                            CategoryHeader(category: group.category)
-                                .padding(.horizontal, 20)
-                                .padding(.bottom, 8)
-                                .padding(.top, 4)
-
-                            VStack(spacing: 0) {
-                                ForEach(Array(group.items.enumerated()), id: \.element.id) { index, item in
-                                    SwipeToRemoveRow {
-                                        // Ignore stray taps that land while the
-                                        // screen is animating back to Home.
-                                        guard isTopOfStack else { return }
-                                        itemForNav = item
-                                    } onRemove: {
-                                        guard isTopOfStack else { return }
-                                        Haptics.warning()
-                                        withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
-                                            repo.delete(item)
-                                        }
-                                    } content: {
-                                        GroceryItemRow(
-                                            item: item,
-                                            member: repo.member(for: item)
-                                        )
-                                    }
-
-                                    if index < group.items.count - 1 {
-                                        Divider()
-                                            .padding(.leading, 76)
-                                    }
-                                }
-                            }
-                            .background(Color(.secondarySystemGroupedBackground))
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                            .padding(.horizontal, 16)
-                        }
-                        .padding(.bottom, 12)
-                    }
-
-                    if repo.pendingItems.isEmpty {
-                        ContentUnavailableView("Nothing on the list", systemImage: "checklist",
-                                               description: Text("Add what you need for \(repo.currentHousehold?.name ?? "this group")."))
-                        .padding(.top, 40)
-                    }
-
-                    if !repo.pendingItems.isEmpty {
-                        Text("^[\(repo.pendingItems.count) item](inflect: true) on the list")
-                            .font(.footnote)
-                            .foregroundStyle(.tertiary)
-                            .padding(.top, 8)
-                            .padding(.bottom, 20)
-                    }
-                } else if repo.currentHousehold != nil {
-                    // A group is selected but its list hasn't arrived yet — e.g.
-                    // a freshly joined shared group whose records are still
-                    // syncing. Showing "No groups yet" here would be misleading.
-                    ContentUnavailableView("Syncing group…", systemImage: "icloud.and.arrow.down",
-                                           description: Text("\(repo.currentHousehold?.name ?? "This group")'s list is on its way."))
-                    .padding(.top, 40)
-                } else if repo.hasCompletedInitialLoad {
-                    ContentUnavailableView("No groups yet", systemImage: "person.2",
-                                           description: Text("Create a group to start planning."))
-                    .padding(.top, 40)
-                } else {
-                    GroceryListSkeleton()
-                }
+                .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 12, trailing: 16))
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
             }
-            .padding(.top, 8)
+
+            if repo.currentList != nil {
+                ForEach(repo.pendingItemGroups, id: \.category) { group in
+                    Section {
+                        ForEach(group.items) { item in
+                            itemNavigationLink(item)
+                        }
+                    } header: {
+                        CategoryHeader(category: group.category)
+                    }
+                }
+
+                if repo.pendingItems.isEmpty {
+                    ContentUnavailableView("Nothing on the list", systemImage: "checklist",
+                                           description: Text("Add what you need for \(repo.currentHousehold?.name ?? "this group")."))
+                    .padding(.top, 40)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                }
+
+                if !repo.pendingItems.isEmpty {
+                    Text("^[\(repo.pendingItems.count) item](inflect: true) on the list")
+                        .font(.footnote)
+                        .foregroundStyle(.tertiary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 8)
+                        .padding(.bottom, 20)
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                }
+            } else if repo.currentHousehold != nil {
+                // A group is selected but its list hasn't arrived yet — e.g.
+                // a freshly joined shared group whose records are still
+                // syncing. Showing "No groups yet" here would be misleading.
+                ContentUnavailableView("Syncing group…", systemImage: "icloud.and.arrow.down",
+                                       description: Text("\(repo.currentHousehold?.name ?? "This group")'s list is on its way."))
+                .padding(.top, 40)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+            } else if repo.hasCompletedInitialLoad {
+                ContentUnavailableView("No groups yet", systemImage: "person.2",
+                                       description: Text("Create a group to start planning."))
+                .padding(.top, 40)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+            } else {
+                GroceryListSkeleton()
+                    .listRowInsets(EdgeInsets())
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+            }
         }
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        .contentMargins(.top, 8, for: .scrollContent)
         .background(Color(.systemGroupedBackground))
-        // The custom back button hides the system one, which would otherwise
-        // also kill the edge-swipe-to-go-back gesture; restore it here.
-        .background(InteractivePopGestureRestorer())
         .refreshable { await repo.manualRefresh() }
         .navigationTitle(repo.currentHousehold?.name ?? "Grocer")
         .navigationBarTitleDisplayMode(.large)
@@ -125,36 +88,15 @@ struct GroceryListView: View {
         .navigationDestination(item: $sessionForNav) { session in
             ShoppingSessionView(sessionId: session.id) { sessionForNav = nil }
         }
-        .navigationDestination(item: $itemForNav) { item in
-            ItemDetailView(item: item)
-        }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
-                SyncStatusBar(state: repo.syncState)
+                // SyncStatusBar(state: repo.syncState)
                 if repo.currentList != nil && repo.activeSession == nil {
-                    // Fade the CTA out the instant the zoom-out begins so it
-                    // doesn't ride the morph back into the card. Kept in a child
-                    // view so the path read that drives the fade doesn't
-                    // re-render the list mid-transition (which glitches the
-                    // rows); opacity also preserves layout so the list doesn't
-                    // shift while it fades.
-                    FadeOutOnPop(navigationPath: $navigationPath, householdId: householdId) {
-                        startShoppingButton
-                    }
+                    startShoppingButton
                 }
             }
         }
-        .navigationBarBackButtonHidden(true)
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button {
-                    Haptics.selection()
-                    if !navigationPath.isEmpty { navigationPath.removeLast() }
-                } label: {
-                    Label("Home", systemImage: "chevron.backward")
-                }
-                .accessibilityLabel("Back")
-            }
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button { Haptics.tap(); showingAddSearch = true } label: { Image(systemName: "plus") }
                     .disabled(repo.currentList == nil)
@@ -194,161 +136,39 @@ struct GroceryListView: View {
         .padding()
         .disabled(repo.pendingItems.isEmpty)
     }
-}
 
-// MARK: - Interactive pop gesture
-
-/// Re-enables the swipe-from-left-edge "pop" gesture on the enclosing
-/// `UINavigationController`. SwiftUI disables that gesture whenever a screen
-/// supplies a custom back button (via `navigationBarBackButtonHidden`), so this
-/// reinstalls it while still guarding against popping the root view controller.
-private struct InteractivePopGestureRestorer: UIViewControllerRepresentable {
-    func makeCoordinator() -> Coordinator { Coordinator() }
-
-    func makeUIViewController(context: Context) -> UIViewController {
-        Holder(coordinator: context.coordinator)
-    }
-
-    func updateUIViewController(_ uiViewController: UIViewController, context: Context) {}
-
-    /// Hosts itself in the SwiftUI hierarchy purely to reach the nav controller.
-    final class Holder: UIViewController {
-        let coordinator: Coordinator
-
-        init(coordinator: Coordinator) {
-            self.coordinator = coordinator
-            super.init(nibName: nil, bundle: nil)
-            view.backgroundColor = .clear
+    private func itemNavigationLink(_ item: GroceryItem) -> some View {
+        NavigationLink {
+            ItemDetailView(item: item)
+        } label: {
+            GroceryItemRow(
+                item: item,
+                member: repo.member(for: item)
+            )
         }
-
-        @available(*, unavailable)
-        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-        override func didMove(toParent parent: UIViewController?) {
-            super.didMove(toParent: parent)
-            guard let gesture = navigationController?.interactivePopGestureRecognizer else { return }
-            coordinator.navigationController = navigationController
-            gesture.delegate = coordinator
-            gesture.isEnabled = true
+        .listRowInsets(EdgeInsets())
+        .alignmentGuide(.listRowSeparatorLeading) { _ in 76 }
+        .simultaneousGesture(TapGesture().onEnded {
+            Haptics.selection()
+        })
+        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+            Button(role: .destructive) {
+                removeItem(item)
+            } label: {
+                Label("Remove", systemImage: "trash")
+            }
         }
     }
 
-    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
-        weak var navigationController: UINavigationController?
-
-        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-            (navigationController?.viewControllers.count ?? 0) > 1
+    private func removeItem(_ item: GroceryItem) {
+        Haptics.warning()
+        withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+            repo.delete(item)
         }
     }
 }
 
 // MARK: - Rows / banners
-
-/// Fades its content out as soon as this screen stops being the top of the push
-/// stack — i.e. the moment a pop back to Home starts. It reads the navigation
-/// path *itself* (rather than the parent reading it and passing a Bool) so the
-/// path change only invalidates this small view, leaving the list untouched
-/// during the zoom-out morph.
-private struct FadeOutOnPop<Content: View>: View {
-    @Binding var navigationPath: [String]
-    let householdId: String
-    @ViewBuilder var content: Content
-
-    private var isTopOfStack: Bool { navigationPath.last == householdId }
-
-    var body: some View {
-        content
-            .opacity(isTopOfStack ? 1 : 0)
-            .animation(.easeOut(duration: 0.2), value: isTopOfStack)
-    }
-}
-
-/// Wraps a list row so it can be swiped left to reveal a destructive "Remove"
-/// action, with a full swipe completing the removal outright — mirroring the
-/// system `swipeActions` behavior a `List` would provide, but inside the custom
-/// card layout this screen uses instead of a `List`.
-private struct SwipeToRemoveRow<Content: View>: View {
-    let onTap: () -> Void
-    let onRemove: () -> Void
-    @ViewBuilder var content: Content
-
-    @State private var offset: CGFloat = 0
-    @State private var committedOffset: CGFloat = 0
-    @State private var dragAxis: Axis?
-
-    /// Resting width of the revealed Remove button.
-    private let actionWidth: CGFloat = 88
-    /// Leftward drag distance past which releasing removes the item directly.
-    private let fullSwipeDistance: CGFloat = 220
-
-    var body: some View {
-        ZStack(alignment: .trailing) {
-            removeButton
-            content
-                // Opaque background so the row hides the red action when closed
-                // and matches the surrounding card while at rest.
-                .background(Color(.secondarySystemGroupedBackground))
-                .offset(x: offset)
-                .contentShape(Rectangle())
-                // A tap opens the item (or closes an open row). `onTapGesture`
-                // never fires mid-drag, so a swipe won't navigate — and because
-                // the swipe uses `simultaneousGesture` (not `highPriorityGesture`)
-                // the enclosing ScrollView keeps handling vertical scrolling.
-                .onTapGesture {
-                    if committedOffset != 0 { close() } else { Haptics.selection(); onTap() }
-                }
-                .simultaneousGesture(dragGesture)
-        }
-    }
-
-    private var removeButton: some View {
-        Button(action: onRemove) {
-            Label("Remove", systemImage: "trash")
-                .labelStyle(.iconOnly)
-                .font(.title3)
-                .foregroundStyle(.white)
-                // Track the swipe so the action grows with an over-drag.
-                .frame(width: max(actionWidth, -offset))
-                .frame(maxHeight: .infinity)
-                .background(Color.red)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Remove")
-    }
-
-    private var dragGesture: some Gesture {
-        DragGesture(minimumDistance: 12)
-            .onChanged { value in
-                if dragAxis == nil {
-                    dragAxis = abs(value.translation.width) > abs(value.translation.height) ? .horizontal : .vertical
-                }
-                guard dragAxis == .horizontal else { return }
-                // Only leftward; clamp so the row never slides past closed.
-                offset = min(0, committedOffset + value.translation.width)
-            }
-            .onEnded { _ in
-                defer { dragAxis = nil }
-                guard dragAxis == .horizontal else { return }
-                if -offset >= fullSwipeDistance {
-                    onRemove()
-                } else if -offset > actionWidth / 2 {
-                    open()
-                } else {
-                    close()
-                }
-            }
-    }
-
-    private func open() {
-        committedOffset = -actionWidth
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) { offset = -actionWidth }
-    }
-
-    private func close() {
-        committedOffset = 0
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) { offset = 0 }
-    }
-}
 
 struct GroceryItemRow: View {
     let item: GroceryItem
@@ -388,9 +208,6 @@ struct GroceryItemRow: View {
 
             MemberAvatarView(member: member, size: 28)
 
-            Image(systemName: "chevron.right")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.quaternary)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)

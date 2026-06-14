@@ -100,14 +100,14 @@ struct ShoppingSessionView: View {
             completedSection(session, canManageTrip: canManageTrip)
         }
         .listStyle(.insetGrouped)
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            VStack(spacing: 0) {
-                SyncStatusBar(state: repo.syncState)
-                if canManageTrip {
-                    finishButton
-                }
-            }
-        }
+        // .safeAreaInset(edge: .bottom, spacing: 0) {
+        //     VStack(spacing: 0) {
+        //         SyncStatusBar(state: repo.syncState)
+        //         if canManageTrip {
+        //             finishButton
+        //         }
+        //     }
+        // }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button { Haptics.tap(); showAddItem = true } label: { Image(systemName: "plus") }

@@ -33,9 +33,9 @@ struct HomeView: View {
             .refreshable { await repo.manualRefresh() }
             .navigationTitle("My Groups")
             .navigationBarTitleDisplayMode(.large)
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                SyncStatusBar(state: repo.syncState)
-            }
+            // .safeAreaInset(edge: .bottom, spacing: 0) {
+            //     SyncStatusBar(state: repo.syncState)
+            // }
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button {
@@ -46,12 +46,17 @@ struct HomeView: View {
                     }
                     .accessibilityLabel("Separate shared groups")
 
-                    Button { showNewGroup = true } label: { Image(systemName: "plus") }
+                    Button {
+                        Haptics.tap()
+                        showNewGroup = true
+                    } label: {
+                        Image(systemName: "plus")
+                    }
                         .accessibilityLabel("New group")
                 }
             }
             .navigationDestination(for: String.self) { householdId in
-                GroceryListView(navigationPath: $path, householdId: householdId)
+                GroceryListView()
                     .groupZoomDestination(id: householdId, in: zoomNamespace)
             }
             .sheet(isPresented: $showNewGroup) { NavigationStack { GroupEditorView(group: nil) } }

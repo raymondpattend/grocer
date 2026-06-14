@@ -18,6 +18,7 @@ struct SettingsView: View {
     @State private var selectedProfilePhoto: PhotosPickerItem?
     @State private var showInviteIntro = false
     @State private var editingGroup: Household?
+    @State private var openMemberRowId: String?
 
     var body: some View {
         ScrollView {
@@ -332,6 +333,8 @@ struct SettingsView: View {
                     memberRow(member)
                 }
             }
+            // Contain the swipe-to-remove action background within the rounded card.
+            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         }
     }
 
@@ -341,7 +344,7 @@ struct SettingsView: View {
         } else if let reason = repo.sharingUnavailableReason {
             return reason
         } else if repo.isOwnerOfCurrentGroup {
-            return "Tap the minus button to remove a member from this group."
+            return "Swipe left on a member to remove them from this group."
         }
         return nil
     }
@@ -415,33 +418,37 @@ struct SettingsView: View {
         )
     }
 
+    @ViewBuilder
     private func memberRow(_ member: HouseholdMember) -> some View {
-        HStack(spacing: 12) {
+        let content = HStack(spacing: 12) {
             ProfilePicture(
                 imageData: repo.isCurrentUser(member) ? repo.profileImageData : member.profileImageData,
                 size: 30
             )
             Text(member.displayName)
             Spacer()
-            if canRemove(member) {
-                Button {
-                    Haptics.warning()
-                    repo.removeMember(member)
-                } label: {
-                    Image(systemName: "minus.circle.fill")
-                        .font(.title3)
-                        .foregroundStyle(.red)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Remove \(member.displayName)")
-            } else {
-                Text(member.role.rawValue)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            Text(member.role.rawValue)
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 11)
+
+        if canRemove(member) {
+            SwipeToRemoveRow(id: member.id, openRowId: $openMemberRowId) {
+                Haptics.warning()
+                repo.removeMember(member)
+            } content: {
+                content
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityAction(named: Text("Remove \(member.displayName)")) {
+                Haptics.warning()
+                repo.removeMember(member)
+            }
+        } else {
+            content
+        }
     }
 
     private var canSaveGroupName: Bool {
@@ -802,6 +809,76 @@ struct FeedbackView: View {
                 }
                 if ok { message = "" }
             }
+        }
+    }
+}
+
+// MARK: - Swipe to remove
+
+/// Wraps a row so it reveals a destructive "Remove" action when swiped left,
+/// mirroring the native `List` swipe-to-delete affordance for our custom cards.
+/// `openRowId` is shared across rows so only one stays open at a time.
+private struct SwipeToRemoveRow<Content: View>: View {
+    let id: String
+    @Binding var openRowId: String?
+    let onRemove: () -> Void
+    @ViewBuilder var content: () -> Content
+
+    @State private var offset: CGFloat = 0
+
+    private let actionWidth: CGFloat = 88
+
+    private var isOpen: Bool { openRowId == id }
+
+    var body: some View {
+        ZStack(alignment: .trailing) {
+            Button {
+                close()
+                onRemove()
+            } label: {
+                Label("Remove", systemImage: "trash.fill")
+                    .labelStyle(.iconOnly)
+                    .font(.title3)
+                    .foregroundStyle(.white)
+                    .frame(width: actionWidth)
+                    .frame(maxHeight: .infinity)
+                    .background(Color.red)
+            }
+            .buttonStyle(.plain)
+            .accessibilityHidden(true)
+
+            content()
+                .background(Color(.secondarySystemGroupedBackground))
+                .offset(x: offset)
+                .highPriorityGesture(
+                    DragGesture(minimumDistance: 16)
+                        .onChanged { value in
+                            guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                            if openRowId != nil && openRowId != id { openRowId = nil }
+                            let base: CGFloat = isOpen ? -actionWidth : 0
+                            offset = min(0, max(-actionWidth, base + value.translation.width))
+                        }
+                        .onEnded { _ in
+                            let shouldOpen = offset < -actionWidth / 2
+                            withAnimation(.snappy) {
+                                offset = shouldOpen ? -actionWidth : 0
+                                openRowId = shouldOpen ? id : nil
+                            }
+                        }
+                )
+        }
+        .clipped()
+        .onChange(of: openRowId) { _, newValue in
+            if newValue != id, offset != 0 {
+                withAnimation(.snappy) { offset = 0 }
+            }
+        }
+    }
+
+    private func close() {
+        withAnimation(.snappy) {
+            offset = 0
+            openRowId = nil
         }
     }
 }

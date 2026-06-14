@@ -76,7 +76,7 @@ struct ItemDetailView: View {
                     }
                     dismiss()
                 } label: {
-                    Label("Delete", systemImage: "trash")
+                    Label("Remove", systemImage: "trash")
                 }
                 .tint(.red)
             }

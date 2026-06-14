@@ -361,9 +361,9 @@ private struct OnboardingView: View {
             }
         }
         .toolbar(.hidden, for: .navigationBar)
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            SyncStatusBar(state: repo.syncState)
-        }
+        // .safeAreaInset(edge: .bottom, spacing: 0) {
+        //     SyncStatusBar(state: repo.syncState)
+        // }
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
             case .profile:
