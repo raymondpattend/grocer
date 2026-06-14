@@ -101,6 +101,15 @@ private struct PendingCloudWrite: Codable, Equatable {
     var key: String { record.key }
 }
 
+struct GroceryItemInput {
+    var name: String
+    var quantity: String?
+    var category: GroceryCategory
+    var notes: String?
+    var priority: ItemPriority = .normal
+    var replacementPreference: String?
+}
+
 /// Which CloudKit environment this build talks to. CloudKit picks this from the
 /// provisioning profile's `aps-environment`: Debug / dev-signed builds use
 /// `development`, TestFlight / App Store builds use `production`. We read the
@@ -259,13 +268,27 @@ final class GroceryRepository {
     }
     #endif
 
-    private(set) var households: [Household] = []
-    private(set) var members: [HouseholdMember] = []
-    private(set) var lists: [GroceryList] = []
-    private(set) var items: [GroceryItem] = []
-    private(set) var sessions: [ShoppingSession] = []
-    private(set) var tripItems: [ShoppingTripItem] = []
-    private(set) var events: [ItemEvent] = []
+    private(set) var households: [Household] = [] {
+        didSet { rebuildHouseholdCaches() }
+    }
+    private(set) var members: [HouseholdMember] = [] {
+        didSet { rebuildMemberCaches() }
+    }
+    private(set) var lists: [GroceryList] = [] {
+        didSet { rebuildListCaches() }
+    }
+    private(set) var items: [GroceryItem] = [] {
+        didSet { rebuildItemCaches() }
+    }
+    private(set) var sessions: [ShoppingSession] = [] {
+        didSet { rebuildSessionCaches() }
+    }
+    private(set) var tripItems: [ShoppingTripItem] = [] {
+        didSet { rebuildTripItemCaches() }
+    }
+    private(set) var events: [ItemEvent] = [] {
+        didSet { rebuildEventCaches() }
+    }
 
     private(set) var selectedHouseholdId: String?
 
@@ -299,29 +322,252 @@ final class GroceryRepository {
     private var nextCloudWriteRevision = 0
     private var hasEstablishedTripItemAlertBaseline = false
     private var alertedTripItemIds: Set<String> = []
+    @ObservationIgnored private var householdById: [String: Household] = [:]
+    @ObservationIgnored private var listByHouseholdId: [String: GroceryList] = [:]
+    @ObservationIgnored private var membersByHouseholdId: [String: [HouseholdMember]] = [:]
+    @ObservationIgnored private var memberByHouseholdAndId: [String: [String: HouseholdMember]] = [:]
+    @ObservationIgnored private var sessionsById: [String: ShoppingSession] = [:]
+    @ObservationIgnored private var activeSessionByListId: [String: ShoppingSession] = [:]
+    @ObservationIgnored private var completedTripsByHouseholdId: [String: [ShoppingSession]] = [:]
+    @ObservationIgnored private var itemsByListId: [String: [GroceryItem]] = [:]
+    @ObservationIgnored private var pendingItemsByListId: [String: [GroceryItem]] = [:]
+    @ObservationIgnored private var pendingGroupsByListId: [String: [(category: GroceryCategory, items: [GroceryItem])]] = [:]
+    @ObservationIgnored private var shoppingPendingGroupsBySessionId: [String: [(category: GroceryCategory, items: [GroceryItem])]] = [:]
+    @ObservationIgnored private var addedDuringTripBySessionId: [String: [GroceryItem]] = [:]
+    @ObservationIgnored private var handledItemsBySessionId: [String: [GroceryItem]] = [:]
+    @ObservationIgnored private var itemSuggestionsByListId: [String: [GroceryItemSuggestion]] = [:]
+    @ObservationIgnored private var itemSuggestionLookupByListId: [String: [String: GroceryItemSuggestion]] = [:]
+    @ObservationIgnored private var tripItemsBySessionId: [String: [ShoppingTripItem]] = [:]
+    @ObservationIgnored private var progressBySessionId: [String: SessionProgress] = [:]
+    @ObservationIgnored private var tripProgressBySessionId: [String: SessionProgress] = [:]
+    @ObservationIgnored private var localPersistenceBatchDepth = 0
+    @ObservationIgnored private var hasDeferredLocalSnapshotSave = false
+    @ObservationIgnored private var hasDeferredOutboxFlushSchedule = false
+
+    // MARK: - Derived caches
+
+    private static let emptyProgress = SessionProgress(total: 0, found: 0, replaced: 0, outOfStock: 0, skipped: 0, remaining: 0)
+
+    private func rebuildHouseholdCaches() {
+        householdById = Dictionary(uniqueKeysWithValues: households.map { ($0.id, $0) })
+    }
+
+    private func rebuildListCaches() {
+        var byHousehold: [String: GroceryList] = [:]
+        for list in lists where !list.archived {
+            if byHousehold[list.householdId] == nil {
+                byHousehold[list.householdId] = list
+            }
+        }
+        listByHouseholdId = byHousehold
+    }
+
+    private func rebuildMemberCaches() {
+        let grouped = Dictionary(grouping: members, by: \.householdId)
+        membersByHouseholdId = grouped.mapValues { $0.sorted(by: HouseholdMember.stableDisplayOrder) }
+        memberByHouseholdAndId = membersByHouseholdId.mapValues { householdMembers in
+            householdMembers.reduce(into: [:]) { byId, member in
+                byId[member.id] = member
+            }
+        }
+    }
+
+    private func rebuildSessionCaches() {
+        sessionsById = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
+
+        var activeByList: [String: ShoppingSession] = [:]
+        var completedByHousehold: [String: [ShoppingSession]] = [:]
+        for session in sessions {
+            if session.status == .active, activeByList[session.listId] == nil {
+                activeByList[session.listId] = session
+            } else if session.status != .active {
+                completedByHousehold[session.householdId, default: []].append(session)
+            }
+        }
+        activeSessionByListId = activeByList
+        completedTripsByHouseholdId = completedByHousehold.mapValues {
+            $0.sorted(by: ShoppingSession.recentDisplayOrder)
+        }
+        rebuildShoppingSessionItemCaches()
+        rebuildSessionProgressCaches()
+    }
+
+    private func rebuildItemCaches() {
+        var byList: [String: [GroceryItem]] = [:]
+        var pendingByList: [String: [GroceryItem]] = [:]
+        var handledBySession: [String: [GroceryItem]] = [:]
+
+        for item in items {
+            byList[item.listId, default: []].append(item)
+            if item.status == .needed {
+                pendingByList[item.listId, default: []].append(item)
+            }
+            if let sessionId = item.activeSessionId, item.status != .needed {
+                handledBySession[sessionId, default: []].append(item)
+            }
+        }
+
+        itemsByListId = byList.mapValues { $0.sorted(by: GroceryItem.listDisplayOrder) }
+        pendingItemsByListId = pendingByList.mapValues { $0.sorted(by: GroceryItem.listDisplayOrder) }
+        pendingGroupsByListId = pendingItemsByListId.mapValues { $0.groupedByCategory() }
+        handledItemsBySessionId = handledBySession.mapValues { $0.sorted(by: GroceryItem.handledDisplayOrder) }
+        rebuildItemSuggestionCaches()
+        rebuildShoppingSessionItemCaches()
+        rebuildSessionProgressCaches()
+    }
+
+    private func rebuildShoppingSessionItemCaches() {
+        guard !sessions.isEmpty else {
+            shoppingPendingGroupsBySessionId = [:]
+            addedDuringTripBySessionId = [:]
+            return
+        }
+
+        var pendingGroups: [String: [(category: GroceryCategory, items: [GroceryItem])]] = [:]
+        var addedDuringTrip: [String: [GroceryItem]] = [:]
+        for session in sessions {
+            let pending = pendingItemsByListId[session.listId] ?? []
+            let originalItems = pending
+                .filter { $0.createdAt <= session.startedAt }
+                .sorted(by: GroceryItem.shoppingPriorityOrder)
+            pendingGroups[session.id] = originalItems.groupedByCategory()
+            addedDuringTrip[session.id] = pending.filter { $0.createdAt > session.startedAt }
+        }
+        shoppingPendingGroupsBySessionId = pendingGroups
+        addedDuringTripBySessionId = addedDuringTrip
+    }
+
+    private func rebuildItemSuggestionCaches() {
+        var suggestionsByList: [String: [GroceryItemSuggestion]] = [:]
+        var lookupByList: [String: [String: GroceryItemSuggestion]] = [:]
+
+        for (listId, listItems) in itemsByListId {
+            let pendingKeys = Set((pendingItemsByListId[listId] ?? []).map { $0.name.itemSuggestionKey })
+            var seen = Set<String>()
+            let suggestions = listItems
+                .sorted {
+                    let lhsDate = Self.itemSuggestionDate(for: $0)
+                    let rhsDate = Self.itemSuggestionDate(for: $1)
+                    if lhsDate != rhsDate { return lhsDate > rhsDate }
+                    return GroceryItem.listDisplayOrder($0, $1)
+                }
+                .compactMap { item -> GroceryItemSuggestion? in
+                    let key = item.name.itemSuggestionKey
+                    guard !key.isEmpty, !seen.contains(key) else { return nil }
+                    seen.insert(key)
+                    return GroceryItemSuggestion(
+                        name: item.name,
+                        quantity: item.quantity,
+                        category: item.category,
+                        isPending: pendingKeys.contains(key),
+                        lastUsedAt: Self.itemSuggestionDate(for: item)
+                    )
+                }
+            suggestionsByList[listId] = suggestions
+            lookupByList[listId] = Dictionary(uniqueKeysWithValues: suggestions.map { ($0.name.itemSuggestionKey, $0) })
+        }
+
+        itemSuggestionsByListId = suggestionsByList
+        itemSuggestionLookupByListId = lookupByList
+    }
+
+    private func rebuildTripItemCaches() {
+        let grouped = Dictionary(grouping: tripItems, by: \.sessionId)
+        tripItemsBySessionId = grouped.mapValues { $0.sorted(by: ShoppingTripItem.tripDisplayOrder) }
+        tripProgressBySessionId = tripItemsBySessionId.mapValues { Self.progress(forTripItems: $0) }
+    }
+
+    private func rebuildEventCaches() {}
+
+    private func rebuildSessionProgressCaches() {
+        guard !sessions.isEmpty else {
+            progressBySessionId = [:]
+            return
+        }
+
+        var next: [String: SessionProgress] = [:]
+        for session in sessions {
+            let scoped = (itemsByListId[session.listId] ?? []).filter {
+                $0.status != .removed && ($0.status == .needed || $0.activeSessionId == session.id)
+            }
+            next[session.id] = Self.progress(forItems: scoped)
+        }
+        progressBySessionId = next
+    }
+
+    private static func progress(forItems items: [GroceryItem]) -> SessionProgress {
+        var progress = emptyProgress
+        progress.total = items.count
+        for item in items {
+            switch item.status {
+            case .found:
+                progress.found += 1
+            case .replaced:
+                progress.replaced += 1
+            case .outOfStock:
+                progress.outOfStock += 1
+            case .skipped:
+                progress.skipped += 1
+            case .needed:
+                progress.remaining += 1
+            case .removed:
+                break
+            }
+        }
+        return progress
+    }
+
+    private static func progress(forTripItems items: [ShoppingTripItem]) -> SessionProgress {
+        var progress = emptyProgress
+        progress.total = items.count
+        for item in items {
+            switch item.outcome {
+            case .found:
+                progress.found += 1
+            case .replaced:
+                progress.replaced += 1
+            case .outOfStock:
+                progress.outOfStock += 1
+            case .skipped:
+                progress.skipped += 1
+            case .needed:
+                progress.remaining += 1
+            case .removed:
+                break
+            }
+        }
+        return progress
+    }
 
     // MARK: - Current selection
 
     var currentHousehold: Household? {
-        households.first { $0.id == selectedHouseholdId } ?? households.first
+        selectedHouseholdId.flatMap { householdById[$0] } ?? households.first
     }
 
     /// The single (non-archived) list backing the current group.
     var currentList: GroceryList? {
         guard let hid = currentHousehold?.id else { return nil }
-        return lists.first { $0.householdId == hid && !$0.archived }
+        return listByHouseholdId[hid]
     }
 
     /// The single (non-archived) list backing a given group.
     func list(for household: Household) -> GroceryList? {
-        lists.first { $0.householdId == household.id && !$0.archived }
+        listByHouseholdId[household.id]
     }
 
     var currentMembers: [HouseholdMember] {
         guard let hid = currentHousehold?.id else { return [] }
-        return members
-            .filter { $0.householdId == hid }
-            .sorted(by: HouseholdMember.stableDisplayOrder)
+        return membersByHouseholdId[hid] ?? []
+    }
+
+    func member(id: String?, householdId: String?) -> HouseholdMember? {
+        guard let id, let householdId else { return nil }
+        return memberByHouseholdAndId[householdId]?[id]
+    }
+
+    func member(for item: GroceryItem) -> HouseholdMember? {
+        member(id: item.requestedByMemberId, householdId: item.householdId)
     }
 
     private var currentMemberId: String { Self.sanitizeRecordName(settings.memberIdOrDevice) }
@@ -392,10 +638,14 @@ final class GroceryRepository {
 
     func activeSession(for listId: String?) -> ShoppingSession? {
         guard let listId else { return nil }
-        return sessions.first { $0.listId == listId && $0.status == .active }
+        return activeSessionByListId[listId]
     }
 
     var activeSession: ShoppingSession? { activeSession(for: currentList?.id) }
+
+    func session(id: String) -> ShoppingSession? {
+        sessionsById[id]
+    }
 
     func isStartedByCurrentUser(_ session: ShoppingSession) -> Bool {
         let starter = Self.sanitizeRecordName(session.startedByMemberId)
@@ -404,15 +654,24 @@ final class GroceryRepository {
 
     func pendingItems(forList listId: String?) -> [GroceryItem] {
         guard let listId else { return [] }
-        return items.filter { $0.listId == listId && $0.status == .needed }
-            .sorted(by: GroceryItem.listDisplayOrder)
+        return pendingItemsByListId[listId] ?? []
     }
 
     var pendingItems: [GroceryItem] { pendingItems(forList: currentList?.id) }
 
+    func pendingItemGroups(forList listId: String?) -> [(category: GroceryCategory, items: [GroceryItem])] {
+        guard let listId else { return [] }
+        return pendingGroupsByListId[listId] ?? []
+    }
+
+    var pendingItemGroups: [(category: GroceryCategory, items: [GroceryItem])] {
+        pendingItemGroups(forList: currentList?.id)
+    }
+
     var removedItems: [GroceryItem] {
         guard let listId = currentList?.id else { return [] }
-        return items.filter { $0.listId == listId && $0.deletedAt == nil && ($0.status == .removed || $0.status == .found || $0.status == .replaced) }
+        return (itemsByListId[listId] ?? [])
+            .filter { $0.deletedAt == nil && ($0.status == .removed || $0.status == .found || $0.status == .replaced) }
             .sorted(by: GroceryItem.handledDisplayOrder)
     }
 
@@ -426,28 +685,7 @@ final class GroceryRepository {
     /// Distinct item suggestions from this group/list, latest first.
     var currentItemSuggestions: [GroceryItemSuggestion] {
         guard let listId = currentList?.id else { return [] }
-        let pendingKeys = Set(pendingItems.map { $0.name.itemSuggestionKey })
-        var seen = Set<String>()
-        return items
-            .filter { $0.listId == listId }
-            .sorted {
-                let lhsDate = Self.itemSuggestionDate(for: $0)
-                let rhsDate = Self.itemSuggestionDate(for: $1)
-                if lhsDate != rhsDate { return lhsDate > rhsDate }
-                return GroceryItem.listDisplayOrder($0, $1)
-            }
-            .compactMap { item in
-                let key = item.name.itemSuggestionKey
-                guard !key.isEmpty, !seen.contains(key) else { return nil }
-                seen.insert(key)
-                return GroceryItemSuggestion(
-                    name: item.name,
-                    quantity: item.quantity,
-                    category: item.category,
-                    isPending: pendingKeys.contains(key),
-                    lastUsedAt: Self.itemSuggestionDate(for: item)
-                )
-            }
+        return itemSuggestionsByListId[listId] ?? []
     }
 
     /// Distinct item names from this list that aren't currently pending — for "add again" UI.
@@ -457,35 +695,29 @@ final class GroceryRepository {
             .map(\.name)
     }
 
+    func currentItemSuggestion(named name: String) -> GroceryItemSuggestion? {
+        guard let listId = currentList?.id else { return nil }
+        return itemSuggestionLookupByListId[listId]?[name.itemSuggestionKey]
+    }
+
     private static func itemSuggestionDate(for item: GroceryItem) -> Date {
         item.completedAt ?? item.updatedAt
     }
 
     func addedDuringTrip(session: ShoppingSession) -> [GroceryItem] {
-        items
-            .filter { $0.listId == session.listId && $0.status == .needed && $0.createdAt > session.startedAt }
-            .sorted(by: GroceryItem.listDisplayOrder)
+        addedDuringTripBySessionId[session.id] ?? []
+    }
+
+    func pendingShoppingGroups(session: ShoppingSession) -> [(category: GroceryCategory, items: [GroceryItem])] {
+        shoppingPendingGroupsBySessionId[session.id] ?? []
     }
 
     func handledItems(session: ShoppingSession) -> [GroceryItem] {
-        items
-            .filter { $0.activeSessionId == session.id && $0.status != .needed }
-            .sorted(by: GroceryItem.handledDisplayOrder)
+        handledItemsBySessionId[session.id] ?? []
     }
 
     func progress(for session: ShoppingSession) -> SessionProgress {
-        let scoped = items.filter {
-            $0.listId == session.listId && $0.status != .removed
-                && ($0.status == .needed || $0.activeSessionId == session.id)
-        }
-        return SessionProgress(
-            total: scoped.count,
-            found: scoped.filter { $0.status == .found }.count,
-            replaced: scoped.filter { $0.status == .replaced }.count,
-            outOfStock: scoped.filter { $0.status == .outOfStock }.count,
-            skipped: scoped.filter { $0.status == .skipped }.count,
-            remaining: scoped.filter { $0.status == .needed }.count
-        )
+        progressBySessionId[session.id] ?? Self.emptyProgress
     }
 
     // MARK: - Trip history
@@ -493,9 +725,7 @@ final class GroceryRepository {
     /// Finished (completed or cancelled) trips for a group, most recent first.
     func completedTrips(for householdId: String?) -> [ShoppingSession] {
         guard let householdId else { return [] }
-        return sessions
-            .filter { $0.householdId == householdId && $0.status != .active }
-            .sorted(by: ShoppingSession.recentDisplayOrder)
+        return completedTripsByHouseholdId[householdId] ?? []
     }
 
     /// Finished trips for the currently selected group.
@@ -505,22 +735,12 @@ final class GroceryRepository {
 
     /// The captured item snapshots for a finished trip, in display order.
     func tripItems(for session: ShoppingSession) -> [ShoppingTripItem] {
-        tripItems
-            .filter { $0.sessionId == session.id }
-            .sorted(by: ShoppingTripItem.tripDisplayOrder)
+        tripItemsBySessionId[session.id] ?? []
     }
 
     /// Outcome tallies for a finished trip, derived from its captured snapshots.
     func tripProgress(for session: ShoppingSession) -> SessionProgress {
-        let scoped = tripItems(for: session)
-        return SessionProgress(
-            total: scoped.count,
-            found: scoped.filter { $0.outcome == .found }.count,
-            replaced: scoped.filter { $0.outcome == .replaced }.count,
-            outOfStock: scoped.filter { $0.outcome == .outOfStock }.count,
-            skipped: scoped.filter { $0.outcome == .skipped }.count,
-            remaining: scoped.filter { $0.outcome == .needed }.count
-        )
+        tripProgressBySessionId[session.id] ?? Self.emptyProgress
     }
 
     private func expireInactiveShoppingTrips(now: Date = Date()) async {
@@ -810,16 +1030,14 @@ final class GroceryRepository {
     }
 
     private func member(for household: Household) -> HouseholdMember? {
-        let householdMembers = members
-            .filter { $0.householdId == household.id }
-            .sorted(by: HouseholdMember.stableDisplayOrder)
+        let householdMembers = membersByHouseholdId[household.id] ?? []
         return householdMembers.first { $0.id == currentMemberId }
             ?? householdMembers.first { $0.role == .owner }
             ?? householdMembers.first
     }
 
     private func syncPersonalProfileCache() {
-        guard let member = currentMembers.first(where: { $0.id == currentMemberId }) else { return }
+        guard let member = member(id: currentMemberId, householdId: currentHousehold?.id) else { return }
         settings.displayName = member.displayName
         settings.profileImageData = member.profileImageData
     }
@@ -1069,32 +1287,63 @@ final class GroceryRepository {
     func addItem(name: String, quantity: String?, category: GroceryCategory,
                  notes: String?, priority: ItemPriority = .normal,
                  replacementPreference: String?) -> GroceryItem? {
-        guard let household = currentHousehold, let list = currentList else { return nil }
+        addItems([
+            GroceryItemInput(
+                name: name,
+                quantity: quantity,
+                category: category,
+                notes: notes,
+                priority: priority,
+                replacementPreference: replacementPreference
+            )
+        ]).first
+    }
+
+    @discardableResult
+    func addItems(_ inputs: [GroceryItemInput]) -> [GroceryItem] {
+        guard let household = currentHousehold, let list = currentList else { return [] }
         let now = Date()
         let member = currentMember
-        let item = GroceryItem(
-            id: cloud.makeRecordID().recordName,
-            householdId: household.id, listId: list.id,
-            name: name, quantity: quantity?.nilIfBlank, category: category, notes: notes?.nilIfBlank,
-            requestedByMemberId: member?.id ?? settings.deviceId,
-            requestedByDisplayName: member?.displayName ?? settings.displayName,
-            status: .needed, priority: priority,
-            replacementPreference: replacementPreference?.nilIfBlank,
-            replacementItemName: nil, createdAt: now, updatedAt: now, completedAt: nil, deletedAt: nil,
-            activeSessionId: activeSession(for: list.id)?.id
-        )
-        items.append(item)
-        persist(item)
-        if let session = activeSession(for: list.id) {
-            logEvent(.itemAdded, householdId: item.householdId, itemId: item.id, sessionId: session.id,
-                     metadata: ["name": item.name])
-            pushLiveActivityUpdate(for: session, lastItem: item, lastStatus: nil)
-        } else {
-            logEvent(.itemAdded, householdId: item.householdId, itemId: item.id, metadata: ["name": item.name])
+        let session = activeSession(for: list.id)
+        let added = inputs.compactMap { input -> GroceryItem? in
+            let name = input.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty else { return nil }
+            return GroceryItem(
+                id: cloud.makeRecordID().recordName,
+                householdId: household.id, listId: list.id,
+                name: name,
+                quantity: input.quantity?.nilIfBlank,
+                category: input.category,
+                notes: input.notes?.nilIfBlank,
+                requestedByMemberId: member?.id ?? settings.deviceId,
+                requestedByDisplayName: member?.displayName ?? settings.displayName,
+                status: .needed,
+                priority: input.priority,
+                replacementPreference: input.replacementPreference?.nilIfBlank,
+                replacementItemName: nil,
+                createdAt: now,
+                updatedAt: now,
+                completedAt: nil,
+                deletedAt: nil,
+                activeSessionId: session?.id
+            )
+        }
+        guard !added.isEmpty else { return [] }
+
+        items.append(contentsOf: added)
+        performLocalPersistenceBatch {
+            for item in added {
+                persist(item)
+                logEvent(.itemAdded, householdId: item.householdId, itemId: item.id, sessionId: session?.id,
+                         metadata: ["name": item.name])
+            }
         }
         // Prewarm the product image so it's a cache hit by the time it's viewed.
-        Task { await api.prewarmImages([item.name]) }
-        return item
+        Task { await api.prewarmImages(added.map(\.name)) }
+        if let session, let lastItem = added.last {
+            pushLiveActivityUpdate(for: session, lastItem: lastItem, lastStatus: nil)
+        }
+        return added
     }
 
     func update(_ item: GroceryItem) {
@@ -1230,7 +1479,7 @@ final class GroceryRepository {
     func startShopping(list: GroceryList, storeName: String? = nil) async {
         guard activeSession(for: list.id) == nil else { return }
         let member = currentMember
-        let groupStore = households.first { $0.id == list.householdId }?.storeName
+        let groupStore = householdById[list.householdId]?.storeName
         let now = Date()
         let session = ShoppingSession(
             id: cloud.makeRecordID().recordName,
@@ -1592,6 +1841,38 @@ final class GroceryRepository {
         publishWidgetSnapshot()
     }
 
+    private func saveLocalSnapshotDeferredIfNeeded() {
+        guard localPersistenceBatchDepth > 0 else {
+            saveLocalSnapshot()
+            return
+        }
+        hasDeferredLocalSnapshotSave = true
+    }
+
+    private func scheduleOutboxFlushDeferredIfNeeded() {
+        guard localPersistenceBatchDepth > 0 else {
+            scheduleOutboxFlush()
+            return
+        }
+        hasDeferredOutboxFlushSchedule = true
+    }
+
+    private func performLocalPersistenceBatch(_ updates: () -> Void) {
+        localPersistenceBatchDepth += 1
+        updates()
+        localPersistenceBatchDepth -= 1
+
+        guard localPersistenceBatchDepth == 0 else { return }
+        if hasDeferredLocalSnapshotSave {
+            hasDeferredLocalSnapshotSave = false
+            saveLocalSnapshot()
+        }
+        if hasDeferredOutboxFlushSchedule {
+            hasDeferredOutboxFlushSchedule = false
+            scheduleOutboxFlush()
+        }
+    }
+
     // MARK: - Home screen widget
 
     private var lastPublishedWidgetSignature: Data?
@@ -1605,11 +1886,8 @@ final class GroceryRepository {
         let summaries: [WidgetListSummary] = households
             .sorted(by: Household.stableDisplayOrder)
             .map { household in
-                let listId = lists.first { $0.householdId == household.id && !$0.archived }?.id
-                let pending = listId.map { id in
-                    items.filter { $0.listId == id && $0.status == .needed }
-                        .sorted(by: GroceryItem.listDisplayOrder)
-                } ?? []
+                let listId = listByHouseholdId[household.id]?.id
+                let pending = listId.flatMap { pendingItemsByListId[$0] } ?? []
                 return WidgetListSummary(
                     id: household.id,
                     name: household.name,
@@ -1634,7 +1912,7 @@ final class GroceryRepository {
         // appear without each widget having to fetch them itself.
         let names = Array(Set(summaries.flatMap { $0.itemNames })).prefix(24)
         for name in names {
-            Task { _ = await ProductImageLoader.shared.image(for: name) }
+            Task { await ProductImageLoader.shared.prewarm(for: name) }
         }
     }
 
@@ -1836,12 +2114,12 @@ final class GroceryRepository {
 
     private func enqueueWrite(_ write: PendingCloudWrite) {
         guard shouldQueueForCloud(write.record) else {
-            saveLocalSnapshot()
+            saveLocalSnapshotDeferredIfNeeded()
             return
         }
         pendingCloudWrites[write.key] = write
-        saveLocalSnapshot()
-        scheduleOutboxFlush()
+        saveLocalSnapshotDeferredIfNeeded()
+        scheduleOutboxFlushDeferredIfNeeded()
     }
 
     private func shouldQueueForCloud(_ record: PendingCloudRecord) -> Bool {
@@ -2009,6 +2287,9 @@ final class GroceryRepository {
         cloudWriteTask = nil
         pendingCloudWrites.removeAll()
         nextCloudWriteRevision = 0
+        localPersistenceBatchDepth = 0
+        hasDeferredLocalSnapshotSave = false
+        hasDeferredOutboxFlushSchedule = false
         localStore.reset()
         subscriptionStatus = CloudSubscriptionRegistrationResult(
             privateZoneRegistered: false,

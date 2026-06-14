@@ -120,12 +120,26 @@ struct PriorityCircle: View {
 struct PriorityLabel: View {
     let priority: ItemPriority
 
+    private var chipColor: Color? {
+        switch priority {
+        case .low: return Color(.systemGray)
+        case .normal: return nil
+        case .high: return .red
+        }
+    }
+
     var body: some View {
-        Label {
-            Text(priority.rawValue)
-        } icon: {
-            PriorityCircle(priority: priority)
-                .accessibilityHidden(true)
+        if let color = chipColor {
+            Text(priority.rawValue.uppercased())
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(color)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 4)
+                        .stroke(color, lineWidth: 1)
+                )
+                .accessibilityLabel("\(priority.rawValue) priority")
         }
     }
 }

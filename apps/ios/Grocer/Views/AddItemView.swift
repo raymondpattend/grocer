@@ -45,7 +45,7 @@ struct AddItemView: View {
                 .onChange(of: category) { _, _ in categoryEditedManually = true }
                 Picker("Priority", selection: $priority) {
                     ForEach(ItemPriority.allCases) { p in
-                        PriorityLabel(priority: p).tag(p)
+                        Text(p.rawValue).tag(p)
                     }
                 }
                 TextField("Notes", text: $notes, axis: .vertical)
@@ -183,6 +183,9 @@ struct AddItemSearchView: View {
                         // items can be batch-added; the user closes via Back.
                         addFromHistory(name: name, quantity: quantity, category: category)
                     },
+                    onRemove: { name in
+                        removeFromHistory(name: name)
+                    },
                     onClose: {
                         withAnimation(.easeInOut(duration: 0.28)) {
                             showHistory = false
@@ -221,6 +224,7 @@ struct AddItemSearchView: View {
         }
         .alert("Discard proposed items?", isPresented: $showDiscardConfirm) {
             Button("Discard", role: .destructive) {
+                Haptics.warning()
                 dismiss()
             }
             Button("Keep Editing", role: .cancel) {}
@@ -239,10 +243,10 @@ struct AddItemSearchView: View {
             }
         } label: {
             Label("History", systemImage: "clock.arrow.circlepath")
-                .font(.subheadline.weight(.semibold))
+                .font(.footnote.weight(.semibold))
                 .foregroundStyle(.primary)
-                .padding(.horizontal, 16)
-                .frame(height: 46)
+                .padding(.horizontal, 10)
+                .frame(height: 34)
         }
         .tint(.primary)
         .grocerGlassButton()
@@ -278,7 +282,10 @@ struct AddItemSearchView: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 8)
-                .padding(.bottom, 24)
+                // Reserve space for the floating History pill (height 34 + 16
+                // bottom inset) so a long proposed list can scroll clear of it
+                // instead of having its last rows overlapped.
+                .padding(.bottom, historySuggestions.isEmpty ? 24 : 74)
             }
             .scrollDismissesKeyboard(.interactively)
         }
@@ -299,10 +306,10 @@ struct AddItemSearchView: View {
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .frame(width: 38, height: 38)
+                    .grocerLiquidGlass(in: Circle(), interactive: true)
             }
+            .buttonStyle(.plain)
             .tint(.primary)
-            .grocerGlassButton()
-            .clipShape(Circle())
             .accessibilityLabel("Close")
         }
     }
@@ -478,7 +485,7 @@ struct AddItemSearchView: View {
             var quantity = ""
             if hasExplicitAmount {
                 quantity = explicitQuantity(for: item)
-            } else if let known = repo.currentItemSuggestions.first(where: { $0.name.lowercased() == item.name.lowercased() }),
+            } else if let known = repo.currentItemSuggestion(named: item.name),
                       let knownQuantity = known.quantity {
                 // Reuse the amount this household last bought.
                 quantity = knownQuantity
@@ -610,6 +617,16 @@ struct AddItemSearchView: View {
         Task { await APIClient.shared.prewarmImages([trimmedName]) }
     }
 
+    /// Take a previously-staged History item back off the draft list when its row
+    /// is toggled to "Remove".
+    private func removeFromHistory(name: String) {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
+            drafts.removeAll { $0.name.lowercased() == trimmedName.lowercased() }
+        }
+        syncTextFromDrafts()
+    }
+
     // MARK: - Finalize
 
     private func attemptClose() {
@@ -625,15 +642,15 @@ struct AddItemSearchView: View {
         guard !itemsToAdd.isEmpty else { return }
 
         Haptics.success()
-        for draft in itemsToAdd {
-            repo.addItem(
-                name: draft.name.trimmingCharacters(in: .whitespacesAndNewlines),
-                quantity: draft.quantity.trimmingCharacters(in: .whitespacesAndNewlines),
+        repo.addItems(itemsToAdd.map { draft in
+            GroceryItemInput(
+                name: draft.name,
+                quantity: draft.quantity,
                 category: draft.category,
                 notes: nil,
                 replacementPreference: nil
             )
-        }
+        })
         dismiss()
     }
 
@@ -803,6 +820,7 @@ private struct HistoryItemsView: View {
     let suggestions: [GroceryItemSuggestion]
     var tint: Color
     var onSelect: (String, String, GroceryCategory) -> Void
+    var onRemove: (String) -> Void
     var onClose: () -> Void
 
     @State private var search = ""
@@ -893,9 +911,14 @@ private struct HistoryItemsView: View {
             ScrollView {
                 LazyVStack(spacing: 10) {
                     ForEach(filtered) { suggestion in
-                        HistoryItemRow(suggestion: suggestion, tint: tint) { quantity in
-                            onSelect(suggestion.name, quantity, suggestion.category)
-                        }
+                        HistoryItemRow(
+                            suggestion: suggestion,
+                            tint: tint,
+                            onAdd: { quantity in
+                                onSelect(suggestion.name, quantity, suggestion.category)
+                            },
+                            onRemove: { onRemove(suggestion.name) }
+                        )
                     }
                 }
                 .padding(.horizontal, 16)
@@ -930,15 +953,20 @@ private struct HistoryItemRow: View {
     let suggestion: GroceryItemSuggestion
     var tint: Color
     var onAdd: (String) -> Void
+    var onRemove: () -> Void
 
     @State private var quantity = ""
-    /// Briefly shows a checkmark on the add control after staging the item, so
-    /// batch-adding from history gives per-tap confirmation.
-    @State private var justAdded = false
     /// Drives the "already on your list" confirmation before re-adding.
     @State private var showAddAgainConfirm = false
     /// Amount captured when the confirmation is raised, applied on confirm.
     @State private var pendingQuantity = ""
+    /// Set once this item has been staged from history. Gives the row a border and
+    /// flips the action to "Remove" so the staged item can be taken back off.
+    @State private var addedToList = false
+
+    /// Whether the row should read as "on the list" — either it was already
+    /// pending, or it's been staged here.
+    private var isOnList: Bool { suggestion.isPending || addedToList }
 
     private var proposedUnit: String? {
         let unit = UnitGuess.guess(for: suggestion.name)
@@ -968,10 +996,10 @@ private struct HistoryItemRow: View {
                 Spacer(minLength: 0)
 
                 Button {
-                    attemptAdd(quantity)
+                    toggleAdd()
                 } label: {
-                    Label(justAdded ? "Added" : "Add",
-                          systemImage: justAdded ? "checkmark" : "plus")
+                    Label(addedToList ? "Remove" : "Add",
+                          systemImage: addedToList ? "minus" : "plus")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.primary)
                         .padding(.horizontal, 10)
@@ -980,11 +1008,16 @@ private struct HistoryItemRow: View {
                 .tint(.primary)
                 .grocerGlassButton()
                 .clipShape(Capsule())
-                .disabled(justAdded)
             }
         }
         .padding(14)
         .grocerLiquidGlass(in: RoundedRectangle(cornerRadius: 22, style: .continuous), interactive: true)
+        .overlay {
+            if addedToList {
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .strokeBorder(Color(.systemGray3), lineWidth: 2)
+            }
+        }
         .alert("Already on your list", isPresented: $showAddAgainConfirm) {
             Button("Add Again") { performAdd(pendingQuantity) }
             Button("Cancel", role: .cancel) {}
@@ -1007,7 +1040,7 @@ private struct HistoryItemRow: View {
                         .font(.headline)
                         .lineLimit(1)
                         .foregroundStyle(.primary)
-                    if suggestion.isPending {
+                    if isOnList {
                         Text("On list")
                             .font(.caption2.weight(.semibold))
                             .padding(.horizontal, 6)
@@ -1030,6 +1063,17 @@ private struct HistoryItemRow: View {
         .contentShape(Rectangle())
     }
 
+    /// Toggle the row's staged state: stage it (via the duplicate check) when it
+    /// isn't on the list yet, or take it back off when it is.
+    private func toggleAdd() {
+        Haptics.tap()
+        if addedToList {
+            performRemove()
+        } else {
+            attemptAdd(quantity)
+        }
+    }
+
     /// Route an add through the duplicate check: items already on the list prompt
     /// for confirmation; everything else is added straight away.
     private func attemptAdd(_ rawQuantity: String) {
@@ -1043,9 +1087,23 @@ private struct HistoryItemRow: View {
     }
 
     private func performAdd(_ quantity: String) {
-        Haptics.success()
         onAdd(quantity)
-        confirmAdded()
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+            addedToList = true
+        }
+        // Sound the success notification just after the press tap. Haptics
+        // debounces feedback fired within 40ms of each other, so a small delay
+        // lets both land — the add reads as a tap followed by the success buzz.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            Haptics.success()
+        }
+    }
+
+    private func performRemove() {
+        onRemove()
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+            addedToList = false
+        }
     }
 
     /// Never hand a zero (or blank) amount to the list — treat it as "no quantity".
@@ -1054,18 +1112,6 @@ private struct HistoryItemRow: View {
         guard !trimmed.isEmpty else { return "" }
         if let amount = Quantity(parsing: trimmed).amount, amount <= 0 { return "" }
         return trimmed
-    }
-
-    /// Flip the add control to a checkmark, then revert so the item can be added
-    /// again (e.g. with a different amount).
-    private func confirmAdded() {
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-            justAdded = true
-        }
-        Task {
-            try? await Task.sleep(for: .seconds(1.4))
-            withAnimation(.easeInOut(duration: 0.25)) { justAdded = false }
-        }
     }
 }
 

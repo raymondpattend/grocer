@@ -1,3 +1,4 @@
+import ImageIO
 import SwiftUI
 
 /// Fetches AI-generated product images from the API (which caches in R2)
@@ -9,6 +10,13 @@ final class ProductImageLoader {
 
     private var inFlight: [String: Task<UIImage?, Never>] = [:]
     private var memoryCache: [String: UIImage] = [:]
+    private var thumbnailInFlight: [ThumbnailKey: Task<UIImage?, Never>] = [:]
+    private var thumbnailCache: [ThumbnailKey: UIImage] = [:]
+
+    private struct ThumbnailKey: Hashable {
+        var name: String
+        var maxPixel: Int
+    }
 
     func image(for itemName: String) async -> UIImage? {
         let key = itemName.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
@@ -30,21 +38,45 @@ final class ProductImageLoader {
         return result
     }
 
+    func prewarm(for itemName: String) async {
+        let key = itemName.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { return }
+        _ = await Self.ensureCached(key: key)
+    }
+
+    func thumbnail(for itemName: String, maxPixel: CGFloat) async -> UIImage? {
+        let key = itemName.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let token = ThumbnailKey(name: key, maxPixel: Self.pixelKey(for: maxPixel))
+        guard !key.isEmpty else { return nil }
+        if let cached = thumbnailCache[token] { return cached }
+        if let existing = thumbnailInFlight[token] { return await existing.value }
+
+        let task = Task<UIImage?, Never> {
+            await Self.loadThumbnail(key: key, maxPixel: CGFloat(token.maxPixel))
+        }
+        thumbnailInFlight[token] = task
+        let result = await task.value
+        thumbnailInFlight.removeValue(forKey: token)
+        if let result { thumbnailCache[token] = result }
+        return result
+    }
+
     /// Streaming variant: yields progressively-sharper partial images as the
     /// server generates them (via OpenAI's `partial_images` SSE), then the final
     /// image. Memory/disk-cached images are yielded immediately as a single
     /// frame. The final frame is written to both caches.
     ///
-    /// Consume with `for await frame in loader.imageStream(for: name)` — the
+    /// Consume with `for await frame in loader.imageStream(for: name, maxPixel: size)` — the
     /// last frame is the finished image. The stream finishes with no frames if
     /// loading failed.
-    func imageStream(for itemName: String) -> AsyncStream<(image: UIImage, isFinal: Bool)> {
+    func imageStream(for itemName: String, maxPixel: CGFloat) -> AsyncStream<(image: UIImage, isFinal: Bool)> {
         let key = itemName.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let token = ThumbnailKey(name: key, maxPixel: Self.pixelKey(for: maxPixel))
         return AsyncStream { continuation in
             guard !key.isEmpty else { continuation.finish(); return }
 
             // Fast path: already in memory.
-            if let cached = memoryCache[key] {
+            if let cached = thumbnailCache[token] {
                 continuation.yield((cached, true))
                 continuation.finish()
                 return
@@ -52,15 +84,15 @@ final class ProductImageLoader {
 
             let task = Task {
                 // Disk cache (off the main thread).
-                if let img = await Self.loadFromDisk(key: key) {
+                if let img = await Self.loadThumbnailFromDisk(key: key, maxPixel: CGFloat(token.maxPixel)) {
                     continuation.yield((img, true))
-                    self.memoryCache[key] = img
+                    self.thumbnailCache[token] = img
                     continuation.finish()
                     return
                 }
 
                 // Network: relay partials as they arrive, return the final.
-                let final = await Self.streamFromNetwork(key: key) { partial in
+                let final = await Self.streamThumbnailFromNetwork(key: key, maxPixel: CGFloat(token.maxPixel)) { partial in
                     continuation.yield((partial, false))
                 }
                 let resolved: UIImage?
@@ -69,11 +101,11 @@ final class ProductImageLoader {
                 } else if Task.isCancelled {
                     resolved = nil
                 } else {
-                    resolved = await self.image(for: key)
+                    resolved = await self.thumbnail(for: key, maxPixel: CGFloat(token.maxPixel))
                 }
                 if let resolved {
                     continuation.yield((resolved, true))
-                    self.memoryCache[key] = resolved
+                    self.thumbnailCache[token] = resolved
                 }
                 continuation.finish()
             }
@@ -83,23 +115,54 @@ final class ProductImageLoader {
 
     // MARK: - Off-main-thread loading
 
-    nonisolated private static func load(key: String) async -> UIImage? {
-        // Disk cache (read + decode off the main thread).
-        if let img = await loadFromDisk(key: key) { return img }
+    nonisolated fileprivate static func pixelKey(for maxPixel: CGFloat) -> Int {
+        max(Int(ceil(maxPixel)), 1)
+    }
 
-        // Network fetch.
+    nonisolated private static func ensureCached(key: String) async -> Bool {
+        let file = cacheFile(for: key)
+        if FileManager.default.fileExists(atPath: file.path) { return true }
+        guard let data = await fetchImageData(key: key) else { return false }
+        try? data.write(to: file, options: .atomic)
+        return true
+    }
+
+    nonisolated private static func loadThumbnail(key: String, maxPixel: CGFloat) async -> UIImage? {
+        if let img = await loadThumbnailFromDisk(key: key, maxPixel: maxPixel) { return img }
+        guard let data = await fetchImageData(key: key) else { return nil }
+        try? data.write(to: cacheFile(for: key), options: .atomic)
+        return downsampledImage(from: data, maxPixel: maxPixel)
+    }
+
+    nonisolated private static func loadThumbnailFromDisk(key: String, maxPixel: CGFloat) async -> UIImage? {
+        let file = cacheFile(for: key)
+        guard let data = try? Data(contentsOf: file) else { return nil }
+        return downsampledImage(from: data, maxPixel: maxPixel)
+    }
+
+    nonisolated private static func fetchImageData(key: String) async -> Data? {
         guard let encoded = key.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
               let url = URL(string: APIClient.baseURLString + "/product-image?name=\(encoded)") else { return nil }
         do {
             let (data, response) = try await URLSession.shared.data(from: url)
             guard let http = response as? HTTPURLResponse, http.statusCode == 200,
-                  let img = UIImage(data: data) else { return nil }
-            try? data.write(to: cacheFile(for: key), options: .atomic)
-            return img
+                  CGImageSourceCreateWithData(data as CFData, nil) != nil else { return nil }
+            return data
         } catch {
             print("[ProductImageLoader] fetch failed for \(key): \(error)")
             return nil
         }
+    }
+
+    nonisolated private static func load(key: String) async -> UIImage? {
+        // Disk cache (read + decode off the main thread).
+        if let img = await loadFromDisk(key: key) { return img }
+
+        // Network fetch.
+        guard let data = await fetchImageData(key: key),
+              let img = UIImage(data: data) else { return nil }
+        try? data.write(to: cacheFile(for: key), options: .atomic)
+        return img
     }
 
     nonisolated private static func loadFromDisk(key: String) async -> UIImage? {
@@ -114,6 +177,69 @@ final class ProductImageLoader {
     /// hit — no streaming) or an SSE stream of `partial`/`complete` events whose
     /// `data:` payload is `{"b64_json": "..."}`. Partial frames are delivered via
     /// `onPartial`; the finished image is returned and written to disk.
+    nonisolated private static func streamThumbnailFromNetwork(
+        key: String,
+        maxPixel: CGFloat,
+        onPartial: @escaping @Sendable (UIImage) -> Void
+    ) async -> UIImage? {
+        guard let encoded = key.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              let url = URL(string: APIClient.baseURLString + "/product-image?name=\(encoded)&stream=1") else { return nil }
+        do {
+            let (bytes, response) = try await URLSession.shared.bytes(from: url)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return nil }
+
+            let contentType = (http.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
+            if contentType.hasPrefix("image/") {
+                var data = Data()
+                for try await b in bytes { data.append(b) }
+                guard let img = downsampledImage(from: data, maxPixel: maxPixel) else { return nil }
+                try? data.write(to: cacheFile(for: key), options: .atomic)
+                return img
+            }
+
+            var event = ""
+            var dataBuf = ""
+            var finalData: Data?
+
+            func flushEvent() {
+                guard let payload = decodeSSEImage(dataBuf) else {
+                    event = ""
+                    dataBuf = ""
+                    return
+                }
+                if event == "partial", let img = downsampledImage(from: payload, maxPixel: maxPixel) {
+                    onPartial(img)
+                } else if event == "complete" {
+                    finalData = payload
+                }
+                event = ""
+                dataBuf = ""
+            }
+
+            for try await line in bytes.lines {
+                let normalizedLine = line.trimmingCharacters(in: .newlines)
+                if normalizedLine.isEmpty {
+                    flushEvent()
+                    continue
+                }
+                if normalizedLine.hasPrefix("event:") {
+                    event = String(normalizedLine.dropFirst(6)).trimmingCharacters(in: .whitespacesAndNewlines)
+                } else if normalizedLine.hasPrefix("data:") {
+                    dataBuf += String(normalizedLine.dropFirst(5)).trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+            }
+            if !event.isEmpty || !dataBuf.isEmpty { flushEvent() }
+
+            guard let finalData,
+                  let img = downsampledImage(from: finalData, maxPixel: maxPixel) else { return nil }
+            try? finalData.write(to: cacheFile(for: key), options: .atomic)
+            return img
+        } catch {
+            print("[ProductImageLoader] stream failed for \(key): \(error)")
+            return nil
+        }
+    }
+
     nonisolated private static func streamFromNetwork(
         key: String,
         onPartial: @escaping @Sendable (UIImage) -> Void
@@ -187,6 +313,20 @@ final class ProductImageLoader {
         return bytes
     }
 
+    nonisolated private static func downsampledImage(from data: Data, maxPixel: CGFloat) -> UIImage? {
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: max(pixelKey(for: maxPixel), 1),
+        ]
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            return nil
+        }
+        return UIImage(cgImage: cg)
+    }
+
     /// Directory where product images are persisted. Lives in the App Group
     /// container so the home-screen widget can read the same images, rather than
     /// the per-app sandbox. Excluded from iCloud backup since every image is
@@ -240,14 +380,25 @@ final class ProductImageLoader {
 /// SwiftUI view that loads and displays a product image with a skeleton shimmer
 /// while loading.
 struct ProductImageView: View {
+    @Environment(\.displayScale) private var displayScale
+
     let itemName: String
     var size: CGFloat = 48
 
     @State private var image: UIImage?
     @State private var isLoading = true
 
+    private struct LoadToken: Equatable {
+        var key: String
+        var maxPixel: Int
+    }
+
     private var imageKey: String {
         itemName.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var loadToken: LoadToken {
+        LoadToken(key: imageKey, maxPixel: ProductImageLoader.pixelKey(for: size * displayScale))
     }
 
     var body: some View {
@@ -273,10 +424,10 @@ struct ProductImageView: View {
                     }
             }
         }
-        .task(id: imageKey) {
+        .task(id: loadToken) {
             image = nil
             isLoading = true
-            for await frame in ProductImageLoader.shared.imageStream(for: itemName) {
+            for await frame in ProductImageLoader.shared.imageStream(for: itemName, maxPixel: CGFloat(loadToken.maxPixel)) {
                 withAnimation(.easeIn(duration: 0.2)) { image = frame.image }
                 isLoading = !frame.isFinal
             }

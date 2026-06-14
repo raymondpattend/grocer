@@ -1,5 +1,4 @@
 import PhotosUI
-import RevenueCatUI
 import SwiftUI
 import UIKit
 
@@ -7,6 +6,7 @@ struct SettingsView: View {
     @Environment(GroceryRepository.self) private var repo
     @Environment(SettingsStore.self) private var settings
     @Environment(SubscriptionStore.self) private var subscriptions
+    @Environment(\.dismiss) private var dismiss
 
     @State private var showProPaywall = false
     @State private var displayName = ""
@@ -17,6 +17,7 @@ struct SettingsView: View {
     @State private var purging = false
     @State private var selectedProfilePhoto: PhotosPickerItem?
     @State private var showInviteIntro = false
+    @State private var editingGroup: Household?
 
     var body: some View {
         ScrollView {
@@ -35,6 +36,18 @@ struct SettingsView: View {
         .background(Color(.systemGroupedBackground))
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(true)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    Haptics.selection()
+                    dismiss()
+                } label: {
+                    Label("Back", systemImage: "chevron.backward")
+                }
+                .accessibilityLabel("Back")
+            }
+        }
         .onAppear {
             displayName = repo.displayName
             syncGroupNameFromRepo()
@@ -78,8 +91,11 @@ struct SettingsView: View {
         .sheet(isPresented: $showInviteIntro) {
             InviteToGroupSheet()
         }
-        .sheet(isPresented: $showProPaywall) {
-            GrocerProPaywall(isPresented: $showProPaywall)
+        .sheet(item: $editingGroup) { group in
+            NavigationStack { GroupEditorView(group: group) }
+        }
+        .fullScreenCover(isPresented: $showProPaywall) {
+            GrocerProPaywallView()
         }
         .alert("Purchase Error", isPresented: purchaseErrorPresented) {
             Button("OK", role: .cancel) {}
@@ -269,6 +285,18 @@ struct SettingsView: View {
                     }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 13)
+                }
+
+                if repo.isOwnerOfCurrentGroup, repo.currentHousehold != nil {
+                    rowDivider
+
+                    Button {
+                        Haptics.selection()
+                        editingGroup = repo.currentHousehold
+                    } label: {
+                        rowLabel("Customize Group", systemImage: "paintbrush", chevron: true)
+                    }
+                    .buttonStyle(.plain)
                 }
 
                 rowDivider
@@ -715,47 +743,6 @@ private struct GlassCircleBackground: ViewModifier {
             content.glassEffect(.regular.interactive(), in: .circle)
         } else {
             content.background(.ultraThinMaterial, in: Circle())
-        }
-    }
-}
-
-private struct GrocerProPaywall: View {
-    @Environment(SubscriptionStore.self) private var subscriptions
-    @Binding var isPresented: Bool
-
-    var body: some View {
-        Group {
-            if let offering = subscriptions.currentOffering {
-                PaywallView(offering: offering, displayCloseButton: true)
-            } else {
-                PaywallView(displayCloseButton: true)
-            }
-        }
-        .onPurchaseCompleted { customerInfo in
-            subscriptions.update(with: customerInfo)
-            if RevenueCatConfig.hasGrocerPro(customerInfo) {
-                isPresented = false
-            }
-        }
-        .onRestoreCompleted { customerInfo in
-            subscriptions.update(with: customerInfo)
-            if RevenueCatConfig.hasGrocerPro(customerInfo) {
-                isPresented = false
-            }
-        }
-        .onPurchaseFailure { error in
-            subscriptions.recordFailure(error)
-        }
-        .onRestoreFailure { error in
-            subscriptions.recordFailure(error)
-        }
-        .onRequestedDismissal {
-            isPresented = false
-        }
-        .task {
-            if subscriptions.currentOffering == nil {
-                await subscriptions.refresh()
-            }
         }
     }
 }

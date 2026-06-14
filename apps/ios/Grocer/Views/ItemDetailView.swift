@@ -10,7 +10,7 @@ struct ItemDetailView: View {
 
     /// The member who requested the item, for their avatar in "Requested".
     private var requestedByMember: HouseholdMember? {
-        repo.currentMembers.first { $0.id == item.requestedByMemberId }
+        repo.member(for: item)
     }
 
     var body: some View {
@@ -43,7 +43,9 @@ struct ItemDetailView: View {
                     )
                 }
                 if item.priority != .normal {
-                    PriorityLabel(priority: item.priority)
+                    LabeledContent("Priority") {
+                        PriorityLabel(priority: item.priority)
+                    }
                 }
                 if let notes = item.notes { LabeledContent("Notes", value: notes) }
             }
@@ -81,7 +83,17 @@ struct ItemDetailView: View {
         }
         .navigationTitle(item.name)
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(true)
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    Haptics.selection()
+                    dismiss()
+                } label: {
+                    Label("Back", systemImage: "chevron.backward")
+                }
+                .accessibilityLabel("Back")
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button("Edit") {
                     Haptics.selection()
@@ -178,7 +190,7 @@ struct EditItemView: View {
                 }
                 Picker("Priority", selection: $item.priority) {
                     ForEach(ItemPriority.allCases) { p in
-                        PriorityLabel(priority: p).tag(p)
+                        Text(p.rawValue).tag(p)
                     }
                 }
             }
@@ -192,7 +204,7 @@ struct EditItemView: View {
         .navigationTitle("Edit Item")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+            ToolbarItem(placement: .cancellationAction) { Button("Cancel") { Haptics.tap(); dismiss() } }
             ToolbarItem(placement: .confirmationAction) {
                 Button("Save") {
                     Haptics.success()

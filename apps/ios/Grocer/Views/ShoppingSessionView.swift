@@ -20,7 +20,7 @@ struct ShoppingSessionView: View {
 
     /// Live session from the repo — always up to date.
     private var session: ShoppingSession? {
-        repo.sessions.first { $0.id == sessionId }
+        repo.session(id: sessionId)
     }
 
     private var progress: SessionProgress {
@@ -73,7 +73,7 @@ struct ShoppingSessionView: View {
         List {
             progressHeader(session, canManageTrip: canManageTrip)
 
-            ForEach(pendingGroups(session), id: \.category) { group in
+            ForEach(repo.pendingShoppingGroups(session: session), id: \.category) { group in
                 Section {
                     ForEach(group.items) { item in
                         shopItemButton(item, canManageTrip: canManageTrip)
@@ -84,7 +84,6 @@ struct ShoppingSessionView: View {
             }
 
             let addedDuringTrip = repo.addedDuringTrip(session: session)
-                .filter { !originalItemIds(session).contains($0.id) }
             if !addedDuringTrip.isEmpty {
                 Section {
                     ForEach(addedDuringTrip) { item in
@@ -111,7 +110,7 @@ struct ShoppingSessionView: View {
         }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button { showAddItem = true } label: { Image(systemName: "plus") }
+                Button { Haptics.tap(); showAddItem = true } label: { Image(systemName: "plus") }
             }
         }
         .sheet(item: $selectedItem) { item in
@@ -173,7 +172,7 @@ struct ShoppingSessionView: View {
             Haptics.selection()
             selectedItem = item
         } label: {
-            ShopItemRow(item: item, member: repo.currentMembers.first { $0.id == item.requestedByMemberId }, tint: tint)
+            ShopItemRow(item: item, member: repo.member(for: item), tint: tint)
         }
         .buttonStyle(.plain)
         .swipeActions(edge: .trailing, allowsFullSwipe: canManageTrip) {
@@ -205,17 +204,6 @@ struct ShoppingSessionView: View {
                 .tint(.red)
             }
         }
-    }
-
-    private func originalItemIds(_ session: ShoppingSession) -> Set<String> {
-        Set(repo.pendingItems(forList: session.listId).filter { $0.createdAt <= session.startedAt }.map(\.id))
-    }
-
-    private func pendingGroups(_ session: ShoppingSession) -> [(category: GroceryCategory, items: [GroceryItem])] {
-        repo.pendingItems(forList: session.listId)
-            .filter { $0.createdAt <= session.startedAt }
-            .sorted(by: GroceryItem.shoppingPriorityOrder)
-            .groupedByCategory()
     }
 
     private func markItem(_ item: GroceryItem, as status: ItemStatus, replacement: String? = nil) {
@@ -477,7 +465,7 @@ struct ShoppingItemDetailView: View {
     enum Action { case found, replace, skip, outOfStock, edit }
 
     private var member: HouseholdMember? {
-        repo.currentMembers.first { $0.id == item.requestedByMemberId }
+        repo.member(for: item)
     }
 
     var body: some View {

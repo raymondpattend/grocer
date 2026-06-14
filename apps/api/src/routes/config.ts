@@ -17,7 +17,7 @@ function envNumber(value: string | undefined, fallback: number): number {
 }
 
 configRoute.get("/config/ios", (c) => {
-  const minimumSupportedBuild = envNumber(c.env.IOS_MIN_BUILD, 1);
+  const minimumSupportedBuild = envNumber(c.env.IOS_MIN_BUILD, 2);
   const latestBuild = envNumber(c.env.IOS_LATEST_BUILD, minimumSupportedBuild);
   const currentBuild = buildNumber(
     c.req.query("build") ?? c.req.query("currentBuild"),

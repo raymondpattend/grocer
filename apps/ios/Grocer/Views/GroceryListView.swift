@@ -8,16 +8,21 @@ struct GroceryListView: View {
     @Environment(GroceryRepository.self) private var repo
 
     /// The owning `HomeView`'s push path and this view's group id, used to tell
-    /// when this screen is being popped back to Home. While it animates out, its
-    /// rows would otherwise stay tappable and a stray tap could re-push an item
-    /// detail screen — so we disable hit-testing once we're no longer on top.
+    /// when this screen is being popped back to Home. While it animates out, a
+    /// stray tap on a row could otherwise re-push an item detail screen, so the
+    /// row actions check `isTopOfStack` before firing.
+    ///
+    /// Important: this is only read inside action closures, never during `body`.
+    /// Reading it in `body` would make the view re-render the instant the back
+    /// button mutates the path — mid zoom-out — which visibly glitches the rows
+    /// as they morph back into the Home card.
     @Binding var navigationPath: [String]
     let householdId: String
 
     @State private var showingAddSearch = false
     @State private var showingSettings = false
-    @State private var editingGroup: Household?
     @State private var sessionForNav: ShoppingSession?
+    @State private var itemForNav: GroceryItem?
     @State private var showStartTrip = false
 
     private var tint: Color { repo.currentHousehold?.tint ?? .green }
@@ -39,7 +44,7 @@ struct GroceryListView: View {
                 }
 
                 if repo.currentList != nil {
-                    ForEach(repo.pendingItems.groupedByCategory(), id: \.category) { group in
+                    ForEach(repo.pendingItemGroups, id: \.category) { group in
                         VStack(alignment: .leading, spacing: 0) {
                             CategoryHeader(category: group.category)
                                 .padding(.horizontal, 20)
@@ -49,20 +54,21 @@ struct GroceryListView: View {
                             VStack(spacing: 0) {
                                 ForEach(Array(group.items.enumerated()), id: \.element.id) { index, item in
                                     SwipeToRemoveRow {
+                                        // Ignore stray taps that land while the
+                                        // screen is animating back to Home.
+                                        guard isTopOfStack else { return }
+                                        itemForNav = item
+                                    } onRemove: {
+                                        guard isTopOfStack else { return }
                                         Haptics.warning()
                                         withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
                                             repo.delete(item)
                                         }
                                     } content: {
-                                        NavigationLink {
-                                            ItemDetailView(item: item)
-                                        } label: {
-                                            GroceryItemRow(
-                                                item: item,
-                                                member: repo.currentMembers.first { $0.id == item.requestedByMemberId }
-                                            )
-                                        }
-                                        .buttonStyle(.plain)
+                                        GroceryItemRow(
+                                            item: item,
+                                            member: repo.member(for: item)
+                                        )
                                     }
 
                                     if index < group.items.count - 1 {
@@ -108,10 +114,6 @@ struct GroceryListView: View {
             }
             .padding(.top, 8)
         }
-        // While popping back to Home, the outgoing rows stay on screen mid-
-        // animation; without this a tap landing where a row was would re-push
-        // an item detail screen.
-        .allowsHitTesting(isTopOfStack)
         .background(Color(.systemGroupedBackground))
         // The custom back button hides the system one, which would otherwise
         // also kill the edge-swipe-to-go-back gesture; restore it here.
@@ -123,11 +125,22 @@ struct GroceryListView: View {
         .navigationDestination(item: $sessionForNav) { session in
             ShoppingSessionView(sessionId: session.id) { sessionForNav = nil }
         }
+        .navigationDestination(item: $itemForNav) { item in
+            ItemDetailView(item: item)
+        }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 SyncStatusBar(state: repo.syncState)
                 if repo.currentList != nil && repo.activeSession == nil {
-                    startShoppingButton
+                    // Fade the CTA out the instant the zoom-out begins so it
+                    // doesn't ride the morph back into the card. Kept in a child
+                    // view so the path read that drives the fade doesn't
+                    // re-render the list mid-transition (which glitches the
+                    // rows); opacity also preserves layout so the list doesn't
+                    // shift while it fades.
+                    FadeOutOnPop(navigationPath: $navigationPath, householdId: householdId) {
+                        startShoppingButton
+                    }
                 }
             }
         }
@@ -143,24 +156,14 @@ struct GroceryListView: View {
                 .accessibilityLabel("Back")
             }
             ToolbarItemGroup(placement: .topBarTrailing) {
-                if repo.isOwnerOfCurrentGroup, repo.currentHousehold != nil {
-                    Button {
-                        Haptics.selection()
-                        editingGroup = repo.currentHousehold
-                    } label: {
-                        Image(systemName: "paintbrush")
-                    }
-                    .accessibilityLabel("Customize group")
-                }
-                Button { showingAddSearch = true } label: { Image(systemName: "plus") }
+                Button { Haptics.tap(); showingAddSearch = true } label: { Image(systemName: "plus") }
                     .disabled(repo.currentList == nil)
-                Button { showingSettings = true } label: { Image(systemName: "gearshape") }
+                Button { Haptics.tap(); showingSettings = true } label: { Image(systemName: "gearshape") }
             }
         }
         .fullScreenCover(isPresented: $showingAddSearch) {
             AddItemSearchView(tint: tint)
         }
-        .sheet(item: $editingGroup) { group in NavigationStack { GroupEditorView(group: group) } }
         .navigationDestination(isPresented: $showingSettings) { SettingsView() }
         .sheet(isPresented: $showStartTrip) {
             StartTripSheet(
@@ -241,11 +244,31 @@ private struct InteractivePopGestureRestorer: UIViewControllerRepresentable {
 
 // MARK: - Rows / banners
 
+/// Fades its content out as soon as this screen stops being the top of the push
+/// stack — i.e. the moment a pop back to Home starts. It reads the navigation
+/// path *itself* (rather than the parent reading it and passing a Bool) so the
+/// path change only invalidates this small view, leaving the list untouched
+/// during the zoom-out morph.
+private struct FadeOutOnPop<Content: View>: View {
+    @Binding var navigationPath: [String]
+    let householdId: String
+    @ViewBuilder var content: Content
+
+    private var isTopOfStack: Bool { navigationPath.last == householdId }
+
+    var body: some View {
+        content
+            .opacity(isTopOfStack ? 1 : 0)
+            .animation(.easeOut(duration: 0.2), value: isTopOfStack)
+    }
+}
+
 /// Wraps a list row so it can be swiped left to reveal a destructive "Remove"
 /// action, with a full swipe completing the removal outright — mirroring the
 /// system `swipeActions` behavior a `List` would provide, but inside the custom
 /// card layout this screen uses instead of a `List`.
 private struct SwipeToRemoveRow<Content: View>: View {
+    let onTap: () -> Void
     let onRemove: () -> Void
     @ViewBuilder var content: Content
 
@@ -265,21 +288,16 @@ private struct SwipeToRemoveRow<Content: View>: View {
                 // Opaque background so the row hides the red action when closed
                 // and matches the surrounding card while at rest.
                 .background(Color(.secondarySystemGroupedBackground))
-                .overlay {
-                    // While open, a tap on the row closes it rather than
-                    // navigating into the item.
-                    if committedOffset != 0 {
-                        Color.clear
-                            .contentShape(Rectangle())
-                            .onTapGesture { close() }
-                    }
-                }
                 .offset(x: offset)
-                // High priority (not simultaneous) so a recognized swipe wins
-                // over the row's NavigationLink tap and doesn't also navigate.
-                // A plain tap stays under the 12pt threshold, the drag fails,
-                // and the tap falls through to the link as normal.
-                .highPriorityGesture(dragGesture)
+                .contentShape(Rectangle())
+                // A tap opens the item (or closes an open row). `onTapGesture`
+                // never fires mid-drag, so a swipe won't navigate — and because
+                // the swipe uses `simultaneousGesture` (not `highPriorityGesture`)
+                // the enclosing ScrollView keeps handling vertical scrolling.
+                .onTapGesture {
+                    if committedOffset != 0 { close() } else { Haptics.selection(); onTap() }
+                }
+                .simultaneousGesture(dragGesture)
         }
     }
 
@@ -366,9 +384,7 @@ struct GroceryItemRow: View {
 
             Spacer(minLength: 4)
 
-            if item.priority != .normal {
-                PriorityCircle(priority: item.priority, size: 10)
-            }
+            PriorityLabel(priority: item.priority)
 
             MemberAvatarView(member: member, size: 28)
 

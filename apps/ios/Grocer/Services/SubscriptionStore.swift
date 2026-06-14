@@ -3,7 +3,14 @@ import Observation
 import RevenueCat
 
 enum RevenueCatConfig {
+    /// RevenueCat traps with a `fatalError` if a Test Store key (`test_…`) is used
+    /// in a Release build, so Release (TestFlight / App Store) must use the real
+    /// App Store key from the RevenueCat dashboard. Debug keeps the Test Store key.
+    #if DEBUG
     static let apiKey = "test_tSaSOTwPRseDzLdzjuGNqrnTOSb"
+    #else
+    static let apiKey = "appl_qQYLRddYzArxuGvGETeoYPAHlUd"
+    #endif
     static let grocerProEntitlementID = "grocer_pro"
 
     static let lifetimeProductID = "lifetime"
