@@ -14,6 +14,8 @@ struct RootView: View {
     @Environment(\.openURL) private var openURL
     @Environment(\.scenePhase) private var scenePhase
 
+    @State private var showDebug = false
+
     var body: some View {
         Group {
             if shouldShowOnboarding {
@@ -27,6 +29,10 @@ struct RootView: View {
             }
         }
         .background(KeyboardWarmer())
+        .onShake { showDebug = true }
+        .sheet(isPresented: $showDebug) {
+            DebugView()
+        }
         .onAppear {
             repo.startForegroundRefreshLoop()
         }

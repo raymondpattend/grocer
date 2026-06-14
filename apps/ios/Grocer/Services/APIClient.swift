@@ -171,13 +171,23 @@ struct IOSConfig: Decodable {
     }
     let minimumSupportedBuild: Int
     let latestBuild: Int
-    let upgradeRequired: Bool
+    /// Optional: older/leaner server responses omit this field. When absent we
+    /// fall back to comparing the running build against `minimumSupportedBuild`
+    /// rather than failing the whole decode (which silently disabled the
+    /// update gate). Read through `requiresUpgrade(currentBuild:)`.
+    let upgradeRequired: Bool?
     let status: String
     let updateUrl: String
     let features: Features
 
     var updateURL: URL? {
         URL(string: updateUrl)
+    }
+
+    /// Whether the running build must be upgraded. Prefers the server's explicit
+    /// flag; otherwise derives it from the minimum supported build.
+    func requiresUpgrade(currentBuild: Int) -> Bool {
+        upgradeRequired ?? (currentBuild < minimumSupportedBuild)
     }
 }
 
@@ -207,7 +217,7 @@ final class AppUpdateGate {
         let currentBuild = Self.currentBuild
         guard let config = await APIClient.shared.config(currentBuild: currentBuild) else { return }
 
-        guard config.upgradeRequired else {
+        guard config.requiresUpgrade(currentBuild: currentBuild) else {
             requiredUpdate = nil
             return
         }

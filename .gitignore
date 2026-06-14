@@ -37,4 +37,10 @@ apps/ios/Grocer.xcodeproj/
 # Swift Package Manager
 .build/
 Packages/
+!packages/
+!packages/*/
+!packages/*/src/
+!packages/*/src/**
+!packages/*/package.json
+!packages/*/tsconfig.json
 Package.resolved

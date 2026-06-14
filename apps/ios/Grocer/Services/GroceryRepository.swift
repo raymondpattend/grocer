@@ -305,6 +305,10 @@ final class GroceryRepository {
     private(set) var usingCloudKit = false
     private(set) var hasCompletedInitialLoad = false
 
+    /// Number of local changes still queued to push to CloudKit. Surfaced on the
+    /// debug screen to diagnose stuck syncs.
+    var pendingCloudWriteCount: Int { pendingCloudWrites.count }
+
     private let cloud = CloudKitService.shared
     private let api = APIClient.shared
     private let liveActivity = LiveActivityManager.shared
@@ -2034,11 +2038,17 @@ final class GroceryRepository {
         let shouldAlertForNewTripItems = hasCompletedInitialLoad && hasEstablishedTripItemAlertBaseline
 
         var snapshot = currentSnapshot()
+        // Households that vanished because their shared zone is gone (removed
+        // from share / group deleted). Resolve their IDs from the pre-prune
+        // snapshot so we can also drop any writes still queued against them —
+        // otherwise applyPendingWrites would re-insert the phantom records.
+        let removedHouseholdIds = snapshot.householdIds(in: result.vanishedZones)
         snapshot.removeRecords(in: result.fullZones)
         snapshot.upsert(contentsOf: result.snapshot)
         for deletion in result.deletions {
             snapshot.remove(deletion)
         }
+        purgePendingWrites(forHouseholds: removedHouseholdIds)
         applyPendingWrites(to: &snapshot)
         applySnapshot(snapshot)
 
@@ -2086,6 +2096,19 @@ final class GroceryRepository {
     private func isRequestedByCurrentUser(_ item: GroceryItem) -> Bool {
         let requester = Self.sanitizeRecordName(item.requestedByMemberId)
         return requester == currentMemberId || item.requestedByMemberId == settings.deviceId
+    }
+
+    /// Drops queued writes for groups that no longer exist (their shared zone
+    /// vanished). These writes target a dead zone and can never succeed, so
+    /// keeping them would spin the outbox forever and re-insert ghost records.
+    private func purgePendingWrites(forHouseholds householdIds: Set<String>) {
+        guard !householdIds.isEmpty else { return }
+        let staleKeys = pendingCloudWrites.filter { _, write in
+            write.record.householdId.map { householdIds.contains($0) } ?? false
+        }.keys
+        guard !staleKeys.isEmpty else { return }
+        for key in staleKeys { pendingCloudWrites.removeValue(forKey: key) }
+        print("[Repo] 🗑️ purged \(staleKeys.count) pending write(s) for removed group(s)")
     }
 
     private func applyPendingWrites(to snapshot: inout CloudSnapshot) {
@@ -2212,6 +2235,9 @@ final class GroceryRepository {
             record = try await cloud.record(for: rid)
         } catch let error as CKError where error.code == .unknownItem {
             record = CKRecord(recordType: pending.recordType, recordID: rid)
+        } catch let error as CKError where Self.isZoneGone(error) {
+            print("[Repo] 🗑️ discarding \(pending.recordType) \(pending.recordName) — zone gone")
+            return true
         } catch {
             print("[Repo] ⚠️ fetch deferred for \(pending.recordType) \(pending.recordName): \(error)")
             recordSyncFailure(error, context: "Save \(pending.recordType) failed")
@@ -2236,6 +2262,9 @@ final class GroceryRepository {
             record = try await cloud.record(for: rid)
         } catch let error as CKError where error.code == .unknownItem {
             record = CKRecord(recordType: type, recordID: rid)
+        } catch let error as CKError where Self.isZoneGone(error) {
+            print("[Repo] 🗑️ discarding \(type) \(id) — zone gone")
+            return true
         } catch {
             print("[Repo] ⚠️ fetch deferred for \(type) \(id): \(error)")
             recordSyncFailure(error, context: "Save \(type) failed")
@@ -2263,6 +2292,9 @@ final class GroceryRepository {
                 recordSyncFailure(error, context: "Conflict retry failed")
                 return false
             }
+        } catch let error as CKError where Self.isZoneGone(error) {
+            print("[Repo] 🗑️ discarding save for \(r.recordType) \(r.recordID.recordName) — zone gone")
+            return true
         } catch {
             print("[Repo] ⚠️ saveBestEffort failed for \(r.recordType) \(r.recordID.recordName): \(error)")
             recordSyncFailure(error, context: "iCloud save failed")
@@ -2278,6 +2310,9 @@ final class GroceryRepository {
         } catch let error as CKError where error.code == .unknownItem {
             print("[Repo] member \(member.id) not on server yet, creating fresh record")
             record = CKRecord(recordType: CK.RecordType.member, recordID: recordID)
+        } catch let error as CKError where Self.isZoneGone(error) {
+            print("[Repo] 🗑️ skipping member \(member.id) save — zone gone")
+            return
         } catch {
             print("[Repo] ⚠️ member fetch deferred: \(error)")
             recordSyncFailure(error, context: "Save member failed")
@@ -2297,6 +2332,10 @@ final class GroceryRepository {
             return true
         } catch let error as CKError where error.code == .unknownItem {
             print("[Repo] delete ignored missing record \(recordID.recordName)")
+            if syncState != .idle { syncState = .idle }
+            return true
+        } catch let error as CKError where Self.isZoneGone(error) {
+            print("[Repo] delete ignored — zone gone for \(recordID.recordName)")
             if syncState != .idle { syncState = .idle }
             return true
         } catch {
@@ -2462,6 +2501,15 @@ extension GroceryRepository {
         default:
             return false
         }
+    }
+
+    /// True when the target zone no longer exists — the user was removed from
+    /// the share or the owner deleted the group. This is terminal: retrying a
+    /// write against a dead zone can never succeed, so the write is discarded
+    /// rather than deferred.
+    static func isZoneGone(_ error: Error) -> Bool {
+        guard let ck = error as? CKError else { return false }
+        return ck.code == .zoneNotFound || ck.code == .userDeletedZone
     }
 }
 

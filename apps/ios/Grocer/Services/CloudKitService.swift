@@ -117,16 +117,43 @@ final class CloudKitService {
             print("[CK]   ⚠️ no privateDB, skipping")
         }
         if let sharedDB {
-            let zones = (try? await performWithRetry("fetch shared zones") {
+            // `try?` returns nil only when the list fetch genuinely failed; a
+            // successful-but-empty share DB returns []. The distinction matters:
+            // we must never mistake a transient fetch error for "removed from
+            // every share" and prune all shared groups.
+            let liveZones = try? await performWithRetry("fetch shared zones") {
                 try await sharedDB.allRecordZones()
-            })?.map(\.zoneID) ?? []
-            print("[CK]   fetching from shared DB, \(zones.count) zone(s): \(zones.map(\.zoneName))")
-            try await accumulate(from: sharedDB, into: &result, scope: zones, label: "shared", forceFull: forceFull)
+            }
+            if let liveZones {
+                let zones = liveZones.map(\.zoneID)
+                print("[CK]   fetching from shared DB, \(zones.count) zone(s): \(zones.map(\.zoneName))")
+                reconcileVanishedSharedZones(live: zones, into: &result)
+                try await accumulate(from: sharedDB, into: &result, scope: zones, label: "shared", forceFull: forceFull)
+            } else {
+                print("[CK]   ⚠️ shared zone list fetch failed; skipping shared DB this cycle")
+            }
         } else {
             print("[CK]   ⚠️ no sharedDB, skipping")
         }
-        print("[CK] ✅ fetchChanges done — \(result.snapshot.households.count) households, \(result.snapshot.members.count) members, \(result.snapshot.lists.count) lists, \(result.snapshot.items.count) items, \(result.deletions.count) deletion(s), \(result.fullZones.count) full zone(s)")
+        print("[CK] ✅ fetchChanges done — \(result.snapshot.households.count) households, \(result.snapshot.members.count) members, \(result.snapshot.lists.count) lists, \(result.snapshot.items.count) items, \(result.deletions.count) deletion(s), \(result.fullZones.count) full zone(s), \(result.vanishedZones.count) vanished zone(s)")
         return result
+    }
+
+    /// Detects shared zones that existed last cycle but are now gone — the
+    /// signal that the user was removed from a share (or the owner deleted the
+    /// group). CloudKit drops the zone from `allRecordZones()` without ever
+    /// reporting a per-record deletion, so without this diff the joined group
+    /// would linger in the local cache forever.
+    private func reconcileVanishedSharedZones(live zones: [CKRecordZone.ID], into result: inout CloudSyncResult) {
+        let liveRefs = Set(zones.map {
+            CloudZoneRef(scope: "shared", zoneName: $0.zoneName, ownerName: $0.ownerName)
+        })
+        for vanished in loadKnownSharedZones().subtracting(liveRefs) {
+            print("[CK]   🗑️ shared zone vanished (removed from share): \(vanished.zoneName):\(vanished.ownerName)")
+            result.markVanishedZone(vanished)
+            clearChangeToken(for: vanished)
+        }
+        saveKnownSharedZones(liveRefs)
     }
 
     private func accumulate(from db: CKDatabase, into result: inout CloudSyncResult, scope zones: [CKRecordZone.ID], label: String, forceFull: Bool) async throws {
@@ -619,6 +646,24 @@ final class CloudKitService {
             where key.hasPrefix(Self.changeTokenKeyPrefix) {
             GrocerAppGroup.defaults.removeObject(forKey: key)
         }
+        GrocerAppGroup.defaults.removeObject(forKey: knownSharedZonesKey)
+    }
+
+    // MARK: - Known shared zones (for removed-from-share detection)
+
+    private var knownSharedZonesKey: String {
+        ["grocer.cloudkit.knownSharedZones", CloudKitEnvironment.current].joined(separator: ".")
+    }
+
+    private func loadKnownSharedZones() -> Set<CloudZoneRef> {
+        guard let data = GrocerAppGroup.defaults.data(forKey: knownSharedZonesKey),
+              let zones = try? JSONDecoder().decode(Set<CloudZoneRef>.self, from: data) else { return [] }
+        return zones
+    }
+
+    private func saveKnownSharedZones(_ zones: Set<CloudZoneRef>) {
+        guard let data = try? JSONEncoder().encode(zones) else { return }
+        GrocerAppGroup.defaults.set(data, forKey: knownSharedZonesKey)
     }
 
     private func changeTokenKey(for zone: CloudZoneRef) -> String {
@@ -743,8 +788,18 @@ struct CloudSyncResult {
     var snapshot = CloudSnapshot()
     var deletions: [CloudRecordDeletion] = []
     var fullZones: Set<CloudZoneRef> = []
+    /// Shared zones that were known last cycle but have now disappeared — i.e.
+    /// the user was removed from the share or the owner deleted the group.
+    /// These are pruned from the local cache (added to `fullZones`) *and*
+    /// surfaced separately so their queued writes can be discarded.
+    var vanishedZones: Set<CloudZoneRef> = []
 
     mutating func markFullZone(_ zone: CloudZoneRef) {
+        fullZones.insert(zone)
+    }
+
+    mutating func markVanishedZone(_ zone: CloudZoneRef) {
+        vanishedZones.insert(zone)
         fullZones.insert(zone)
     }
 }
@@ -801,6 +856,14 @@ struct CloudSnapshot: Codable {
         default:
             break
         }
+    }
+
+    /// IDs of households whose records live in any of the given zones.
+    func householdIds(in zones: Set<CloudZoneRef>) -> Set<String> {
+        guard !zones.isEmpty else { return [] }
+        return Set(households
+            .filter { $0.zoneRef.map { zones.contains($0) } ?? false }
+            .map(\.id))
     }
 
     mutating func removeRecords(in zones: Set<CloudZoneRef>) {

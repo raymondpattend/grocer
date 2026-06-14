@@ -5,6 +5,10 @@ import Sentry
 @main
 struct GrocerApp: App {
     init() {
+        // Capture stdout/stderr first so the [CK]/[RevenueCat]/etc. launch
+        // traces are available in the shake-to-debug screen.
+        LogStore.shared.startCapturing()
+
         SentrySDK.start { options in
             options.dsn = "https://3444d42645e3a89a270d01620ede8e46@o4510745096749056.ingest.us.sentry.io/4511527562706944"
 
