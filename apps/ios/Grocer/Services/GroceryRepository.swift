@@ -1,5 +1,6 @@
 import CloudKit
 import Foundation
+import Network
 import Observation
 import WidgetKit
 
@@ -329,6 +330,32 @@ final class GroceryRepository {
 
     enum SyncState: Equatable { case idle, syncing, offline, error(String) }
     private(set) var syncState: SyncState = .idle
+
+    /// Whether iCloud is signed in and usable. Drives `cloudIssue` so the offline
+    /// chip can tell an iCloud sign-out apart from a plain network drop.
+    private(set) var iCloudAccountAvailable = true
+
+    /// A severe connectivity/account problem worth surfacing at the top of the
+    /// app, mapped to a UI-free shape so views don't import CloudKit. `nil` when
+    /// healthy or only in a minor/transient state (syncing, pending writes).
+    enum CloudIssue: Equatable { case iCloudUnavailable, offline, syncError(String) }
+
+    var cloudIssue: CloudIssue? {
+        if !iCloudAccountAvailable { return .iCloudUnavailable }
+        switch syncState {
+        case .offline: return .offline
+        case .error(let message): return .syncError(message)
+        case .idle, .syncing: return nil
+        }
+    }
+
+    /// Watches network reachability so the app reconnects the moment connectivity
+    /// returns, instead of waiting for the next poll tick. See `startNetworkMonitoring`.
+    @ObservationIgnored private let pathMonitor = NWPathMonitor()
+    @ObservationIgnored private var hasStartedPathMonitor = false
+    /// Guards `retryCloudConnection` so overlapping triggers (path update +
+    /// activation + manual tap) don't stack re-bootstraps.
+    @ObservationIgnored private var isRecoveringConnection = false
     private(set) var subscriptionStatus = CloudSubscriptionRegistrationResult(
         privateZoneRegistered: false,
         sharedDatabaseRegistered: false,
@@ -930,6 +957,7 @@ final class GroceryRepository {
 
     func bootstrap() async {
         print("[Repo] ── bootstrap START ──")
+        startNetworkMonitoring()
         ShareCoordinator.shared.setHandler { [weak self] metadata in
             await self?.acceptShare(metadata)
         }
@@ -941,6 +969,7 @@ final class GroceryRepository {
         syncState = .syncing
         print("[Repo] checking iCloud account status…")
         let status = await cloud.accountStatus()
+        iCloudAccountAvailable = (status == .available)
         guard status == .available else {
             print("[Repo] ⚠️ iCloud not available (status=\(status.rawValue))")
             usingCloudKit = false
@@ -1101,7 +1130,50 @@ final class GroceryRepository {
     /// maintenance) to repair any state missed while backgrounded; the steady
     /// foreground loop then does light change-only polls.
     func refreshAfterActivation() async {
+        // Re-check iCloud availability so a sign-out (or sign-in) while the app
+        // was backgrounded is reflected in the top-of-app status chip.
+        iCloudAccountAvailable = await cloud.accountStatus() == .available
         await refreshSnapshot(context: "Activation refresh failed", registerSubscriptions: true, showSyncing: false, maintenance: true)
+    }
+
+    /// Recover from an offline / iCloud-unavailable state: re-check the account
+    /// and either resync (CloudKit already up) or bring CloudKit up from scratch
+    /// (we launched without a usable account/connection). Safe to call repeatedly
+    /// — triggered by the network monitor, app activation, and the offline chip's
+    /// "Try Again" button.
+    func retryCloudConnection() async {
+        guard !isRecoveringConnection else { return }
+        isRecoveringConnection = true
+        defer { isRecoveringConnection = false }
+
+        let status = await cloud.accountStatus()
+        iCloudAccountAvailable = (status == .available)
+        guard status == .available else { return }
+
+        if usingCloudKit {
+            // Don't flip to `.syncing` mid-retry — keep the chip steady until the
+            // outcome is known so it doesn't flicker away and back.
+            await refreshSnapshot(context: "Reconnect refresh failed",
+                                  registerSubscriptions: true, showSyncing: false, maintenance: true)
+        } else {
+            await bootstrap()
+        }
+    }
+
+    /// Begins watching network reachability (once). When connectivity returns and
+    /// we're currently showing a problem, kick off a reconnect so the status chip
+    /// clears on its own without the user pulling to refresh.
+    private func startNetworkMonitoring() {
+        guard !hasStartedPathMonitor else { return }
+        hasStartedPathMonitor = true
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            guard path.status == .satisfied else { return }
+            Task { @MainActor in
+                guard let self, self.cloudIssue != nil else { return }
+                await self.retryCloudConnection()
+            }
+        }
+        pathMonitor.start(queue: DispatchQueue(label: "org.narro.grocer.network-monitor"))
     }
 
     func startForegroundRefreshLoop() {
@@ -1147,6 +1219,9 @@ final class GroceryRepository {
             )
         } else {
             await expireInactiveShoppingTrips(now: now)
+            // Launched offline / signed out → CloudKit never came up. Keep trying
+            // so the app reconnects on its own once the account/network returns.
+            await retryCloudConnection()
         }
     }
 

@@ -29,6 +29,10 @@ struct RootView: View {
             }
         }
         .background(KeyboardWarmer())
+        .safeAreaInset(edge: .top, spacing: 0) {
+            CloudIssueChip(issue: repo.cloudIssue)
+        }
+        .animation(.snappy(duration: 0.3), value: repo.cloudIssue)
         .onShake { showDebug = true }
         .sheet(isPresented: $showDebug) {
             DebugView()
@@ -407,9 +411,6 @@ private struct OnboardingView: View {
             }
         }
         .toolbar(.hidden, for: .navigationBar)
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            SyncStatusBar(state: repo.syncState, pendingCount: repo.pendingCloudWriteCount)
-        }
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
             case .profile:
@@ -692,46 +693,176 @@ private extension UIImage {
 
 // MARK: - Shared small components
 
-/// Small sync status pill shown when offline / syncing.
-struct SyncStatusBar: View {
-    let state: GroceryRepository.SyncState
-    let pendingCount: Int
+/// Compact status chip floated at the very top of the app, shown *only* for
+/// severe problems (iCloud signed out, offline, or a sync error). Minor states
+/// like "saving" or pending writes are intentionally silent. Tapping the chip
+/// explains the cause and how to fix it.
+struct CloudIssueChip: View {
+    let issue: GroceryRepository.CloudIssue?
+
+    @State private var showDetail = false
 
     var body: some View {
-        switch state {
-        case .idle where pendingCount == 0:
-            EmptyView()
-        case .idle:
-            label(pendingText, systemImage: "icloud.and.arrow.up", tint: .orange)
-        case .syncing:
-            label(String(localized: "Saving changes…"), systemImage: "icloud.and.arrow.up", tint: .blue)
+        if let issue {
+            Button {
+                Haptics.tap()
+                showDetail = true
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: Self.icon(for: issue))
+                    Text(Self.title(for: issue))
+                        .fontWeight(.semibold)
+                    Image(systemName: "info.circle")
+                        .foregroundStyle(.secondary)
+                }
+                .font(.footnote)
+                .foregroundStyle(Self.tint(for: issue))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(.ultraThinMaterial, in: Capsule())
+                .overlay {
+                    Capsule().strokeBorder(Self.tint(for: issue).opacity(0.35), lineWidth: 1)
+                }
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 4)
+            .accessibilityLabel(Text(Self.title(for: issue)))
+            .accessibilityHint(Text("Shows how to fix this"))
+            .transition(.move(edge: .top).combined(with: .opacity))
+            .sheet(isPresented: $showDetail) {
+                CloudIssueDetailSheet(issue: issue)
+                    .presentationDetents([.medium])
+                    .presentationDragIndicator(.visible)
+            }
+        }
+    }
+
+    static func icon(for issue: GroceryRepository.CloudIssue) -> String {
+        switch issue {
+        case .iCloudUnavailable: return "exclamationmark.icloud"
+        case .offline: return "icloud.slash"
+        case .syncError: return "exclamationmark.icloud"
+        }
+    }
+
+    static func title(for issue: GroceryRepository.CloudIssue) -> String {
+        switch issue {
+        case .iCloudUnavailable: return String(localized: "iCloud")
+        case .offline: return String(localized: "Offline")
+        case .syncError: return String(localized: "Sync issue")
+        }
+    }
+
+    static func tint(for issue: GroceryRepository.CloudIssue) -> Color {
+        switch issue {
+        case .iCloudUnavailable: return .orange
+        case .offline: return .secondary
+        case .syncError: return .red
+        }
+    }
+}
+
+/// Explains a `CloudIssue` and how to resolve it, with a shortcut to Settings for
+/// iCloud account problems.
+private struct CloudIssueDetailSheet: View {
+    let issue: GroceryRepository.CloudIssue
+
+    @Environment(GroceryRepository.self) private var repo
+    @Environment(\.openURL) private var openURL
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var isRetrying = false
+
+    var body: some View {
+        VStack(spacing: 20) {
+            Image(systemName: CloudIssueChip.icon(for: issue))
+                .font(.system(size: 44, weight: .semibold))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(CloudIssueChip.tint(for: issue))
+                .padding(.top, 28)
+
+            Text(heading)
+                .font(.title2.bold())
+                .multilineTextAlignment(.center)
+
+            Text(explanation)
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 8)
+
+            Spacer()
+
+            if showsOpenSettings {
+                Button {
+                    if let url = URL(string: UIApplication.openSettingsURLString) {
+                        openURL(url)
+                    }
+                } label: {
+                    Text("Open Settings")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+            } else {
+                Button(action: retry) {
+                    HStack(spacing: 8) {
+                        if isRetrying { ProgressView().controlSize(.small) }
+                        Text(isRetrying ? "Checking…" : "Try Again")
+                    }
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(isRetrying)
+            }
+
+            Button("Dismiss") { dismiss() }
+                .font(.subheadline.weight(.medium))
+                .padding(.bottom, 12)
+        }
+        .padding(.horizontal, 28)
+        .frame(maxWidth: .infinity)
+    }
+
+    private func retry() {
+        isRetrying = true
+        Task {
+            await repo.retryCloudConnection()
+            isRetrying = false
+            // Cleared up? Close the sheet; otherwise leave it open to try again.
+            if repo.cloudIssue == nil { dismiss() }
+        }
+    }
+
+    private var heading: String {
+        switch issue {
+        case .iCloudUnavailable: return String(localized: "iCloud is unavailable")
+        case .offline: return String(localized: "You're offline")
+        case .syncError: return String(localized: "Sync needs attention")
+        }
+    }
+
+    private var explanation: String {
+        switch issue {
+        case .iCloudUnavailable:
+            return String(localized: "Grocer keeps your groups in sync through iCloud. Open Settings, tap your name, and make sure you're signed in to iCloud with iCloud Drive turned on for Grocer.")
         case .offline:
-            label(pendingCount > 0 ? pendingText : String(localized: "Offline — changes will sync later"),
-                  systemImage: "icloud.slash", tint: .gray)
-        case .error(let message):
-            label(message.isEmpty ? String(localized: "Sync needs attention") : message,
-                  systemImage: "exclamationmark.icloud", tint: .red)
+            return String(localized: "Your changes are saved on this device and will sync automatically once you're back online. Check your Wi‑Fi or cellular connection.")
+        case .syncError(let message):
+            let base = String(localized: "Something went wrong while syncing. Pull down to refresh to try again.")
+            return message.isEmpty ? base : "\(base)\n\n\(message)"
         }
     }
 
-    private var pendingText: String {
-        if pendingCount == 1 {
-            return String(localized: "1 pending change")
-        }
-        return String(localized: "\(pendingCount) pending changes")
-    }
-
-    private func label(_ text: String, systemImage: String, tint: Color) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: systemImage)
-            Text(text)
-        }
-        .font(.footnote)
-        .foregroundStyle(tint)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal)
-        .padding(.vertical, 6)
-        .background(.ultraThinMaterial)
+    private var showsOpenSettings: Bool {
+        if case .iCloudUnavailable = issue { return true }
+        return false
     }
 }
 

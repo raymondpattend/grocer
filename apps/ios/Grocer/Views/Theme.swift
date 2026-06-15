@@ -69,6 +69,76 @@ enum Haptics {
     }
 }
 
+// MARK: - Haptic navigation back button
+
+/// A drop-in replacement for the system navigation back button that plays a
+/// light haptic before popping. Pair with `.navigationBarBackButtonHidden(true)`
+/// and `.swipeBackEnabled()` (so the interactive swipe-to-pop gesture, which the
+/// system disables once the default button is hidden, keeps working).
+struct HapticBackButton: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        Button {
+            Haptics.tap()
+            dismiss()
+        } label: {
+            // Matches the native back chevron weight/placement, with a full
+            // 44pt-tall hit area so taps anywhere on the button register (not
+            // just on the glyph).
+            Image(systemName: "chevron.backward")
+                .font(.body.weight(.semibold))
+                .padding(.trailing, 16)
+                .padding(.vertical, 8)
+                .frame(minWidth: 44, minHeight: 44, alignment: .leading)
+                .contentShape(Rectangle())
+        }
+        .accessibilityLabel(Text("Back"))
+    }
+}
+
+extension View {
+    /// Re-enables the interactive swipe-from-edge pop gesture, which UIKit
+    /// disables when a custom leading bar button hides the default back button.
+    func swipeBackEnabled() -> some View {
+        background(SwipeBackEnabler())
+    }
+}
+
+/// Restores `interactivePopGestureRecognizer` after the default back button is
+/// replaced. The custom delegate only allows the swipe when there's something to
+/// pop, avoiding a stuck navigation bar at the stack root.
+private struct SwipeBackEnabler: UIViewControllerRepresentable {
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeUIViewController(context: Context) -> UIViewController {
+        let controller = Controller()
+        controller.coordinator = context.coordinator
+        return controller
+    }
+
+    func updateUIViewController(_ uiViewController: UIViewController, context: Context) {}
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        weak var navigationController: UINavigationController?
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            (navigationController?.viewControllers.count ?? 0) > 1
+        }
+    }
+
+    final class Controller: UIViewController {
+        weak var coordinator: Coordinator?
+
+        override func didMove(toParent parent: UIViewController?) {
+            super.didMove(toParent: parent)
+            guard let nav = navigationController else { return }
+            coordinator?.navigationController = nav
+            nav.interactivePopGestureRecognizer?.isEnabled = true
+            nav.interactivePopGestureRecognizer?.delegate = coordinator
+        }
+    }
+}
+
 /// Maps the model-level `ListColorTheme` (UI-free) to SwiftUI colors.
 extension ListColorTheme {
     var color: Color {

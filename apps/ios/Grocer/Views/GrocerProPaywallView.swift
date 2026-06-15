@@ -57,7 +57,7 @@ struct GrocerProPaywallView: View {
         }
         .onAppear {
             PostHogSDK.shared.capture("paywall_viewed", properties: [
-                "context": context == .groupLimit ? "group_limit" : "general",
+                "context": context.metadataKey,
             ])
             selectRecommendedIfNeeded()
         }

@@ -1,4 +1,4 @@
 // Local Debug defaults. Scheme env vars can still override at Run time.
 #include? "Secrets.xcconfig"
-POSTHOG_PROJECT_TOKEN = test-posthog-token
+POSTHOG_PROJECT_TOKEN = phc_CzPx6jMYZiTV5joXtA54wtkSGgg4AW6rMddxvqkA2AzN
 POSTHOG_HOST = https:/$()/us.i.posthog.com

@@ -51,7 +51,7 @@ enum GrocerProPaywallContext {
     case general
     case groupLimit
 
-    fileprivate var metadataKey: String {
+    var metadataKey: String {
         switch self {
         case .general: return "general"
         case .groupLimit: return "group_limit"

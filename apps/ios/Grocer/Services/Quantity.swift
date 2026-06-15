@@ -120,6 +120,11 @@ struct QuantityStepperControl: View {
             Text(amount)
                 .font(.subheadline.weight(.semibold).monospacedDigit())
                 .contentTransition(.numericText())
+                // Self-animate on value change so the rolling-digit transition
+                // fires regardless of whether the caller wrapped the mutation in
+                // `withAnimation` (and survives an interleaved non-animated
+                // observation, e.g. the item-detail repo write).
+                .animation(.snappy(duration: 0.22), value: amount)
                 .frame(minWidth: 30)
             stepButton(systemImage: "plus", action: onIncrement)
         }

@@ -2,3 +2,4 @@
 // before archiving for TestFlight / App Store.
 #include? "Secrets.xcconfig"
 POSTHOG_HOST = https:/$()/us.i.posthog.com
+POSTHOG_PROJECT_TOKEN = phc_CzPx6jMYZiTV5joXtA54wtkSGgg4AW6rMddxvqkA2AzN

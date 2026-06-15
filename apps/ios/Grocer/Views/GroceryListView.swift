@@ -86,6 +86,8 @@ struct GroceryListView: View {
         .refreshable { await repo.manualRefresh() }
         .navigationTitle(repo.currentHousehold?.name ?? String(localized: "Grocer"))
         .navigationBarTitleDisplayMode(.large)
+        .navigationBarBackButtonHidden(true)
+        .swipeBackEnabled()
         .tint(tint)
         .navigationDestination(item: $sessionForNav) { session in
             ShoppingSessionView(sessionId: session.id) { sessionForNav = nil }
@@ -94,14 +96,12 @@ struct GroceryListView: View {
             ItemDetailView(item: item)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            VStack(spacing: 0) {
-                SyncStatusBar(state: repo.syncState, pendingCount: repo.pendingCloudWriteCount)
-                if repo.currentList != nil && repo.activeSession == nil {
-                    startShoppingButton
-                }
+            if repo.currentList != nil && repo.activeSession == nil {
+                startShoppingButton
             }
         }
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) { HapticBackButton() }
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button { Haptics.tap(); showingAddSearch = true } label: { Image(systemName: "plus") }
                     .disabled(repo.currentList == nil)

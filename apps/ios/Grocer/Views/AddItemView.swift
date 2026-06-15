@@ -500,6 +500,10 @@ struct AddItemSearchView: View {
             } else if !proposedUnit.isEmpty {
                 // Propose one of the natural unit, e.g. "1 dozen" for eggs.
                 quantity = "1 \(proposedUnit)"
+            } else {
+                // No amount, no known quantity, and no natural unit: default to a
+                // single item rather than leaving the stepper showing "0".
+                quantity = "1"
             }
             return ParsedGroceryDraft(name: item.name, quantity: quantity, unit: proposedUnit, category: item.category)
         }
@@ -993,7 +997,8 @@ private struct HistoryItemRow: View {
         let last = suggestion.quantity?.trimmingCharacters(in: .whitespaces) ?? ""
         if !last.isEmpty { return last }
         if let unit = proposedUnit { return "1 \(unit)" }
-        return ""
+        // No last-used amount and no natural unit: default to one rather than 0.
+        return "1"
     }
 
     var body: some View {

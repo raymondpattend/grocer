@@ -145,7 +145,11 @@ struct ItemDetailView: View {
         withAnimation(.snappy(duration: 0.22)) {
             item.quantity = Quantity(amount: amount, unit: unit).formatted
         }
-        repo.update(item)
+        // Persist on the next runloop pass so the repo's observable write doesn't
+        // commit a non-animated transaction in the same tick as the stepper
+        // animation above (which would otherwise cancel it).
+        let updated = item
+        Task { @MainActor in repo.update(updated) }
     }
 
     private func moveItem(_ action: () -> Void) {

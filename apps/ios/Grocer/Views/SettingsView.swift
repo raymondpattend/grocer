@@ -37,6 +37,11 @@ struct SettingsView: View {
         .background(Color(.systemGroupedBackground))
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(true)
+        .swipeBackEnabled()
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) { HapticBackButton() }
+        }
         .onAppear {
             displayName = repo.displayName
             syncGroupNameFromRepo()

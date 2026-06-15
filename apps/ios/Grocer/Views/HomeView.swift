@@ -39,9 +39,6 @@ struct HomeView: View {
             .refreshable { await repo.manualRefresh() }
             .navigationTitle("My Groups")
             .navigationBarTitleDisplayMode(.large)
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                SyncStatusBar(state: repo.syncState, pendingCount: repo.pendingCloudWriteCount)
-            }
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button {
