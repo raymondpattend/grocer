@@ -23,3 +23,7 @@ APNS_HTTP2_BRIDGE_URL="http://127.0.0.1:8791"
 
 # OpenAI — used for product image generation (gpt-image-1)
 OPENAI_API_KEY="sk-REPLACE_WITH_YOUR_KEY"
+
+# Shared HMAC key for app-signed /live-activity/* requests. Must match
+# LIVE_ACTIVITY_API_SECRET in apps/ios/Config/Secrets.xcconfig.
+LIVE_ACTIVITY_API_SECRET="generate-with-openssl-rand-hex-32"

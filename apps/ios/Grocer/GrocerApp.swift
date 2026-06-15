@@ -1,6 +1,37 @@
-import SwiftUI
+import PostHog
 import Sentry
+import SwiftUI
 
+/// PostHog client config baked into the app at build time (Info.plist) so
+/// TestFlight / App Store builds don't depend on Xcode scheme env vars.
+enum PostHogConfiguration {
+    static var projectToken: String? { bundledOrEnvironmentValue(infoKey: "GRPostHogProjectToken", envKey: "POSTHOG_PROJECT_TOKEN") }
+    static var host: String? { bundledOrEnvironmentValue(infoKey: "GRPostHogHost", envKey: "POSTHOG_HOST") }
+    static var isConfigured: Bool { projectToken != nil && host != nil }
+
+    static func configureIfAvailable() {
+        guard let projectToken, let host else {
+            #if DEBUG
+            print("[PostHog] skipped — set GRPostHogProjectToken / GRPostHogHost in build settings")
+            #endif
+            return
+        }
+
+        let posthogConfig = PostHogConfig(apiKey: projectToken, host: host)
+        posthogConfig.captureApplicationLifecycleEvents = true
+        #if DEBUG
+        posthogConfig.debug = true
+        #endif
+        PostHogSDK.shared.setup(posthogConfig)
+    }
+
+    private static func bundledOrEnvironmentValue(infoKey: String, envKey: String) -> String? {
+        let raw = (Bundle.main.object(forInfoDictionaryKey: infoKey) as? String)
+            ?? ProcessInfo.processInfo.environment[envKey]
+        let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
 
 @main
 struct GrocerApp: App {
@@ -8,6 +39,8 @@ struct GrocerApp: App {
         // Capture stdout/stderr first so the [CK]/[RevenueCat]/etc. launch
         // traces are available in the shake-to-debug screen.
         LogStore.shared.startCapturing()
+
+        PostHogConfiguration.configureIfAvailable()
 
         SentrySDK.start { options in
             options.dsn = "https://3444d42645e3a89a270d01620ede8e46@o4510745096749056.ingest.us.sentry.io/4511527562706944"
@@ -52,6 +85,12 @@ struct GrocerApp: App {
                 .task {
                     subscriptions.start()
                     await repository.bootstrap()
+                    if PostHogConfiguration.isConfigured {
+                        let memberId = settings.memberIdOrDevice
+                        PostHogSDK.shared.identify(memberId, userProperties: [
+                            "display_name": repository.displayName,
+                        ])
+                    }
                 }
         }
     }

@@ -74,6 +74,7 @@ A group *is* the grocery list — it carries the store, icon, and color theme.
 | `quantity` | String |
 | `category` | String |
 | `notes` | String |
+| `priority` | String |
 | `requestedByMemberId` | String |
 | `requestedByDisplayName` | String |
 | `status` | String (Queryable) |

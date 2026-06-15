@@ -32,6 +32,11 @@ final class CloudKitService {
     private var privateDB: CKDatabase? { container?.privateCloudDatabase }
     private var sharedDB: CKDatabase? { container?.sharedCloudDatabase }
 
+    /// Shared zones that were absent from `allRecordZones()` on the *previous*
+    /// cycle but not yet confirmed gone. A zone is only pruned once it has been
+    /// missing for two consecutive cycles — see `reconcileVanishedSharedZones`.
+    private var suspectedVanishedSharedZones: Set<CloudZoneRef> = []
+
     init(containerIdentifier: String = CK.containerIdentifier) {
         if Self.cloudKitEnabledInBuild {
             container = CKContainer(identifier: containerIdentifier)
@@ -103,13 +108,13 @@ final class CloudKitService {
     // MARK: - Fetch
 
     func fetchSnapshot() async throws -> CloudSnapshot {
-        let result = try await fetchChanges(forceFull: true)
+        let result = try await fetchChanges(forceFull: true, discoverSharedZones: true)
         return result.snapshot
     }
 
-    func fetchChanges(forceFull: Bool = false) async throws -> CloudSyncResult {
+    func fetchChanges(forceFull: Bool = false, discoverSharedZones: Bool = true) async throws -> CloudSyncResult {
         var result = CloudSyncResult()
-        print("[CK] fetchChanges starting (forceFull=\(forceFull))…")
+        print("[CK] fetchChanges starting (forceFull=\(forceFull), discoverSharedZones=\(discoverSharedZones))…")
         if let privateDB {
             print("[CK]   fetching from private DB, zone: \(zoneID)")
             try await accumulate(from: privateDB, into: &result, scope: [zoneID], label: "private", forceFull: forceFull)
@@ -121,16 +126,22 @@ final class CloudKitService {
             // successful-but-empty share DB returns []. The distinction matters:
             // we must never mistake a transient fetch error for "removed from
             // every share" and prune all shared groups.
-            let liveZones = try? await performWithRetry("fetch shared zones") {
-                try await sharedDB.allRecordZones()
-            }
-            if let liveZones {
-                let zones = liveZones.map(\.zoneID)
-                print("[CK]   fetching from shared DB, \(zones.count) zone(s): \(zones.map(\.zoneName))")
-                reconcileVanishedSharedZones(live: zones, into: &result)
-                try await accumulate(from: sharedDB, into: &result, scope: zones, label: "shared", forceFull: forceFull)
+            if discoverSharedZones {
+                let liveZones = try? await performWithRetry("fetch shared zones") {
+                    try await sharedDB.allRecordZones()
+                }
+                if let liveZones {
+                    let zones = liveZones.map(\.zoneID)
+                    print("[CK]   fetching from shared DB, \(zones.count) zone(s): \(zones.map(\.zoneName))")
+                    reconcileVanishedSharedZones(live: zones, into: &result)
+                    try await accumulate(from: sharedDB, into: &result, scope: zones, label: "shared", forceFull: forceFull)
+                } else {
+                    print("[CK]   ⚠️ shared zone list fetch failed; skipping shared DB this cycle")
+                }
             } else {
-                print("[CK]   ⚠️ shared zone list fetch failed; skipping shared DB this cycle")
+                let zones = knownSharedZoneIDs()
+                print("[CK]   fetching from shared DB, \(zones.count) zone(s): \(zones.map(\.zoneName))")
+                try await accumulate(from: sharedDB, into: &result, scope: zones, label: "shared", forceFull: forceFull)
             }
         } else {
             print("[CK]   ⚠️ no sharedDB, skipping")
@@ -144,16 +155,48 @@ final class CloudKitService {
     /// group). CloudKit drops the zone from `allRecordZones()` without ever
     /// reporting a per-record deletion, so without this diff the joined group
     /// would linger in the local cache forever.
+    ///
+    /// The catch: `allRecordZones()` can *succeed* yet transiently return an
+    /// incomplete (even empty) list while the shared zone is under concurrent
+    /// write contention — e.g. right after a burst of writes finishing a
+    /// shopping trip. Pruning on a single such cycle makes the group flicker out
+    /// and discards its change token. So a zone must be missing for two
+    /// consecutive cycles before we treat it as genuinely vanished; a transient
+    /// empty list resolves on the next fetch and never trips the prune.
     private func reconcileVanishedSharedZones(live zones: [CKRecordZone.ID], into result: inout CloudSyncResult) {
         let liveRefs = Set(zones.map {
             CloudZoneRef(scope: "shared", zoneName: $0.zoneName, ownerName: $0.ownerName)
         })
-        for vanished in loadKnownSharedZones().subtracting(liveRefs) {
-            print("[CK]   🗑️ shared zone vanished (removed from share): \(vanished.zoneName):\(vanished.ownerName)")
-            result.markVanishedZone(vanished)
-            clearChangeToken(for: vanished)
+        // A zone that's back in the live list is unambiguously fine — drop any
+        // earlier suspicion before re-evaluating this cycle's missing set.
+        suspectedVanishedSharedZones.subtract(liveRefs)
+
+        var persistedZones = liveRefs
+        for missing in loadKnownSharedZones().subtracting(liveRefs) {
+            if suspectedVanishedSharedZones.contains(missing) {
+                // Missing two cycles running → genuinely removed from the share.
+                print("[CK]   🗑️ shared zone vanished (confirmed removed from share): \(missing.zoneName):\(missing.ownerName)")
+                result.markVanishedZone(missing)
+                clearChangeToken(for: missing)
+                suspectedVanishedSharedZones.remove(missing)
+            } else {
+                // First miss — likely a transient/partial list. Keep the zone in
+                // the known set so we re-check it next cycle instead of pruning.
+                print("[CK]   ⚠️ shared zone \(missing.zoneName) absent from list; treating as transient pending re-check")
+                suspectedVanishedSharedZones.insert(missing)
+                persistedZones.insert(missing)
+            }
         }
-        saveKnownSharedZones(liveRefs)
+        saveKnownSharedZones(persistedZones)
+    }
+
+    private func knownSharedZoneIDs() -> [CKRecordZone.ID] {
+        loadKnownSharedZones()
+            .sorted {
+                if $0.ownerName == $1.ownerName { return $0.zoneName < $1.zoneName }
+                return $0.ownerName < $1.ownerName
+            }
+            .map { CKRecordZone.ID(zoneName: $0.zoneName, ownerName: $0.ownerName) }
     }
 
     private func accumulate(from db: CKDatabase, into result: inout CloudSyncResult, scope zones: [CKRecordZone.ID], label: String, forceFull: Bool) async throws {
@@ -174,6 +217,7 @@ final class CloudKitService {
                         switch modificationResult {
                         case .success(let modification):
                             result.snapshot.absorb(modification.record)
+                            result.systemFields[modification.record.recordID.recordName] = modification.record.encodedSystemFields()
                             totalRecords += 1
                         case .failure(let error):
                             print("[CK]   ⚠️ [\(label)] record \(recordID.recordName) change failed: \(error)")
@@ -215,6 +259,7 @@ final class CloudKitService {
                     for (_, modificationResult) in changes.modificationResultsByID {
                         if case .success(let modification) = modificationResult {
                             result.snapshot.absorb(modification.record)
+                            result.systemFields[modification.record.recordID.recordName] = modification.record.encodedSystemFields()
                             totalRecords += 1
                         }
                     }
@@ -316,6 +361,33 @@ final class CloudKitService {
         return saved
     }
 
+    /// Saves and deletes records in a single batch against the database that
+    /// owns `zoneID`. Non-atomic so one record's conflict or failure doesn't roll
+    /// back the whole batch — callers inspect the per-record results. This is what
+    /// turns a burst of edits (finishing a trip, pasting a list) into one round
+    /// trip instead of dozens of serial saves.
+    func modify(
+        saving records: [CKRecord],
+        deleting recordIDs: [CKRecord.ID],
+        in zoneID: CKRecordZone.ID
+    ) async throws -> (save: [CKRecord.ID: Result<CKRecord, Error>], delete: [CKRecord.ID: Result<Void, Error>]) {
+        guard let db = database(for: zoneID) else {
+            print("[CK] ❌ modify: no DB for zone \(zoneID)")
+            throw CloudKitUnavailable()
+        }
+        let label = zoneID.ownerName == CKCurrentUserDefaultName ? "private" : "shared"
+        print("[CK] modify(batch) → \(records.count) save / \(recordIDs.count) delete in \(label) zone \(zoneID.zoneName)")
+        return try await performWithRetry("modify batch \(zoneID.zoneName)") {
+            let results = try await db.modifyRecords(
+                saving: records,
+                deleting: recordIDs,
+                savePolicy: .ifServerRecordUnchanged,
+                atomically: false
+            )
+            return (save: results.saveResults, delete: results.deleteResults)
+        }
+    }
+
     func delete(recordID: CKRecord.ID) async throws {
         guard let db = database(for: recordID.zoneID) else {
             print("[CK] ❌ delete: no DB for zone \(recordID.zoneID)")
@@ -326,6 +398,23 @@ final class CloudKitService {
             try await db.modifyRecords(saving: [], deleting: [recordID])
         }
         print("[CK] ✅ deleted \(recordID.recordName)")
+    }
+
+    /// Participant-side leave for a shared group. Deleting the shared root from
+    /// the shared database removes the current account from the `CKShare`; deleting
+    /// only the app's member record leaves the shared zone eligible to reappear.
+    func leaveShare(rootRecordID: CKRecord.ID) async throws {
+        guard let sharedDB else { throw CloudKitUnavailable() }
+        print("[CK] leaveShare → \(rootRecordID.recordName) in shared zone \(rootRecordID.zoneID.zoneName):\(rootRecordID.zoneID.ownerName)")
+        do {
+            _ = try await performWithRetry("leave share \(rootRecordID.recordName)") {
+                try await sharedDB.modifyRecords(saving: [], deleting: [rootRecordID])
+            }
+        } catch let error as CKError where error.code == .unknownItem || error.code == .zoneNotFound || error.code == .userDeletedZone {
+            print("[CK] leaveShare already gone: \(error)")
+            return
+        }
+        print("[CK] ✅ left share \(rootRecordID.recordName)")
     }
 
     func record(for recordID: CKRecord.ID) async throws -> CKRecord {
@@ -361,7 +450,9 @@ final class CloudKitService {
 
     func accept(_ metadata: CKShare.Metadata) async throws {
         guard let container else { throw CloudKitUnavailable() }
-        _ = try await container.accept(metadata)
+        _ = try await performWithRetry("accept share") {
+            try await container.accept(metadata)
+        }
     }
 
     // MARK: - Sharing
@@ -666,6 +757,13 @@ final class CloudKitService {
         GrocerAppGroup.defaults.set(data, forKey: knownSharedZonesKey)
     }
 
+    func clearCachedSharedZone(_ zoneID: CKRecordZone.ID) {
+        let zone = CloudZoneRef(scope: "shared", zoneName: zoneID.zoneName, ownerName: zoneID.ownerName)
+        clearChangeToken(for: zone)
+        suspectedVanishedSharedZones.remove(zone)
+        saveKnownSharedZones(loadKnownSharedZones().subtracting([zone]))
+    }
+
     private func changeTokenKey(for zone: CloudZoneRef) -> String {
         // Scoped by CloudKit environment so a Production token is never replayed
         // by a Development (Debug) build, and vice versa.
@@ -793,6 +891,16 @@ struct CloudSyncResult {
     /// These are pruned from the local cache (added to `fullZones`) *and*
     /// surfaced separately so their queued writes can be discarded.
     var vanishedZones: Set<CloudZoneRef> = []
+    /// Encoded `CKRecord` system fields (change tag + metadata) keyed by record
+    /// name, captured for every record fetched this cycle. The repository caches
+    /// these so it can re-save a record in a single round trip — without them it
+    /// would have to re-fetch each record before every save just to obtain a
+    /// valid change tag.
+    var systemFields: [String: Data] = [:]
+
+    var hasRecordChanges: Bool {
+        !snapshot.isEmpty || !deletions.isEmpty || !fullZones.isEmpty || !vanishedZones.isEmpty
+    }
 
     mutating func markFullZone(_ zone: CloudZoneRef) {
         fullZones.insert(zone)
@@ -934,6 +1042,29 @@ struct CloudSnapshot: Codable {
             }
         }
         return merged
+    }
+}
+
+extension CKRecord {
+    /// Archives just the record's system fields (recordID, type, change tag,
+    /// creation/modification metadata) — not its user-set keys. Cached so a later
+    /// save carries the right change tag and needs no pre-fetch round trip.
+    func encodedSystemFields() -> Data {
+        let coder = NSKeyedArchiver(requiringSecureCoding: true)
+        encodeSystemFields(with: coder)
+        return coder.encodedData
+    }
+
+    /// Reconstructs a record (system fields only, no user keys) from data
+    /// produced by `encodedSystemFields()`. Returns nil if the archive is
+    /// unreadable (e.g. an OS format change) so callers fall back to a fresh
+    /// record, which self-heals on the next save via the conflict path.
+    static func from(systemFields data: Data) -> CKRecord? {
+        guard let coder = try? NSKeyedUnarchiver(forReadingFrom: data) else { return nil }
+        coder.requiresSecureCoding = true
+        let record = CKRecord(coder: coder)
+        coder.finishDecoding()
+        return record
     }
 }
 

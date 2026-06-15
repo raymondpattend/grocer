@@ -25,6 +25,13 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>remote-notification</string>
+		<string>fetch</string>
+	</array>
+	<!-- Periodic catch-up sync for changes whose silent push iOS throttled or
+	     dropped while backgrounded. See AppDelegate (BGAppRefreshTask). -->
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>org.narro.grocer.refresh</string>
 	</array>
 	<key>UILaunchScreen</key>
 	<dict>
@@ -45,6 +52,15 @@
 	<!-- Gates CloudKit (see CloudKitService). Driven by GR_CLOUDKIT_ENABLED. -->
 	<key>GRCloudKitEnabled</key>
 	<string>$(GR_CLOUDKIT_ENABLED)</string>
+	<!-- PostHog client config (see PostHogConfiguration). -->
+	<key>GRPostHogProjectToken</key>
+	<string>$(POSTHOG_PROJECT_TOKEN)</string>
+	<key>GRPostHogHost</key>
+	<string>$(POSTHOG_HOST)</string>
+	<!-- HMAC key for optional Live Activity Worker calls. Set
+	     LIVE_ACTIVITY_API_SECRET in build settings / xcconfig for signed builds. -->
+	<key>GRLiveActivityAPISecret</key>
+	<string>$(LIVE_ACTIVITY_API_SECRET)</string>
 	<!-- Declares Grocer as a CloudKit share handler so tapping an iCloud
 	     share link routes to userDidAcceptCloudKitShareWith (see
 	     ShareAcceptance.swift) instead of falling back to an App Store lookup. -->
@@ -62,5 +78,8 @@
 	     who to send a group invite to. Contacts never leave your device. -->
 	<key>NSContactsUsageDescription</key>
 	<string>Grocer uses your contacts so you can pick family and friends to invite to a group. Your contacts stay on your device.</string>
+	<!-- App Store export compliance: only exempt encryption (HTTPS, etc.). -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 </dict>
 </plist>

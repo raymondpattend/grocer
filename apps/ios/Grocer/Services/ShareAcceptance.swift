@@ -1,4 +1,5 @@
 import AVFoundation
+import BackgroundTasks
 import CloudKit
 import UIKit
 import UserNotifications
@@ -345,10 +346,52 @@ final class ShoppingTripItemAddedAlertCoordinator: NSObject, AVAudioPlayerDelega
 /// which is why tapping "Join" on an invite link did nothing. We therefore
 /// provide a scene delegate (see `ShareSceneDelegate`) for that callback.
 final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
+    /// Periodic background catch-up. Silent CloudKit pushes are throttled and
+    /// dropped by iOS, so this pulls anything missed while backgrounded. Must
+    /// match the entry in Info.plist's `BGTaskSchedulerPermittedIdentifiers`.
+    static let backgroundRefreshTaskID = "org.narro.grocer.refresh"
+
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
+        // Register the handler before launch finishes (a hard requirement of
+        // BGTaskScheduler) and queue the first run.
+        BGTaskScheduler.shared.register(forTaskWithIdentifier: Self.backgroundRefreshTaskID, using: nil) { task in
+            guard let refreshTask = task as? BGAppRefreshTask else {
+                task.setTaskCompleted(success: false)
+                return
+            }
+            Self.handleBackgroundRefresh(refreshTask)
+        }
+        Self.scheduleBackgroundRefresh()
         return true
+    }
+
+    /// Queues the next background refresh (~30 min out; iOS decides the actual
+    /// time). Safe to call repeatedly — a duplicate request just replaces the
+    /// pending one. No-op when CloudKit is disabled for the build.
+    static func scheduleBackgroundRefresh() {
+        guard CloudKitService.shared.isAvailable else { return }
+        let request = BGAppRefreshTaskRequest(identifier: backgroundRefreshTaskID)
+        request.earliestBeginDate = Date(timeIntervalSinceNow: 30 * 60)
+        do {
+            try BGTaskScheduler.shared.submit(request)
+        } catch {
+            print("[BG] ⚠️ couldn't schedule background refresh: \(error)")
+        }
+    }
+
+    private static func handleBackgroundRefresh(_ task: BGAppRefreshTask) {
+        // Always chain the next one so the cadence survives across launches.
+        scheduleBackgroundRefresh()
+        let work = Task { @MainActor in
+            await GroceryRepository.current?.performBackgroundRefresh()
+            task.setTaskCompleted(success: true)
+        }
+        task.expirationHandler = {
+            work.cancel()
+            task.setTaskCompleted(success: false)
+        }
     }
 
     func application(_ application: UIApplication,

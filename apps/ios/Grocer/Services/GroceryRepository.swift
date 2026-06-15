@@ -97,6 +97,9 @@ private struct PendingCloudWrite: Codable, Equatable {
     var record: PendingCloudRecord
     var revision: Int
     var enqueuedAt: Date
+    var failureCount: Int? = nil
+    var retryAfter: Date? = nil
+    var lastError: String? = nil
 
     var key: String { record.key }
 }
@@ -154,6 +157,8 @@ private final class LocalSyncStore {
     private let fileManager = FileManager.default
     private let snapshotURL: URL
     private let outboxURL: URL
+    private let systemFieldsURL: URL
+    private let queue = DispatchQueue(label: "org.narro.grocer.local-sync-store", qos: .utility)
 
     init() {
         let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
@@ -165,6 +170,7 @@ private final class LocalSyncStore {
         try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         snapshotURL = directory.appendingPathComponent("snapshot.json")
         outboxURL = directory.appendingPathComponent("outbox.json")
+        systemFieldsURL = directory.appendingPathComponent("systemfields.json")
 
         // Remove the legacy un-scoped cache from older builds so it can't be
         // read by the wrong environment again.
@@ -178,8 +184,10 @@ private final class LocalSyncStore {
     }
 
     func saveSnapshot(_ snapshot: CloudSnapshot) {
-        guard let data = try? Self.encoder.encode(snapshot) else { return }
-        try? data.write(to: snapshotURL, options: .atomic)
+        queue.async { [snapshotURL] in
+            guard let data = try? Self.encoder.encode(snapshot) else { return }
+            try? data.write(to: snapshotURL, options: .atomic)
+        }
     }
 
     func loadOutbox() -> [String: PendingCloudWrite] {
@@ -199,13 +207,33 @@ private final class LocalSyncStore {
 
     func saveOutbox(_ writes: [String: PendingCloudWrite]) {
         let ordered = writes.values.sorted { $0.enqueuedAt < $1.enqueuedAt }
-        guard let data = try? Self.encoder.encode(ordered) else { return }
-        try? data.write(to: outboxURL, options: .atomic)
+        queue.async { [outboxURL] in
+            guard let data = try? Self.encoder.encode(ordered) else { return }
+            try? data.write(to: outboxURL, options: .atomic)
+        }
+    }
+
+    func loadSystemFields() -> [String: Data] {
+        guard let data = try? Data(contentsOf: systemFieldsURL),
+              let fields = try? Self.decoder.decode([String: Data].self, from: data) else {
+            return [:]
+        }
+        return fields
+    }
+
+    func saveSystemFields(_ fields: [String: Data]) {
+        queue.async { [systemFieldsURL] in
+            guard let data = try? Self.encoder.encode(fields) else { return }
+            try? data.write(to: systemFieldsURL, options: .atomic)
+        }
     }
 
     func reset() {
-        try? fileManager.removeItem(at: snapshotURL)
-        try? fileManager.removeItem(at: outboxURL)
+        queue.sync {
+            try? fileManager.removeItem(at: snapshotURL)
+            try? fileManager.removeItem(at: outboxURL)
+            try? fileManager.removeItem(at: systemFieldsURL)
+        }
     }
 
     private static let encoder: JSONEncoder = {
@@ -295,6 +323,10 @@ final class GroceryRepository {
     /// Set after successfully joining a group; the UI shows a welcome sheet.
     var joinedHouseholdId: String?
 
+    /// True while a CloudKit share invite is being accepted. The UI shows a
+    /// loading indicator until the joined-group sheet is ready to present.
+    private(set) var isAcceptingInvite = false
+
     enum SyncState: Equatable { case idle, syncing, offline, error(String) }
     private(set) var syncState: SyncState = .idle
     private(set) var subscriptionStatus = CloudSubscriptionRegistrationResult(
@@ -317,13 +349,32 @@ final class GroceryRepository {
     private let settings = SettingsStore.shared
     private let localStore = LocalSyncStore()
     private let shoppingTripInactivityLimit: TimeInterval = 60 * 60
+    private let removedItemTombstoneRetention: TimeInterval = 30 * 24 * 60 * 60
+    private let eventRetention: TimeInterval = 90 * 24 * 60 * 60
+    private let completedTripRetentionCount = 50
+    private let completedTripRetention: TimeInterval = 180 * 24 * 60 * 60
+    private static let idleForegroundPollInterval: Duration = .seconds(1)
+    private static let activeTripForegroundPollInterval: Duration = .milliseconds(700)
+    private static let idleForegroundPollMinimumSpacing: TimeInterval = 1
+    private static let activeTripForegroundPollMinimumSpacing: TimeInterval = 0.7
+    private static let remoteNotificationDebounce: Duration = .milliseconds(150)
     private var remoteRefreshTask: Task<Void, Never>?
     private var foregroundRefreshTask: Task<Void, Never>?
     private var refreshInFlight = false
-    private var lastActivationRefreshAt: Date?
+    private var lastForegroundPollAt: Date?
     private var cloudWriteTask: Task<Void, Never>?
     private var pendingCloudWrites: [String: PendingCloudWrite] = [:]
     private var nextCloudWriteRevision = 0
+    /// Encoded `CKRecord` system fields keyed by record name. Lets the outbox
+    /// re-save a record in one round trip (no pre-fetch for the change tag);
+    /// refreshed on every fetch and after every successful save.
+    private var recordSystemFields: [String: Data] = [:]
+    /// Hash of the profile image last uploaded for each member record this
+    /// session. Lets member saves skip re-uploading an unchanged avatar asset.
+    private var lastUploadedMemberAvatarHash: [String: Int] = [:]
+    /// Set when a refresh is requested while one is already in flight, so the
+    /// in-flight pass re-runs once more instead of silently dropping the request.
+    private var refreshRequestedWhileInFlight = false
     private var hasEstablishedTripItemAlertBaseline = false
     private var alertedTripItemIds: Set<String> = []
     @ObservationIgnored private var householdById: [String: Household] = [:]
@@ -620,25 +671,24 @@ final class GroceryRepository {
 
     var isOwnerOfCurrentGroup: Bool {
         guard let h = currentHousehold else { return false }
-        return h.ownerMemberId == currentMemberId
-            || currentMembers.contains { $0.id == currentMemberId && $0.role == .owner }
+        let rootOwnedByCurrentAccount = (h.recordOwnerName ?? CKCurrentUserDefaultName) == CKCurrentUserDefaultName
+        return rootOwnedByCurrentAccount && h.ownerMemberId == currentMemberId
     }
 
     var sharingUnavailableReason: String? {
         guard currentHousehold != nil else {
             return String(localized: "Create a group before inviting members.")
         }
-        if case .error = syncState {
-            return String(localized: "iCloud sync is unavailable right now. Sharing will be available after this group syncs to iCloud.")
-        }
         guard usingCloudKit else {
             return String(localized: "Sign in to iCloud to invite members. Group sharing needs CloudKit, which isn't available in this build/session.")
         }
         switch syncState {
-        case .idle:
+        case .idle, .syncing:
+            // A background fetch in flight is not a reason to block sharing —
+            // silent pushes flip syncState to .syncing for a second or two and
+            // would otherwise make the invite button flicker disabled. Sharing
+            // only needs CloudKit available + ownership, checked below.
             break
-        case .syncing:
-            return String(localized: "Wait for iCloud sync to finish before inviting members.")
         case .offline:
             return String(localized: "Reconnect to iCloud before inviting members.")
         case .error:
@@ -795,6 +845,56 @@ final class GroceryRepository {
         }
     }
 
+    private func pruneHistoricalRecords(now: Date = Date()) {
+        guard usingCloudKit else { return }
+
+        let removedItemCutoff = now.addingTimeInterval(-removedItemTombstoneRetention)
+        let eventCutoff = now.addingTimeInterval(-eventRetention)
+        let completedTripCutoff = now.addingTimeInterval(-completedTripRetention)
+
+        let staleItems = items.filter { item in
+            guard let deletedAt = item.deletedAt else { return false }
+            return deletedAt < removedItemCutoff
+        }
+        let staleEvents = events.filter { $0.createdAt < eventCutoff }
+
+        var staleSessions: [ShoppingSession] = []
+        let completedByHousehold = Dictionary(grouping: sessions.filter { $0.status != .active }, by: \.householdId)
+        for householdSessions in completedByHousehold.values {
+            let sorted = householdSessions.sorted(by: ShoppingSession.recentDisplayOrder)
+            for (index, session) in sorted.enumerated() {
+                let endedOrUpdatedAt = session.endedAt ?? session.updatedAt
+                if index >= completedTripRetentionCount || endedOrUpdatedAt < completedTripCutoff {
+                    staleSessions.append(session)
+                }
+            }
+        }
+
+        let staleSessionIds = Set(staleSessions.map(\.id))
+        let staleTripItems = tripItems.filter { staleSessionIds.contains($0.sessionId) }
+
+        guard !staleItems.isEmpty || !staleEvents.isEmpty || !staleSessions.isEmpty || !staleTripItems.isEmpty else {
+            return
+        }
+
+        performLocalPersistenceBatch {
+            for item in staleItems { enqueueDelete(.item(item)) }
+            for event in staleEvents { enqueueDelete(.event(event)) }
+            for tripItem in staleTripItems { enqueueDelete(.tripItem(tripItem)) }
+            for session in staleSessions { enqueueDelete(.session(session)) }
+
+            let staleItemIds = Set(staleItems.map(\.id))
+            let staleEventIds = Set(staleEvents.map(\.id))
+            let staleTripItemIds = Set(staleTripItems.map(\.id))
+            items.removeAll { staleItemIds.contains($0.id) }
+            events.removeAll { staleEventIds.contains($0.id) }
+            tripItems.removeAll { staleTripItemIds.contains($0.id) }
+            sessions.removeAll { staleSessionIds.contains($0.id) }
+        }
+
+        print("[Repo] pruned history: \(staleItems.count) item tombstone(s), \(staleEvents.count) event(s), \(staleSessions.count) trip(s), \(staleTripItems.count) trip item(s)")
+    }
+
     private func lastActivityDate(for session: ShoppingSession) -> Date {
         var latest = max(session.startedAt, session.updatedAt)
         if let endedAt = session.endedAt {
@@ -893,21 +993,51 @@ final class GroceryRepository {
         print("[Repo] ── bootstrap END (sync=\(syncState)) ──")
     }
 
+    /// A full sync: pull changes *and* run the heavy idempotent maintenance pass.
+    /// Used on meaningful triggers (bootstrap, activation, manual refresh).
     func refresh() async throws {
+        try await fetchAndApplyChanges(discoverSharedZones: true)
+        await runMaintenance()
+    }
+
+    /// The light, frequently-run half of a sync: pull CloudKit changes, merge
+    /// them into the working set, and persist. Cheap enough to run on every
+    /// foreground poll because a change-token fetch returns nothing when idle.
+    func fetchAndApplyChanges(discoverSharedZones: Bool = true) async throws {
         guard usingCloudKit else {
-            print("[Repo] refresh skipped (not using CloudKit)")
+            print("[Repo] fetch skipped (not using CloudKit)")
             return
         }
-        print("[Repo] refresh → fetching changes…")
-        let changes = try await cloud.fetchChanges(forceFull: currentSnapshot().isEmpty)
-        applySyncResult(changes)
-        saveLocalSnapshot()
-        print("[Repo] refresh → \(households.count) households, \(members.count) members, \(lists.count) lists, \(items.count) items, \(events.count) events")
+        print("[Repo] fetch → fetching changes…")
+        let changes = try await cloud.fetchChanges(
+            forceFull: currentSnapshot().isEmpty,
+            discoverSharedZones: discoverSharedZones
+        )
+        if changes.hasRecordChanges {
+            applySyncResult(changes)
+            saveLocalSnapshot()
+        } else {
+            print("[Repo] fetch → no CloudKit record changes")
+        }
+        print("[Repo] fetch → \(households.count) households, \(members.count) members, \(lists.count) lists, \(items.count) items, \(events.count) events")
         ensureValidSelection()
+        // Cheap (filters sessions by time) and acts only on genuinely stale
+        // trips, so it's safe to run on every poll — keeps an idle foreground
+        // session from leaving a trip "active" forever.
+        await expireInactiveShoppingTrips()
+        await configureLiveActivity()
+    }
+
+    /// The heavy half: roster/owner repair, profile-cache sync, stale-trip
+    /// expiry, and the one-time parent-ref backfill. These scan the whole data
+    /// set and can enqueue writes, so they run only on meaningful triggers — never
+    /// on the steady foreground poll, which would churn battery and write traffic.
+    private func runMaintenance() async {
+        guard usingCloudKit else { return }
         ensureCurrentUserMemberRecords()
         repairOrphanedGroupOwners()
+        pruneHistoricalRecords()
         syncPersonalProfileCache()
-        await expireInactiveShoppingTrips()
         await backfillParentReferencesIfNeeded()
         await configureLiveActivity()
     }
@@ -964,23 +1094,26 @@ final class GroceryRepository {
     /// (and are unreliable on the Simulator), so this gives an explicit way to
     /// pull the latest shared changes on demand.
     func manualRefresh() async {
-        await refreshSnapshot(context: "Refresh failed", registerSubscriptions: true, showSyncing: true)
+        await refreshSnapshot(context: "Refresh failed", registerSubscriptions: true, showSyncing: true, maintenance: true)
     }
 
-    /// Refresh after the app becomes active. This is intentionally light-touch:
-    /// subscriptions should do the real work, while foreground activation repairs
-    /// any delayed silent pushes.
+    /// Refresh after the app becomes active. Runs the full pass (with
+    /// maintenance) to repair any state missed while backgrounded; the steady
+    /// foreground loop then does light change-only polls.
     func refreshAfterActivation() async {
-        await refreshWhileForeground(force: true)
+        await refreshSnapshot(context: "Activation refresh failed", registerSubscriptions: true, showSyncing: false, maintenance: true)
     }
 
     func startForegroundRefreshLoop() {
         foregroundRefreshTask?.cancel()
         foregroundRefreshTask = Task { [weak self] in
-            await self?.refreshWhileForeground(force: true)
+            await self?.pollWhileForeground(force: true)
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(4))
-                await self?.refreshWhileForeground(force: false)
+                let interval = self?.activeSession == nil
+                    ? Self.idleForegroundPollInterval
+                    : Self.activeTripForegroundPollInterval
+                try? await Task.sleep(for: interval)
+                await self?.pollWhileForeground(force: false)
             }
         }
     }
@@ -990,18 +1123,49 @@ final class GroceryRepository {
         foregroundRefreshTask = nil
     }
 
-    private func refreshWhileForeground(force: Bool) async {
+    /// Steady-state foreground tick: pull changes only, no maintenance. This is
+    /// intentionally quick because it is the user-visible realtime path; full
+    /// shared-zone discovery is reserved for force/activation/manual refreshes.
+    private func pollWhileForeground(force: Bool) async {
         guard hasCompletedInitialLoad else { return }
         let now = Date()
-        if !force, let lastActivationRefreshAt,
-           now.timeIntervalSince(lastActivationRefreshAt) < 5 {
+        let minimumSpacing = activeSession == nil
+            ? Self.idleForegroundPollMinimumSpacing
+            : Self.activeTripForegroundPollMinimumSpacing
+        if !force, let lastForegroundPollAt,
+           now.timeIntervalSince(lastForegroundPollAt) < minimumSpacing {
             return
         }
-        lastActivationRefreshAt = now
+        lastForegroundPollAt = now
         if usingCloudKit {
-            await refreshSnapshot(context: "Foreground refresh failed", registerSubscriptions: false, showSyncing: false)
+            await refreshSnapshot(
+                context: "Foreground refresh failed",
+                registerSubscriptions: false,
+                showSyncing: false,
+                maintenance: false,
+                discoverSharedZones: force
+            )
         } else {
             await expireInactiveShoppingTrips(now: now)
+        }
+    }
+
+    /// Entry point for the periodic `BGAppRefreshTask`. Pulls and flushes while
+    /// backgrounded so changes whose silent push iOS dropped still arrive without
+    /// the user reopening the app. On a cold background launch (no UI scene, so
+    /// `bootstrap()` never ran) this bootstraps first.
+    func performBackgroundRefresh() async {
+        guard CloudKitService.shared.isAvailable else { return }
+        if !hasCompletedInitialLoad {
+            await bootstrap()
+            return
+        }
+        guard usingCloudKit else { return }
+        do {
+            try await fetchAndApplyChanges()
+            await flushOutboxNow()
+        } catch {
+            print("[Repo] ⚠️ background refresh failed: \(error)")
         }
     }
 
@@ -1010,34 +1174,59 @@ final class GroceryRepository {
     func handleRemoteNotification() async {
         guard usingCloudKit else { return }
         remoteRefreshTask?.cancel()
-        remoteRefreshTask = Task {
-            try? await Task.sleep(for: .milliseconds(500))
+        remoteRefreshTask = Task(priority: .userInitiated) {
+            try? await Task.sleep(for: Self.remoteNotificationDebounce)
             guard !Task.isCancelled else { return }
             print("[Repo] remote notification → refreshing…")
-            await refreshSnapshot(context: "Remote refresh failed", registerSubscriptions: true, showSyncing: true)
+            await refreshSnapshot(
+                context: "Remote refresh failed",
+                registerSubscriptions: false,
+                showSyncing: false,
+                maintenance: false,
+                discoverSharedZones: false
+            )
         }
         await remoteRefreshTask?.value
     }
 
-    private func refreshSnapshot(context: String, registerSubscriptions: Bool, showSyncing: Bool) async {
+    private func refreshSnapshot(
+        context: String,
+        registerSubscriptions: Bool,
+        showSyncing: Bool,
+        maintenance: Bool,
+        discoverSharedZones: Bool = true
+    ) async {
         guard usingCloudKit else { return }
-        guard !refreshInFlight else { return }
+        // Coalesce instead of dropping: if a sync is already running, flag it so
+        // the in-flight pass runs one more cycle rather than losing this request
+        // (e.g. a push that lands mid-refresh).
+        guard !refreshInFlight else {
+            refreshRequestedWhileInFlight = true
+            return
+        }
         refreshInFlight = true
         defer { refreshInFlight = false }
 
-        if showSyncing { syncState = .syncing }
-        do {
-            try await refresh()
-            syncState = .idle
-            if registerSubscriptions {
-                await registerForRealtimeSync()
+        repeat {
+            refreshRequestedWhileInFlight = false
+            if showSyncing { syncState = .syncing }
+            do {
+                if maintenance {
+                    try await refresh()
+                } else {
+                    try await fetchAndApplyChanges(discoverSharedZones: discoverSharedZones)
+                }
+                syncState = .idle
+                if registerSubscriptions {
+                    await registerForRealtimeSync()
+                }
+                scheduleOutboxFlush()
+                print("[Repo] ✅ \(context.replacingOccurrences(of: " failed", with: "")) succeeded")
+            } catch {
+                print("[Repo] ❌ \(context): \(error)")
+                recordSyncFailure(error, context: context)
             }
-            scheduleOutboxFlush()
-            print("[Repo] ✅ \(context.replacingOccurrences(of: " failed", with: "")) succeeded")
-        } catch {
-            print("[Repo] ❌ \(context): \(error)")
-            recordSyncFailure(error, context: context)
-        }
+        } while refreshRequestedWhileInFlight
     }
 
     private func registerForRealtimeSync(force: Bool = false) async {
@@ -1153,11 +1342,11 @@ final class GroceryRepository {
         settings.selectedHouseholdId = house.id
         print("[Repo] group added to local state: house=\(house.id), list=\(list.id)")
 
+        print("[Repo] queueing new group records for CloudKit…")
+        enqueueSave(.household(house))
+        enqueueSave(.member(member))
+        enqueueSave(.list(list))
         if usingCloudKit {
-            print("[Repo] queueing new group records for CloudKit…")
-            enqueueSave(.household(house))
-            enqueueSave(.member(member))
-            enqueueSave(.list(list))
             await flushOutbox()
             if !pendingCloudWrites.keys.contains(PendingCloudRecord.household(house).key),
                !pendingCloudWrites.keys.contains(PendingCloudRecord.member(member).key),
@@ -1166,7 +1355,7 @@ final class GroceryRepository {
                 print("[Repo] ✅ group saved to CloudKit")
             }
         } else {
-            saveLocalSnapshot()
+            syncState = .offline
         }
         return house
     }
@@ -1271,15 +1460,27 @@ final class GroceryRepository {
         }
     }
 
-    /// Member leaving a shared group: drop the local copy and delete only our
-    /// own member record from the owner's zone.
+    /// Member leaving a shared group: remove the current account from the
+    /// CloudKit share, then keep the local cache discarded. Deleting only the app
+    /// member row is not enough — CloudKit will surface the shared zone again
+    /// while the account is still a participant.
     private func removeSelfFromGroup(_ house: Household) {
-        let me = currentMember
+        let rootRecordID = householdRecordID(house)
         discardLocalGroup(house)
-        if usingCloudKit, let me {
-            enqueueDelete(.member(me))
-        } else {
+        guard usingCloudKit else {
             saveLocalSnapshot()
+            return
+        }
+        saveLocalSnapshot()
+        Task {
+            do {
+                try await cloud.leaveShare(rootRecordID: rootRecordID)
+                cloud.clearCachedSharedZone(rootRecordID.zoneID)
+                try? await refresh()
+            } catch {
+                print("[Repo] ❌ leave shared group failed: \(error)")
+                recordSyncFailure(error, context: "Leave group failed")
+            }
         }
     }
 
@@ -1442,13 +1643,22 @@ final class GroceryRepository {
         Array(currentItemSuggestions.map(\.name).prefix(limit))
     }
 
-    /// Adds an item dictated through Siri / Shortcuts to the currently selected
-    /// group, mirroring the in-app default path (offline category + unit
-    /// guesses). Blocks until the CloudKit write is flushed so a background
-    /// launch isn't suspended mid-sync.
-    func addItemFromIntent(_ rawText: String) async -> IntentAddOutcome {
+    /// Household choices for the App Intent list picker.
+    func intentHouseholdChoices() -> [Household] {
+        households
+    }
+
+    /// Adds an item dictated through Siri / Shortcuts to the given group (or the
+    /// sole group when `householdId` is nil and only one exists), mirroring the
+    /// in-app default path (offline category + unit guesses). Blocks until the
+    /// CloudKit write is flushed so a background launch isn't suspended mid-sync.
+    func addItemFromIntent(_ rawText: String, householdId: String? = nil) async -> IntentAddOutcome {
         if !hasCompletedInitialLoad {
             await bootstrap()
+        }
+        let targetHouseholdId = householdId ?? (households.count == 1 ? households.first?.id : nil)
+        if let targetHouseholdId {
+            selectHousehold(targetHouseholdId)
         }
         guard let list = currentList else { return .noList }
 
@@ -1800,6 +2010,8 @@ final class GroceryRepository {
 
     func acceptShare(_ metadata: CKShare.Metadata) async {
         let householdIdsBefore = Set(households.map(\.id))
+        isAcceptingInvite = true
+        defer { isAcceptingInvite = false }
         do {
             try await cloud.accept(metadata)
             try await refresh()
@@ -1865,6 +2077,7 @@ final class GroceryRepository {
     private func loadLocalSyncState() {
         pendingCloudWrites = localStore.loadOutbox()
         nextCloudWriteRevision = (pendingCloudWrites.values.map(\.revision).max() ?? 0) + 1
+        recordSystemFields = localStore.loadSystemFields()
         guard var snapshot = localStore.loadSnapshot(), !snapshot.isEmpty else { return }
         applyPendingWrites(to: &snapshot)
         applySnapshot(snapshot)
@@ -1980,8 +2193,6 @@ final class GroceryRepository {
     private func repairOrphanedGroupOwners() {
         guard !households.isEmpty, !members.isEmpty else { return }
 
-        let now = Date()
-        var householdsToPersist: [Household] = []
         var membersToPersist: [HouseholdMember] = []
 
         for householdIndex in households.indices {
@@ -1989,41 +2200,20 @@ final class GroceryRepository {
             let memberIndexes = members.indices.filter { members[$0].householdId == household.id }
             guard !memberIndexes.isEmpty else { continue }
 
-            let currentOwnerIndex = memberIndexes.first { members[$0].id == household.ownerMemberId }
-            let nextOwnerIndex: Int
-            if let currentOwnerIndex {
-                nextOwnerIndex = currentOwnerIndex
-            } else if let promotedIndex = memberIndexes.sorted(by: {
-                Self.memberOwnerPromotionOrder(members[$0], members[$1])
-            }).first {
-                nextOwnerIndex = promotedIndex
-                households[householdIndex].ownerMemberId = members[promotedIndex].id
-                households[householdIndex].updatedAt = now
-                householdsToPersist.append(households[householdIndex])
-                print("[Repo] repaired group owner for \(household.name): \(members[promotedIndex].displayName)")
-            } else {
+            guard let currentOwnerIndex = memberIndexes.first(where: { members[$0].id == household.ownerMemberId }) else {
+                print("[Repo] owner member missing for \(household.name); leaving app-level ownership unchanged until CloudKit refetches it")
                 continue
             }
 
             for memberIndex in memberIndexes {
-                let repairedRole: MemberRole = memberIndex == nextOwnerIndex ? .owner : .member
+                let repairedRole: MemberRole = memberIndex == currentOwnerIndex ? .owner : .member
                 guard members[memberIndex].role != repairedRole else { continue }
                 members[memberIndex].role = repairedRole
                 membersToPersist.append(members[memberIndex])
             }
         }
 
-        householdsToPersist.forEach { persistHousehold($0) }
         membersToPersist.forEach { persist($0) }
-    }
-
-    private static func memberOwnerPromotionOrder(_ lhs: HouseholdMember, _ rhs: HouseholdMember) -> Bool {
-        let lhsName = lhs.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let rhsName = rhs.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-        if lhsName.isEmpty != rhsName.isEmpty { return !lhsName.isEmpty }
-        let nameComparison = lhsName.localizedCaseInsensitiveCompare(rhsName)
-        if nameComparison != .orderedSame { return nameComparison == .orderedAscending }
-        return lhs.id < rhs.id
     }
 
     /// Writes `newValue` to `storage` only when it differs, avoiding spurious
@@ -2051,6 +2241,15 @@ final class GroceryRepository {
         purgePendingWrites(forHouseholds: removedHouseholdIds)
         applyPendingWrites(to: &snapshot)
         applySnapshot(snapshot)
+
+        // Cache the change tags for every record we just saw so the outbox can
+        // re-save in a single round trip, then drop tags for records that no
+        // longer exist so the cache can't grow without bound.
+        if !result.systemFields.isEmpty {
+            recordSystemFields.merge(result.systemFields) { _, new in new }
+        }
+        pruneSystemFieldsCache()
+        localStore.saveSystemFields(recordSystemFields)
 
         if shouldAlertForNewTripItems {
             alertForNewActiveTripItems(
@@ -2109,6 +2308,21 @@ final class GroceryRepository {
         guard !staleKeys.isEmpty else { return }
         for key in staleKeys { pendingCloudWrites.removeValue(forKey: key) }
         print("[Repo] 🗑️ purged \(staleKeys.count) pending write(s) for removed group(s)")
+    }
+
+    /// Drops cached change tags (and avatar hashes) for records that are no
+    /// longer in the working set, so the caches track the live data set.
+    private func pruneSystemFieldsCache() {
+        var valid = Set<String>()
+        valid.formUnion(households.map(\.id))
+        valid.formUnion(members.map { "\($0.id)_\($0.householdId)" })
+        valid.formUnion(lists.map(\.id))
+        valid.formUnion(items.map(\.id))
+        valid.formUnion(sessions.map(\.id))
+        valid.formUnion(tripItems.map(\.id))
+        valid.formUnion(events.map(\.id))
+        recordSystemFields = recordSystemFields.filter { valid.contains($0.key) }
+        lastUploadedMemberAvatarHash = lastUploadedMemberAvatarHash.filter { valid.contains($0.key) }
     }
 
     private func applyPendingWrites(to snapshot: inout CloudSnapshot) {
@@ -2192,66 +2406,360 @@ final class GroceryRepository {
     }
 
     private func scheduleOutboxFlush() {
-        guard usingCloudKit else { return }
+        guard usingCloudKit, !pendingCloudWrites.isEmpty else { return }
+        let delay = nextOutboxFlushDelay()
         let previous = cloudWriteTask
-        cloudWriteTask = Task { [weak self] in
+        cloudWriteTask = Task(priority: .userInitiated) { [weak self] in
             await previous?.value
             guard !Task.isCancelled else { return }
+            if delay > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            }
             await self?.flushOutbox()
         }
     }
 
-    private func flushOutbox() async {
-        guard usingCloudKit, !pendingCloudWrites.isEmpty else { return }
-        let writes = pendingCloudWrites.values.sorted {
-            if $0.revision != $1.revision { return $0.revision < $1.revision }
-            return $0.enqueuedAt < $1.enqueuedAt
-        }
-        for write in writes {
-            guard pendingCloudWrites[write.key] == write else { continue }
-            let succeeded = await perform(write)
-            guard pendingCloudWrites[write.key] == write else { continue }
-            if succeeded {
-                pendingCloudWrites.removeValue(forKey: write.key)
-                saveLocalSnapshot()
+    private func nextOutboxFlushDelay(now: Date = Date()) -> TimeInterval {
+        var earliestRetryAfter: Date?
+        for write in pendingCloudWrites.values {
+            guard let retryAfter = write.retryAfter, retryAfter > now else { return 0 }
+            if earliestRetryAfter == nil || retryAfter < earliestRetryAfter! {
+                earliestRetryAfter = retryAfter
             }
         }
+        return earliestRetryAfter.map { max(0.25, $0.timeIntervalSince(now)) } ?? 0
     }
 
-    private func perform(_ write: PendingCloudWrite) async -> Bool {
-        switch write.operation {
-        case .save:
-            return await savePendingRecord(write.record)
-        case .delete:
-            return await deletePendingRecord(write.record)
+    private func eligiblePendingWrites(now: Date = Date()) -> [PendingCloudWrite] {
+        pendingCloudWrites.values
+            .filter { write in
+                guard let retryAfter = write.retryAfter else { return true }
+                return retryAfter <= now
+            }
+            .sorted {
+                if $0.revision != $1.revision { return $0.revision < $1.revision }
+                return $0.enqueuedAt < $1.enqueuedAt
+            }
+    }
+
+    /// Largest record count sent in a single CloudKit modify operation. CloudKit
+    /// caps a batch around 400; staying under it keeps a burst within one round
+    /// trip while leaving headroom.
+    private static let outboxBatchLimit = 350
+
+    /// Drains the pending-write queue using batched CloudKit modify operations —
+    /// one round trip per zone-chunk instead of a fetch+save per record. Records
+    /// carry a cached change tag so no pre-fetch is needed; per-record conflicts
+    /// fall through to `resolveConflict`. Persists once at the end, not per write.
+    private func flushOutbox() async {
+        guard usingCloudKit, !pendingCloudWrites.isEmpty else { return }
+
+        // CloudKit batches must stay within one database/zone, so group by zone.
+        let writes = eligiblePendingWrites()
+        guard !writes.isEmpty else {
+            scheduleOutboxFlush()
+            return
+        }
+        var byZone: [CKRecordZone.ID: [PendingCloudWrite]] = [:]
+        for write in writes {
+            byZone[recordID(for: write.record).zoneID, default: []].append(write)
+        }
+
+        var snapshotDirty = false
+        var systemFieldsDirty = false
+        var serverWon = false
+        for (zone, zoneWrites) in byZone {
+            for chunk in zoneWrites.chunked(into: Self.outboxBatchLimit) {
+                let outcome = await flushBatch(chunk, in: zone)
+                snapshotDirty = snapshotDirty || outcome.removedAny
+                systemFieldsDirty = systemFieldsDirty || outcome.systemFieldsChanged
+                serverWon = serverWon || outcome.serverWon
+            }
+        }
+
+        if systemFieldsDirty { localStore.saveSystemFields(recordSystemFields) }
+        if snapshotDirty { saveLocalSnapshot() }
+        // A conflict the server's copy won leaves the working set showing the
+        // discarded local value; pull the winning records so the UI converges.
+        // Skip if a refresh is already running — it will pick them up — so we
+        // don't race two fetches on the same change token.
+        if serverWon, !refreshInFlight {
+            try? await fetchAndApplyChanges()
+        }
+        if !pendingCloudWrites.isEmpty {
+            scheduleOutboxFlush()
         }
     }
 
-    private func savePendingRecord(_ pending: PendingCloudRecord) async -> Bool {
-        guard usingCloudKit else { return false }
-        let rid = recordID(for: pending)
-        let record: CKRecord
+    private struct BatchOutcome {
+        var removedAny = false
+        var systemFieldsChanged = false
+        var serverWon = false
+    }
+
+    /// Sends one zone-scoped batch and reconciles the per-record results against
+    /// the outbox. Writes superseded by a newer local edit while in flight are
+    /// left for the next flush.
+    private func flushBatch(_ writes: [PendingCloudWrite], in zone: CKRecordZone.ID) async -> BatchOutcome {
+        var saveRecords: [CKRecord] = []
+        var deleteIDs: [CKRecord.ID] = []
+        var writeByRecordName: [String: PendingCloudWrite] = [:]
+
+        for write in writes {
+            guard pendingCloudWrites[write.key] == write else { continue } // superseded
+            let rid = recordID(for: write.record)
+            writeByRecordName[rid.recordName] = write
+            switch write.operation {
+            case .save:
+                saveRecords.append(buildRecord(for: write.record, recordID: rid))
+            case .delete:
+                deleteIDs.append(rid)
+            }
+        }
+        guard !saveRecords.isEmpty || !deleteIDs.isEmpty else { return BatchOutcome() }
+
+        let results: (save: [CKRecord.ID: Result<CKRecord, Error>], delete: [CKRecord.ID: Result<Void, Error>])
         do {
-            record = try await cloud.record(for: rid)
-        } catch let error as CKError where error.code == .unknownItem {
-            record = CKRecord(recordType: pending.recordType, recordID: rid)
+            results = try await cloud.modify(saving: saveRecords, deleting: deleteIDs, in: zone)
         } catch let error as CKError where Self.isZoneGone(error) {
-            print("[Repo] 🗑️ discarding \(pending.recordType) \(pending.recordName) — zone gone")
-            return true
+            // The whole zone is gone — discard every write targeting it.
+            var outcome = BatchOutcome()
+            for write in writes where pendingCloudWrites[write.key] == write {
+                pendingCloudWrites.removeValue(forKey: write.key)
+                outcome.removedAny = true
+            }
+            print("[Repo] 🗑️ discarded \(writes.count) write(s) — zone \(zone.zoneName) gone")
+            return outcome
         } catch {
-            print("[Repo] ⚠️ fetch deferred for \(pending.recordType) \(pending.recordName): \(error)")
-            recordSyncFailure(error, context: "Save \(pending.recordType) failed")
-            return false
+            print("[Repo] ⚠️ batch deferred for zone \(zone.zoneName): \(error)")
+            var outcome = BatchOutcome()
+            for write in writes {
+                outcome.removedAny = markWriteDeferred(write, error: error) || outcome.removedAny
+            }
+            recordSyncFailure(error, context: "iCloud sync failed")
+            scheduleOutboxFlush()
+            return outcome
         }
-        pending.apply(to: record)
+
+        var outcome = BatchOutcome()
+        if syncState != .idle { syncState = .idle }
+
+        for (rid, saveResult) in results.save {
+            guard let write = writeByRecordName[rid.recordName] else { continue }
+            switch saveResult {
+            case .success(let saved):
+                recordSystemFields[rid.recordName] = saved.encodedSystemFields()
+                rememberMemberAvatar(for: write.record)
+                outcome.systemFieldsChanged = true
+                if removeIfCurrent(write) { outcome.removedAny = true }
+            case .failure(let error):
+                let resolution = await handleSaveFailure(write: write, rid: rid, error: error, zone: zone)
+                outcome.removedAny = outcome.removedAny || resolution.removedAny
+                outcome.systemFieldsChanged = outcome.systemFieldsChanged || resolution.systemFieldsChanged
+                outcome.serverWon = outcome.serverWon || resolution.serverWon
+            }
+        }
+
+        for (rid, deleteResult) in results.delete {
+            guard let write = writeByRecordName[rid.recordName] else { continue }
+            switch deleteResult {
+            case .success:
+                recordSystemFields.removeValue(forKey: rid.recordName)
+                outcome.systemFieldsChanged = true
+                if removeIfCurrent(write) { outcome.removedAny = true }
+            case .failure(let error):
+                if let ck = error as? CKError, ck.code == .unknownItem || Self.isZoneGone(ck) {
+                    recordSystemFields.removeValue(forKey: rid.recordName)
+                    outcome.systemFieldsChanged = true
+                    if removeIfCurrent(write) { outcome.removedAny = true }
+                } else {
+                    print("[Repo] ⚠️ delete deferred for \(rid.recordName): \(error)")
+                    outcome.removedAny = markWriteDeferred(write, error: error) || outcome.removedAny
+                    recordSyncFailure(error, context: "iCloud delete failed")
+                }
+            }
+        }
+
+        return outcome
+    }
+
+    /// Removes a write from the outbox only if it hasn't been superseded by a
+    /// newer edit enqueued while the batch was in flight.
+    private func removeIfCurrent(_ write: PendingCloudWrite) -> Bool {
+        guard pendingCloudWrites[write.key] == write else { return false }
+        pendingCloudWrites.removeValue(forKey: write.key)
+        return true
+    }
+
+    @discardableResult
+    private func markWriteDeferred(_ write: PendingCloudWrite, error: Error) -> Bool {
+        guard var current = pendingCloudWrites[write.key], current == write else { return false }
+        let failureCount = (current.failureCount ?? 0) + 1
+        current.failureCount = failureCount
+        current.retryAfter = Date().addingTimeInterval(Self.outboxRetryDelay(for: error, failureCount: failureCount))
+        current.lastError = Self.shortError(error)
+        pendingCloudWrites[write.key] = current
+        return true
+    }
+
+    private static func outboxRetryDelay(for error: Error, failureCount: Int) -> TimeInterval {
+        if let ck = error as? CKError,
+           let retryAfter = ck.errorUserInfo[CKErrorRetryAfterKey] as? TimeInterval {
+            return min(max(retryAfter, 1), 60 * 30)
+        }
+        if let ck = error as? CKError,
+           let retryAfter = ck.errorUserInfo[CKErrorRetryAfterKey] as? NSNumber {
+            return min(max(retryAfter.doubleValue, 1), 60 * 30)
+        }
+        let exponent = min(max(failureCount - 1, 0), 8)
+        return min(pow(2, Double(exponent)), 60 * 30)
+    }
+
+    private struct SaveFailureResolution {
+        var removedAny = false
+        var systemFieldsChanged = false
+        var serverWon = false
+    }
+
+    /// Reconciles a single failed save. `.serverRecordChanged` routes to the
+    /// merge; a dead zone discards; anything else defers for the next flush.
+    private func handleSaveFailure(write: PendingCloudWrite, rid: CKRecord.ID, error: Error, zone: CKRecordZone.ID) async -> SaveFailureResolution {
+        var outcome = SaveFailureResolution()
+        if let ck = error as? CKError, ck.code == .serverRecordChanged {
+            let resolution = await resolveConflict(write: write, error: ck, zone: zone)
+            outcome.systemFieldsChanged = true
+            outcome.serverWon = resolution.serverWon
+            if resolution.resolved, removeIfCurrent(write) { outcome.removedAny = true }
+        } else if let ck = error as? CKError, Self.isZoneGone(ck) {
+            recordSystemFields.removeValue(forKey: rid.recordName)
+            outcome.systemFieldsChanged = true
+            if removeIfCurrent(write) { outcome.removedAny = true }
+            print("[Repo] 🗑️ discarding \(rid.recordName) — zone gone")
+        } else {
+            print("[Repo] ⚠️ save deferred for \(rid.recordName): \(error)")
+            outcome.removedAny = markWriteDeferred(write, error: error) || outcome.removedAny
+            recordSyncFailure(error, context: "iCloud save failed")
+        }
+        return outcome
+    }
+
+    /// Builds the `CKRecord` to save for a pending write, reusing the cached
+    /// system fields (change tag) when present so the save is one round trip.
+    private func buildRecord(for pending: PendingCloudRecord, recordID rid: CKRecord.ID) -> CKRecord {
+        let record: CKRecord
+        if let data = recordSystemFields[rid.recordName],
+           let cached = CKRecord.from(systemFields: data),
+           cached.recordID == rid,
+           cached.recordType == pending.recordType {
+            record = cached
+        } else {
+            record = CKRecord(recordType: pending.recordType, recordID: rid)
+        }
+        applyFields(of: pending, to: record)
         if let householdId = pending.householdId, pending.recordType != CK.RecordType.household {
             setHouseholdParent(record, householdId: householdId)
         }
-        return await saveBestEffort(record)
+        return record
     }
 
-    private func deletePendingRecord(_ pending: PendingCloudRecord) async -> Bool {
-        await deleteBestEffort(recordID: recordID(for: pending), context: "Delete \(pending.recordType) failed")
+    /// Applies a pending record's fields to a `CKRecord`. For members the avatar
+    /// asset is re-uploaded only when it changed since our last upload (or on the
+    /// first save this session), avoiding redundant full-asset uploads on routine
+    /// member saves (role repair, roster sync).
+    private func applyFields(of pending: PendingCloudRecord, to record: CKRecord) {
+        guard case .member(let member) = pending else {
+            pending.apply(to: record)
+            return
+        }
+        member.applyMetadata(to: record)
+        let recordName = pending.recordName
+        let newHash = member.profileImageData?.hashValue ?? 0
+        let serverHasRecord = recordSystemFields[recordName] != nil
+        if !serverHasRecord || lastUploadedMemberAvatarHash[recordName] != newHash {
+            member.applyProfileImage(to: record)
+        }
+    }
+
+    private func rememberMemberAvatar(for pending: PendingCloudRecord) {
+        guard case .member(let member) = pending else { return }
+        lastUploadedMemberAvatarHash[pending.recordName] = member.profileImageData?.hashValue ?? 0
+    }
+
+    /// The logical last-modified time used for conflict resolution. Immutable or
+    /// untimestamped record types return nil (local copy is kept).
+    private func updatedAt(of pending: PendingCloudRecord) -> Date? {
+        switch pending {
+        case .household(let v): return v.updatedAt
+        case .list(let v): return v.updatedAt
+        case .item(let v): return v.updatedAt
+        case .session(let v): return v.updatedAt
+        case .member, .tripItem, .event: return nil
+        }
+    }
+
+    private struct ConflictResolution {
+        var resolved: Bool   // true → the write can be removed from the outbox
+        var serverWon: Bool  // true → the server copy was kept (UI should refetch)
+    }
+
+    /// Resolves a `.serverRecordChanged` conflict by comparing `updatedAt`
+    /// (server `modificationDate` as tiebreaker): the newer write wins. The
+    /// server's record travels with the error, so no extra fetch is needed.
+    /// Soft-deletes and restores both bump `updatedAt`, so this orders
+    /// delete-vs-edit correctly without special-casing.
+    private func resolveConflict(write: PendingCloudWrite, error: CKError, zone: CKRecordZone.ID) async -> ConflictResolution {
+        let rid = recordID(for: write.record)
+        let recordName = rid.recordName
+
+        guard let serverRecord = error.serverRecord else {
+            print("[Repo] ⚠️ conflict without server record for \(recordName); deferring")
+            return ConflictResolution(resolved: false, serverWon: false)
+        }
+        // Adopt the server's change tag either way so the next attempt is valid.
+        recordSystemFields[recordName] = serverRecord.encodedSystemFields()
+
+        if write.operation == .delete {
+            // Our intent is removal; the server's concurrent edit doesn't change
+            // that. Re-issue the delete now that we hold the latest tag.
+            do {
+                let results = try await cloud.modify(saving: [], deleting: [rid], in: zone)
+                if let deleteResult = results.delete[rid], case .success = deleteResult {
+                    recordSystemFields.removeValue(forKey: recordName)
+                    return ConflictResolution(resolved: true, serverWon: false)
+                }
+            } catch {
+                print("[Repo] ⚠️ conflict delete retry failed for \(recordName): \(error)")
+            }
+            return ConflictResolution(resolved: false, serverWon: false)
+        }
+
+        let localDate = updatedAt(of: write.record)
+        let serverDate = (serverRecord[CK.Field.updatedAt] as? Date) ?? serverRecord.modificationDate
+        if let localDate, let serverDate, serverDate > localDate {
+            print("[Repo] ↩︎ conflict: server newer for \(serverRecord.recordType) \(recordName); kept server")
+            return ConflictResolution(resolved: true, serverWon: true)
+        }
+
+        // Local wins (newer, equal, or untimestamped): write our fields onto the
+        // server's record — which carries the latest tag — and re-save once.
+        applyFields(of: write.record, to: serverRecord)
+        if let householdId = write.record.householdId, write.record.recordType != CK.RecordType.household {
+            setHouseholdParent(serverRecord, householdId: householdId)
+        }
+        do {
+            let results = try await cloud.modify(saving: [serverRecord], deleting: [], in: zone)
+            if let saveResult = results.save[rid], case .success(let saved) = saveResult {
+                recordSystemFields[recordName] = saved.encodedSystemFields()
+                rememberMemberAvatar(for: write.record)
+                print("[Repo] ↻ conflict resolved (local kept) for \(serverRecord.recordType) \(recordName)")
+                return ConflictResolution(resolved: true, serverWon: false)
+            }
+            print("[Repo] ⚠️ conflict re-save still conflicted for \(recordName); deferring")
+        } catch {
+            print("[Repo] ⚠️ conflict re-save error for \(recordName): \(error)")
+            recordSyncFailure(error, context: "Conflict retry failed")
+        }
+        return ConflictResolution(resolved: false, serverWon: false)
     }
 
     @discardableResult
@@ -2282,16 +2790,23 @@ final class GroceryRepository {
             if syncState != .idle { syncState = .idle }
             return true
         } catch let error as CKError where error.code == .serverRecordChanged && !retried {
-            do {
-                let serverRecord = try await cloud.record(for: r.recordID)
-                for key in r.allKeys() { serverRecord[key] = r[key] }
-                print("[Repo] ↻ retrying save for \(r.recordType) \(r.recordID.recordName) after conflict")
-                return await saveBestEffort(serverRecord, retried: true)
-            } catch {
-                print("[Repo] ⚠️ conflict retry fetch failed for \(r.recordType) \(r.recordID.recordName): \(error)")
+            // The server's copy travels with the error. Keep whichever side is
+            // newer by `updatedAt` (server `modificationDate` as tiebreaker)
+            // instead of blindly clobbering with the local copy.
+            guard let serverRecord = error.serverRecord else {
                 recordSyncFailure(error, context: "Conflict retry failed")
                 return false
             }
+            recordSystemFields[r.recordID.recordName] = serverRecord.encodedSystemFields()
+            let localDate = r[CK.Field.updatedAt] as? Date
+            let serverDate = (serverRecord[CK.Field.updatedAt] as? Date) ?? serverRecord.modificationDate
+            if let localDate, let serverDate, serverDate > localDate {
+                print("[Repo] ↩︎ conflict: server newer for \(r.recordType) \(r.recordID.recordName); kept server")
+                return true
+            }
+            for key in r.allKeys() { serverRecord[key] = r[key] }
+            print("[Repo] ↻ retrying save for \(r.recordType) \(r.recordID.recordName) after conflict")
+            return await saveBestEffort(serverRecord, retried: true)
         } catch let error as CKError where Self.isZoneGone(error) {
             print("[Repo] 🗑️ discarding save for \(r.recordType) \(r.recordID.recordName) — zone gone")
             return true
@@ -2324,27 +2839,6 @@ final class GroceryRepository {
         await saveBestEffort(record)
     }
 
-    @discardableResult
-    private func deleteBestEffort(recordID: CKRecord.ID, context: String) async -> Bool {
-        do {
-            try await cloud.delete(recordID: recordID)
-            if syncState != .idle { syncState = .idle }
-            return true
-        } catch let error as CKError where error.code == .unknownItem {
-            print("[Repo] delete ignored missing record \(recordID.recordName)")
-            if syncState != .idle { syncState = .idle }
-            return true
-        } catch let error as CKError where Self.isZoneGone(error) {
-            print("[Repo] delete ignored — zone gone for \(recordID.recordName)")
-            if syncState != .idle { syncState = .idle }
-            return true
-        } catch {
-            print("[Repo] ⚠️ delete failed for \(recordID.recordName): \(error)")
-            recordSyncFailure(error, context: context)
-            return false
-        }
-    }
-
     private func recordSyncFailure(_ error: Error, context: String) {
         if Self.isConnectivityError(error) {
             syncState = .offline
@@ -2361,6 +2855,8 @@ final class GroceryRepository {
         cloudWriteTask = nil
         pendingCloudWrites.removeAll()
         nextCloudWriteRevision = 0
+        recordSystemFields.removeAll()
+        lastUploadedMemberAvatarHash.removeAll()
         localPersistenceBatchDepth = 0
         hasDeferredLocalSnapshotSave = false
         hasDeferredOutboxFlushSchedule = false
@@ -2370,7 +2866,7 @@ final class GroceryRepository {
             sharedDatabaseRegistered: false,
             errors: []
         )
-        lastActivationRefreshAt = nil
+        lastForegroundPollAt = nil
     }
 
     private func logEvent(_ type: ItemEventType, householdId: String? = nil, itemId: String? = nil,
@@ -2534,15 +3030,13 @@ private extension String {
     }
 }
 
-private extension SettingsStore {
-    var memberId: String {
-        get { GrocerAppGroup.defaults.string(forKey: "grocer.memberId") ?? "" }
-        set { GrocerAppGroup.defaults.set(newValue, forKey: "grocer.memberId") }
-    }
-    var memberIdOrDevice: String { memberId.isEmpty ? deviceId : memberId }
-
-    var selectedHouseholdId: String {
-        get { GrocerAppGroup.defaults.string(forKey: "grocer.selectedHouseholdId") ?? "" }
-        set { GrocerAppGroup.defaults.set(newValue, forKey: "grocer.selectedHouseholdId") }
+private extension Array {
+    /// Splits into consecutive sub-arrays of at most `size` elements. Used to
+    /// keep a CloudKit modify batch under the per-operation record cap.
+    func chunked(into size: Int) -> [[Element]] {
+        guard size > 0 else { return [self] }
+        return stride(from: 0, to: count, by: size).map {
+            Array(self[$0..<Swift.min($0 + size, count)])
+        }
     }
 }

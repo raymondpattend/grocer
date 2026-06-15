@@ -37,18 +37,6 @@ struct SettingsView: View {
         .background(Color(.systemGroupedBackground))
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
-        .navigationBarBackButtonHidden(true)
-        .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button {
-                    Haptics.selection()
-                    dismiss()
-                } label: {
-                    Label("Back", systemImage: "chevron.backward")
-                }
-                .accessibilityLabel("Back")
-            }
-        }
         .onAppear {
             displayName = repo.displayName
             syncGroupNameFromRepo()

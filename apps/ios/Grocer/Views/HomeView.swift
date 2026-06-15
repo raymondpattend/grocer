@@ -1,3 +1,4 @@
+import PostHog
 import SwiftUI
 
 /// Home screen: every group (each group is its own grocery list) shown as a
@@ -38,9 +39,9 @@ struct HomeView: View {
             .refreshable { await repo.manualRefresh() }
             .navigationTitle("My Groups")
             .navigationBarTitleDisplayMode(.large)
-            // .safeAreaInset(edge: .bottom, spacing: 0) {
-            //     SyncStatusBar(state: repo.syncState)
-            // }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                SyncStatusBar(state: repo.syncState, pendingCount: repo.pendingCloudWriteCount)
+            }
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button {
@@ -64,6 +65,16 @@ struct HomeView: View {
             .navigationDestination(for: String.self) { householdId in
                 GroceryListView()
                     .groupZoomDestination(id: householdId, in: zoomNamespace)
+            }
+            // If a group the user has drilled into disappears — they left it,
+            // deleted it as owner, or were kicked while the settings menu was
+            // open — pop back to home. Emptying the path also tears down any
+            // pushed Settings screen sitting on top of that group's list.
+            .onChange(of: repo.households.map(\.id)) { _, ids in
+                let valid = Set(ids)
+                if let firstStale = path.firstIndex(where: { !valid.contains($0) }) {
+                    path.removeSubrange(firstStale...)
+                }
             }
             .sheet(isPresented: $showNewGroup) {
                 NavigationStack {
@@ -153,6 +164,9 @@ struct HomeView: View {
     private var proGroupUpsellCard: some View {
         Button {
             Haptics.selection()
+            PostHogSDK.shared.capture("pro_upsell_tapped", properties: [
+                "source": "home_group_limit_card",
+            ])
             showProPaywall = true
         } label: {
             proGroupUpsellCardContent
@@ -168,12 +182,13 @@ struct HomeView: View {
                     .font(.system(.title2, design: .rounded).weight(.bold))
                     .foregroundStyle(.white)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.82)
+                    .minimumScaleFactor(0.5)
 
                 Text(groupUpsellCopy.subtitle)
                     .font(.body)
                     .foregroundStyle(.white.opacity(0.68))
                     .lineLimit(2)
+                    .minimumScaleFactor(0.5)
             }
 
             Spacer(minLength: 12)

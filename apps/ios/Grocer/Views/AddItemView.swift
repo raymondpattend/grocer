@@ -1,3 +1,4 @@
+import PostHog
 import SwiftUI
 
 struct AddItemView: View {
@@ -101,6 +102,12 @@ struct AddItemView: View {
 
     private func save() {
         Haptics.success()
+        PostHogSDK.shared.capture("items_added", properties: [
+            "item_count": 1,
+            "category": category.rawValue,
+            "has_quantity": !quantity.isEmpty,
+            "source": "add_item_form",
+        ])
         repo.addItem(
             name: trimmedName,
             quantity: quantity,
@@ -305,7 +312,8 @@ struct AddItemSearchView: View {
                 Image(systemName: "xmark")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .frame(width: 38, height: 38)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
                     .grocerLiquidGlass(in: Circle(), interactive: true)
             }
             .buttonStyle(.plain)
@@ -642,6 +650,10 @@ struct AddItemSearchView: View {
         guard !itemsToAdd.isEmpty else { return }
 
         Haptics.success()
+        PostHogSDK.shared.capture("items_added", properties: [
+            "item_count": itemsToAdd.count,
+            "source": "ai_parse_flow",
+        ])
         repo.addItems(itemsToAdd.map { draft in
             GroceryItemInput(
                 name: draft.name,
@@ -861,8 +873,10 @@ private struct HistoryItemsView: View {
                 Image(systemName: "chevron.left")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .frame(width: 38, height: 38)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
             .tint(.primary)
             .grocerGlassButton()
             .clipShape(Circle())

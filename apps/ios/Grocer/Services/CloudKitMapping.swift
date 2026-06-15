@@ -92,12 +92,25 @@ extension HouseholdMember: CloudKitApplicable {
     }
 
     func apply(to r: CKRecord) {
+        applyMetadata(to: r)
+        applyProfileImage(to: r)
+    }
+
+    /// Every member field *except* the profile-image asset. The outbox sets the
+    /// asset separately so it can skip re-uploading an unchanged avatar (a
+    /// CKAsset is re-uploaded in full on every save that includes the key).
+    func applyMetadata(to r: CKRecord) {
         r[CK.Field.householdId] = householdId as CKRecordValue
         r[CK.Field.displayName] = displayName as CKRecordValue
-        r[CK.Field.profileImage] = imageAsset(from: profileImageData)
         r[CK.Field.iCloudUserRecordName] = iCloudUserRecordName as CKRecordValue?
         r[CK.Field.role] = role.rawValue as CKRecordValue
         r[CK.Field.joinedAt] = joinedAt as CKRecordValue
+    }
+
+    /// Writes (or clears) the profile-image asset. Kept separate from
+    /// `applyMetadata` so callers can conditionally skip it.
+    func applyProfileImage(to r: CKRecord) {
+        r[CK.Field.profileImage] = imageAsset(from: profileImageData)
     }
 }
 

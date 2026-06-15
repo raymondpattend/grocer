@@ -17,6 +17,8 @@ final class SettingsStore {
         static let notifications = "grocer.notificationsEnabled"
         static let displayName = "grocer.displayName"
         static let profileImageData = "grocer.profileImageData"
+        static let memberId = "grocer.memberId"
+        static let selectedHouseholdId = "grocer.selectedHouseholdId"
     }
 
     /// Stable per-install device identifier used for token registration.
@@ -61,6 +63,24 @@ final class SettingsStore {
         notificationsEnabled = defaults.object(forKey: Keys.notifications) as? Bool ?? true
         displayName = defaults.string(forKey: Keys.displayName) ?? String(localized: "Me")
         profileImageData = defaults.data(forKey: Keys.profileImageData)
+    }
+
+    /// CloudKit user record name for this member, resolved from the iCloud
+    /// account on first sync. Empty until then — use `memberIdOrDevice` for a
+    /// stable identifier that falls back to the deviceId.
+    var memberId: String {
+        get { defaults.string(forKey: Keys.memberId) ?? "" }
+        set { defaults.set(newValue, forKey: Keys.memberId) }
+    }
+
+    /// Stable identifier for this member: the resolved `memberId` when known,
+    /// otherwise the device id.
+    var memberIdOrDevice: String { memberId.isEmpty ? deviceId : memberId }
+
+    /// Last-selected group, restored on launch.
+    var selectedHouseholdId: String {
+        get { defaults.string(forKey: Keys.selectedHouseholdId) ?? "" }
+        set { defaults.set(newValue, forKey: Keys.selectedHouseholdId) }
     }
 
     var appVersion: String {

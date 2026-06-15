@@ -1,3 +1,4 @@
+import PostHog
 import SwiftUI
 
 /// Planning screen for the current group (each group is its own list, with a
@@ -6,7 +7,6 @@ import SwiftUI
 /// Shopping CTA themed to the group.
 struct GroceryListView: View {
     @Environment(GroceryRepository.self) private var repo
-    @Environment(\.dismiss) private var dismiss
 
     @State private var showingAddSearch = false
     @State private var showingSettings = false
@@ -86,7 +86,6 @@ struct GroceryListView: View {
         .refreshable { await repo.manualRefresh() }
         .navigationTitle(repo.currentHousehold?.name ?? String(localized: "Grocer"))
         .navigationBarTitleDisplayMode(.large)
-        .navigationBarBackButtonHidden(true)
         .tint(tint)
         .navigationDestination(item: $sessionForNav) { session in
             ShoppingSessionView(sessionId: session.id) { sessionForNav = nil }
@@ -96,18 +95,13 @@ struct GroceryListView: View {
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
-                // SyncStatusBar(state: repo.syncState)
+                SyncStatusBar(state: repo.syncState, pendingCount: repo.pendingCloudWriteCount)
                 if repo.currentList != nil && repo.activeSession == nil {
                     startShoppingButton
                 }
             }
         }
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button { Haptics.selection(); dismiss() } label: {
-                    Image(systemName: "chevron.backward")
-                }
-            }
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button { Haptics.tap(); showingAddSearch = true } label: { Image(systemName: "plus") }
                     .disabled(repo.currentList == nil)
@@ -172,6 +166,10 @@ struct GroceryListView: View {
 
     private func removeItem(_ item: GroceryItem) {
         Haptics.warning()
+        PostHogSDK.shared.capture("item_deleted", properties: [
+            "item_name": item.name,
+            "category": item.category.rawValue,
+        ])
         withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
             repo.delete(item)
         }
@@ -315,6 +313,10 @@ struct StartTripSheet: View {
 
                 Button {
                     Haptics.success()
+                    PostHogSDK.shared.capture("shopping_trip_started", properties: [
+                        "group_name": groupName,
+                        "item_count": itemCount,
+                    ])
                     dismiss()
                     onStart()
                 } label: {

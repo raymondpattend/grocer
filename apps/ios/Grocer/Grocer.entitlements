@@ -22,7 +22,7 @@
 
 	<!-- Push Notifications: needed for ActivityKit push-to-start / updates. -->
 	<key>aps-environment</key>
-	<string>development</string>
+	<string>$(APS_ENVIRONMENT)</string>
 
 	<!-- App Group: shares the widget snapshot + product image cache with the
 	     GrocerWidget extension. Must match GrocerWidget.entitlements. -->

@@ -83,17 +83,7 @@ struct ItemDetailView: View {
         }
         .navigationTitle(item.name)
         .navigationBarTitleDisplayMode(.inline)
-        .navigationBarBackButtonHidden(true)
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button {
-                    Haptics.selection()
-                    dismiss()
-                } label: {
-                    Label("Back", systemImage: "chevron.backward")
-                }
-                .accessibilityLabel("Back")
-            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button("Edit") {
                     Haptics.selection()

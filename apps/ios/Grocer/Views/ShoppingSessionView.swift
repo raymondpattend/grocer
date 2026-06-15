@@ -1,3 +1,4 @@
+import PostHog
 import SwiftUI
 import Combine
 
@@ -100,14 +101,11 @@ struct ShoppingSessionView: View {
             completedSection(session, canManageTrip: canManageTrip)
         }
         .listStyle(.insetGrouped)
-        // .safeAreaInset(edge: .bottom, spacing: 0) {
-        //     VStack(spacing: 0) {
-        //         SyncStatusBar(state: repo.syncState)
-        //         if canManageTrip {
-        //             finishButton
-        //         }
-        //     }
-        // }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if canManageTrip {
+                finishButton
+            }
+        }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button { Haptics.tap(); showAddItem = true } label: { Image(systemName: "plus") }
@@ -208,6 +206,20 @@ struct ShoppingSessionView: View {
 
     private func markItem(_ item: GroceryItem, as status: ItemStatus, replacement: String? = nil) {
         feedback(for: status)
+        switch status {
+        case .found:
+            PostHogSDK.shared.capture("item_marked_found", properties: [
+                "item_name": item.name,
+                "category": item.category.rawValue,
+            ])
+        case .outOfStock:
+            PostHogSDK.shared.capture("item_marked_out_of_stock", properties: [
+                "item_name": item.name,
+                "category": item.category.rawValue,
+            ])
+        default:
+            break
+        }
         withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
             repo.mark(item, as: status, replacement: replacement)
         }

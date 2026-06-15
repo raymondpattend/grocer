@@ -1,3 +1,4 @@
+import PostHog
 import SwiftUI
 
 /// Create or edit a group. A group *is* the grocery list, so this is where the
@@ -131,6 +132,11 @@ struct GroupEditorView: View {
                 isSaving = false
                 if let created {
                     Haptics.success()
+                    PostHogSDK.shared.capture("group_created", properties: [
+                        "group_name": created.name,
+                        "has_store": created.storeName != nil,
+                        "color_theme": created.colorTheme.rawValue,
+                    ])
                     onCreate?(created)
                     dismiss()
                 } else {

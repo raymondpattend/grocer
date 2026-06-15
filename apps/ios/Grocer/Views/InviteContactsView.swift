@@ -1,5 +1,6 @@
 import Contacts
 import MessageUI
+import PostHog
 import SwiftUI
 import UIKit
 
@@ -157,6 +158,10 @@ struct InviteContactsView: View {
             .filter { selected.contains($0.id) }
             .map(\.sendable)
         guard !recipients.isEmpty else { return }
+        PostHogSDK.shared.capture("group_member_invited", properties: [
+            "invite_count": recipients.count,
+            "group_name": repo.currentHousehold?.name ?? "unknown",
+        ])
 
         guard MFMessageComposeViewController.canSendText() else {
             // No Messages on this device (e.g. simulator) — fall back to the

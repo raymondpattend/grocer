@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import Observation
 
 /// Thin client for the Cloudflare Worker API.
@@ -32,6 +33,11 @@ actor APIClient {
 
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
+
+    private var liveActivityAPISecret: String {
+        (Bundle.main.object(forInfoDictionaryKey: "GRLiveActivityAPISecret") as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
 
     // MARK: - Health / config
 
@@ -135,13 +141,43 @@ actor APIClient {
         var req = URLRequest(url: baseURL.appendingPathComponent(path))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let bodyData: Data
         do {
-            req.httpBody = try encoder.encode(body)
+            bodyData = try encoder.encode(body)
+            req.httpBody = bodyData
         } catch {
             print("[APIClient] encode failed for \(path): \(error)")
             return nil
         }
+        if path.hasPrefix("/live-activity"),
+           !signLiveActivityRequest(&req, body: bodyData) {
+            print("[APIClient] Live Activity request skipped: missing API signing secret")
+            return nil
+        }
         return await perform(req)
+    }
+
+    private func signLiveActivityRequest(_ req: inout URLRequest, body: Data) -> Bool {
+        let secret = liveActivityAPISecret
+        guard !secret.isEmpty,
+              let method = req.httpMethod,
+              let path = req.url?.path,
+              let secretData = secret.data(using: .utf8) else {
+            return false
+        }
+
+        let timestamp = String(Int(Date().timeIntervalSince1970))
+        var message = Data("\(timestamp).\(method).\(path).".utf8)
+        message.append(body)
+        let key = SymmetricKey(data: secretData)
+        let signature = HMAC<SHA256>.authenticationCode(for: message, using: key)
+            .map { String(format: "%02x", $0) }
+            .joined()
+
+        req.setValue(timestamp, forHTTPHeaderField: "x-grocer-timestamp")
+        req.setValue(signature, forHTTPHeaderField: "x-grocer-signature")
+        req.setValue(SettingsStore.shared.deviceId, forHTTPHeaderField: "x-grocer-device-id")
+        return true
     }
 
     private func perform<T: Decodable>(_ req: URLRequest) async -> T? {

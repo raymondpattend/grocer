@@ -1,3 +1,4 @@
+import PostHog
 import RevenueCat
 import SwiftUI
 
@@ -16,9 +17,17 @@ struct GrocerProPaywallView: View {
     @State private var selectedPackageID: String?
     @State private var showAllPlans = false
     @State private var infoMessage: String?
+    @State private var showSubscribeOptions = false
+    @State private var showWebCheckout = false
+    /// Set when the user picks "Use App Store" so the StoreKit purchase is
+    /// kicked off only after the options sheet finishes dismissing — starting it
+    /// while the sheet is still on screen leaves the purchase sheet unable to
+    /// present, hanging the spinner forever.
+    @State private var purchaseAfterDismiss = false
 
     private let termsURL = URL(string: "https://grocer.narro.org/terms")
     private let privacyURL = URL(string: "https://grocer.narro.org/privacy")
+    private let webCheckoutURL = URL(string: "https://google.com")!
 
     private var copy: GrocerProPaywallCopy {
         subscriptions.paywallCopy(for: context)
@@ -38,7 +47,7 @@ struct GrocerProPaywallView: View {
                 content
             }
         }
-        .safeAreaInset(edge: .top, spacing: 0) { topBar }
+        .overlay(alignment: .topTrailing) { closeButton }
         .overlay(alignment: .bottom) { bottomBar }
         .tint(Palette.accent)
         .task {
@@ -46,7 +55,12 @@ struct GrocerProPaywallView: View {
                 await subscriptions.refresh()
             }
         }
-        .onAppear(perform: selectRecommendedIfNeeded)
+        .onAppear {
+            PostHogSDK.shared.capture("paywall_viewed", properties: [
+                "context": context == .groupLimit ? "group_limit" : "general",
+            ])
+            selectRecommendedIfNeeded()
+        }
         .onChange(of: subscriptions.availablePackages.map(\.identifier)) { _, _ in
             selectRecommendedIfNeeded()
         }
@@ -63,6 +77,95 @@ struct GrocerProPaywallView: View {
         } message: {
             Text(infoMessage ?? "")
         }
+        .sheet(isPresented: $showSubscribeOptions, onDismiss: {
+            if purchaseAfterDismiss {
+                purchaseAfterDismiss = false
+                purchaseSelected()
+            }
+        }) {
+            subscribeOptionsSheet
+        }
+        .fullScreenCover(isPresented: $showWebCheckout) {
+            WebCheckoutView(url: webCheckoutURL)
+        }
+    }
+
+    // MARK: - Subscribe options sheet
+
+    private var subscribeOptionsSheet: some View {
+        VStack(spacing: 20) {
+            Text("Subscribe your way")
+                .font(.system(.title2, design: .rounded).weight(.bold))
+                .foregroundStyle(Palette.primaryText)
+                .padding(.top, 28)
+
+            VStack(spacing: 12) {
+                Button {
+                    Haptics.selection()
+                    showSubscribeOptions = false
+                    showWebCheckout = true
+                } label: {
+                    subscribeOptionLabel(
+                        title: String(localized: "Choose payment method"),
+                        subtitle: String(localized: "Pay your way on the web"),
+                        icon: "creditcard",
+                        prominent: true
+                    )
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    Haptics.selection()
+                    purchaseAfterDismiss = true
+                    showSubscribeOptions = false
+                } label: {
+                    subscribeOptionLabel(
+                        title: String(localized: "Use App Store"),
+                        subtitle: String(localized: "Pay with your Apple Account"),
+                        icon: "applelogo",
+                        prominent: false
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 20)
+        .frame(maxWidth: .infinity)
+        .background(Palette.background)
+        .presentationDetents([.height(280)])
+        .presentationDragIndicator(.visible)
+    }
+
+    private func subscribeOptionLabel(title: String, subtitle: String,
+                                      icon: String, prominent: Bool) -> some View {
+        HStack(spacing: 14) {
+            Image(systemName: icon)
+                .font(.title3)
+                .foregroundStyle(prominent ? Palette.primaryText : Palette.accent)
+                .frame(width: 28)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.headline)
+                    .foregroundStyle(prominent ? Palette.primaryText : Palette.primaryText)
+                Text(subtitle)
+                    .font(.subheadline)
+                    .foregroundStyle(prominent ? Palette.primaryText.opacity(0.8) : Palette.secondaryText)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(prominent ? Palette.accent.opacity(0.9) : Palette.surface)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(prominent ? Color.clear : Palette.hairline)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
     // MARK: - Scroll content
@@ -70,6 +173,7 @@ struct GrocerProPaywallView: View {
     private var content: some View {
         ScrollView {
             VStack(spacing: 28) {
+                restoreRow
                 hero
                 headline
                 planPicker
@@ -94,9 +198,10 @@ struct GrocerProPaywallView: View {
         }
     }
 
-    // MARK: - Top bar
+    // MARK: - Header controls
 
-    private var topBar: some View {
+    /// Restore lives inside the scroll content so it scrolls away with the page.
+    private var restoreRow: some View {
         HStack {
             Button(action: restorePurchases) {
                 if subscriptions.isRestoring {
@@ -110,22 +215,26 @@ struct GrocerProPaywallView: View {
             .disabled(subscriptions.isRestoring)
 
             Spacer()
-
-            Button {
-                Haptics.selection()
-                dismiss()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 13, weight: .bold))
-                    .foregroundStyle(Palette.secondaryText)
-                    .frame(width: 30, height: 30)
-                    .background(Palette.surface, in: Circle())
-            }
-            .accessibilityLabel("Close")
         }
+        // Leave room on the right so the floating close button never overlaps.
+        .padding(.trailing, 44)
+    }
+
+    /// Close button floats above the scroll content, pinned to the top-trailing.
+    private var closeButton: some View {
+        Button {
+            Haptics.selection()
+            dismiss()
+        } label: {
+            Image(systemName: "xmark")
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(Palette.secondaryText)
+                .frame(width: 30, height: 30)
+                .background(.ultraThinMaterial, in: Circle())
+        }
+        .accessibilityLabel("Close")
         .padding(.horizontal, 20)
         .padding(.vertical, 10)
-        .background(Palette.background)
     }
 
     // MARK: - Hero
@@ -148,7 +257,8 @@ struct GrocerProPaywallView: View {
                 .font(.body)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(Palette.secondaryText)
-                .padding(.horizontal, 8)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 32)
         }
     }
 
@@ -303,8 +413,12 @@ struct GrocerProPaywallView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 16)
+        .contentShape(.capsule)
 
-        Button(action: purchaseSelected) {
+        Button {
+            Haptics.selection()
+            showSubscribeOptions = true
+        } label: {
             if #available(iOS 26.0, *) {
                 label.glassEffect(
                     .regular.tint(Palette.accent.opacity(0.55)).interactive(),
@@ -374,9 +488,9 @@ struct GrocerProPaywallView: View {
 
     private func rank(_ package: Package) -> Int {
         switch package.packageType {
-        case .monthly: return 0
-        case .annual: return 1
-        case .lifetime: return 2
+        case .annual: return 0
+        case .threeMonth: return 1
+        case .monthly: return 2
         default: return 3
         }
     }
@@ -398,7 +512,6 @@ struct GrocerProPaywallView: View {
     private var ctaTitle: String {
         guard let package = selectedPackage else { return String(localized: "Continue") }
         if PackagePricing.trialText(for: package) != nil { return String(localized: "Try for $0.00") }
-        if package.packageType == .lifetime { return String(localized: "Unlock Lifetime") }
         return String(localized: "Subscribe")
     }
 
@@ -408,10 +521,11 @@ struct GrocerProPaywallView: View {
         if let trial = PackagePricing.trialText(for: package) {
             return String(localized: "Free trial \(trial), then \(summary)\nCancel anytime · No payment now")
         }
-        if package.packageType == .lifetime {
-            return String(localized: "One-time payment · No subscription")
-        }
         return String(localized: "\(summary) · Cancel anytime, no commitment")
+    }
+
+    private var monthlyPackage: Package? {
+        orderedPackages.first { $0.packageType == .monthly }
     }
 
     private func display(for package: Package) -> PlanDisplay {
@@ -420,6 +534,7 @@ struct GrocerProPaywallView: View {
             isRecommended: package.identifier == recommendedPackage?.identifier,
             headline: PackagePricing.trialText(for: package).map { String(localized: "Free Trial \($0), then") },
             title: PackagePricing.cardTitle(for: package),
+            badge: PackagePricing.savingsBadge(for: package, monthlyPackage: monthlyPackage),
             caption: PackagePricing.cardCaption(for: package, isRecommended: package.identifier == recommendedPackage?.identifier)
         )
     }
@@ -474,6 +589,8 @@ private struct PlanDisplay {
     let isRecommended: Bool
     let headline: String?
     let title: String
+    /// Optional muted savings chip shown beside the price (e.g. "Save 33%").
+    let badge: String?
     let caption: String
 }
 
@@ -490,9 +607,19 @@ private struct PlanCard: View {
                         .font(.headline.weight(.bold))
                         .foregroundStyle(Palette.accent)
                 }
-                Text(plan.title)
-                    .font(.title3.weight(.bold))
-                    .foregroundStyle(Palette.primaryText)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(plan.title)
+                        .font(.title3.weight(.bold))
+                        .foregroundStyle(Palette.primaryText)
+                    if let badge = plan.badge {
+                        Text(badge)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(Palette.secondaryText)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(Palette.chip))
+                    }
+                }
                 Text(plan.caption)
                     .font(.subheadline)
                     .foregroundStyle(Palette.secondaryText)
@@ -579,30 +706,52 @@ private enum PackagePricing {
     static func cardTitle(for package: Package) -> String {
         let price = package.storeProduct.localizedPriceString
         switch package.packageType {
-        case .lifetime:
-            return price
         case .annual:
-            if let perMonth = perMonthString(for: package) {
-                return String(localized: "\(price)/yr (\(perMonth)/mo)")
-            }
-            return String(localized: "\(price)/yr")
+            return String(localized: "\(price) / year")
+        case .threeMonth:
+            return String(localized: "\(price) / quarter")
         case .monthly:
-            return String(localized: "\(price) / Monthly")
+            return String(localized: "\(price) / month")
         case .weekly:
-            return String(localized: "\(price) / Weekly")
+            return String(localized: "\(price) / week")
         default:
             return price
         }
     }
 
+    /// Muted chip shown beside the price. Annual shows the savings vs. the
+    /// standalone monthly plan (e.g. "Save 33%"); quarterly shows its effective
+    /// monthly cost (e.g. "$4.66/mo"). Returns nil for the monthly plan itself
+    /// or when the data needed isn't available.
+    static func savingsBadge(for package: Package, monthlyPackage: Package?) -> String? {
+        switch package.packageType {
+        case .annual:
+            guard let monthlyPackage else { return nil }
+            let monthlyPrice = monthlyPackage.storeProduct.price
+            guard monthlyPrice > 0,
+                  let pricePerMonth = package.storeProduct.pricePerMonth else { return nil }
+            let savings = (1 - (pricePerMonth.decimalValue / monthlyPrice)) * 100
+            let percent = Int((savings as NSDecimalNumber).doubleValue.rounded())
+            guard percent > 0 else { return nil }
+            return String(localized: "Save \(percent)%")
+        case .threeMonth:
+            guard let pricePerMonth = package.storeProduct.pricePerMonth,
+                  let formatter = package.storeProduct.priceFormatter,
+                  let perMonth = formatter.string(from: pricePerMonth) else { return nil }
+            return String(localized: "\(perMonth)/mo")
+        default:
+            return nil
+        }
+    }
+
     static func cardCaption(for package: Package, isRecommended: Bool) -> String {
         switch package.packageType {
-        case .lifetime:
-            return String(localized: "Pay once · Yours forever")
         case .annual:
             return isRecommended
                 ? String(localized: "Best Value · Just \(package.storeProduct.localizedPriceString)/year")
                 : String(localized: "Billed annually")
+        case .threeMonth:
+            return String(localized: "Billed quarterly · Cancel anytime")
         case .monthly:
             return String(localized: "Monthly Flex · Cancel anytime")
         case .weekly:
@@ -617,9 +766,9 @@ private enum PackagePricing {
         let price = package.storeProduct.localizedPriceString
         switch package.packageType {
         case .annual: return String(localized: "\(price)/yr")
+        case .threeMonth: return String(localized: "\(price)/quarter")
         case .monthly: return String(localized: "\(price)/mo")
         case .weekly: return String(localized: "\(price)/wk")
-        case .lifetime: return price
         default: return price
         }
     }
@@ -632,12 +781,6 @@ private enum PackagePricing {
         return periodText(intro.subscriptionPeriod)
     }
 
-    private static func perMonthString(for package: Package) -> String? {
-        guard let perMonth = package.storeProduct.pricePerMonth else { return nil }
-        let formatter = package.storeProduct.priceFormatter ?? defaultCurrencyFormatter
-        return formatter.string(from: perMonth)
-    }
-
     private static func periodText(_ period: SubscriptionPeriod) -> String {
         let value = period.value
         switch period.unit {
@@ -648,12 +791,6 @@ private enum PackagePricing {
         @unknown default: return "\(value)"
         }
     }
-
-    private static let defaultCurrencyFormatter: NumberFormatter = {
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .currency
-        return formatter
-    }()
 }
 
 // MARK: - Palette
@@ -669,6 +806,8 @@ private enum Palette {
     /// Subtle surface fill / hairline used by plan cards and bubbles.
     static let surface = Color.primary.opacity(0.05)
     static let hairline = Color.primary.opacity(0.12)
+    /// Muted gray fill for inline savings chips.
+    static let chip = Color.primary.opacity(0.1)
 }
 
 #if DEBUG

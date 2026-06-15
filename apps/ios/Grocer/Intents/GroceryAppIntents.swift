@@ -3,13 +3,17 @@ import Foundation
 
 // MARK: - Add Grocery Item intent
 
-/// Adds an item to the user's currently selected grocery group.
+/// Adds an item to a grocery group.
 ///
 /// Runs **in the background** (no app launch). App Intents execute inside the
 /// app's own process, so this reuses ``GroceryRepository`` directly — a Siri /
 /// Shortcuts / Spotlight add behaves exactly like an in-app add and syncs to the
 /// family through the same CloudKit outbox. See
-/// ``GroceryRepository/addItemFromIntent(_:)``.
+/// ``GroceryRepository/addItemFromIntent(_:householdId:)``.
+///
+/// When the user has one list, it is chosen automatically. With multiple lists,
+/// Siri / Shortcuts prompt for the list unless the phrase or shortcut already
+/// supplies one (e.g. "add to my Home list in Grocer", then Siri asks for the item).
 struct AddGroceryItemIntent: AppIntent {
     static let title: LocalizedStringResource = "Add Grocery Item"
     static let description = IntentDescription(
@@ -26,14 +30,35 @@ struct AddGroceryItemIntent: AppIntent {
     )
     var item: GroceryItemNameEntity
 
+    @Parameter(
+        title: "List",
+        requestValueDialog: "Which list should I add this to?",
+        requestDisambiguationDialog: "Which list did you mean?"
+    )
+    var list: GroceryListEntity?
+
     static var parameterSummary: some ParameterSummary {
-        Summary("Add \(\.$item) to my grocery list")
+        When(\.$list, .hasAnyValue) {
+            Summary("Add \(\.$item) to \(\.$list)")
+        } otherwise: {
+            Summary("Add \(\.$item) to my grocery list")
+        }
     }
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
         let repo = await GroceryRepository.sharedForIntent()
-        switch await repo.addItemFromIntent(item.name) {
+        let households = await repo.intentHouseholdChoices()
+        let householdId: String?
+        if let list {
+            householdId = list.id
+        } else if households.count <= 1 {
+            householdId = households.first?.id
+        } else {
+            throw $list.needsValueError("Which list should I add this to?")
+        }
+
+        switch await repo.addItemFromIntent(item.name, householdId: householdId) {
         case let .added(name, list):
             return .result(dialog: "Added \(name) to \(list).")
         case .empty:
@@ -49,10 +74,11 @@ struct AddGroceryItemIntent: AppIntent {
 /// Registers spoken phrases so users can add an item without any setup.
 ///
 /// Every App Shortcut phrase must contain the app-name token
-/// (`\(.applicationName)`). Siri phrase parameters have to be entities/enums, so
-/// `GroceryItemNameEntity` is a lightweight wrapper around dictated text. This
-/// lets "Hey Siri, add milk to Grocer" run in one step while still supporting
-/// the prompt-based fallback "add an item to Grocer".
+/// (`\(.applicationName)`), and only **one** entity parameter per phrase. Two
+/// shortcuts cover the two natural orderings:
+///
+/// - **Item first** — "Hey Siri, add milk to Grocer" (list auto-selected or prompted).
+/// - **List first** — "Hey Siri, add to my Home list in Grocer" (then prompted for the item).
 struct GrocerAppShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(
@@ -68,6 +94,16 @@ struct GrocerAppShortcuts: AppShortcutsProvider {
             ],
             shortTitle: "Add Grocery Item",
             systemImageName: "cart.badge.plus"
+        )
+        AppShortcut(
+            intent: AddGroceryItemIntent(),
+            phrases: [
+                "Add to my \(\.$list) list in \(.applicationName)",
+                "Add to \(\.$list) in \(.applicationName)",
+                "Add to my \(\.$list) list with \(.applicationName)",
+            ],
+            shortTitle: "Add to List",
+            systemImageName: "list.bullet"
         )
     }
 }
@@ -94,6 +130,60 @@ struct GroceryItemNameEntity: AppEntity, Hashable {
     static var defaultQuery = GroceryItemNameQuery()
 }
 
+// MARK: - Grocery list entity
+
+/// A household / grocery group, surfaced as an optional App Intent parameter.
+/// When the user has multiple lists and does not name one in their phrase,
+/// ``AddGroceryItemIntent`` requests a list value via ``IntentParameter/needsValueError(_:)``.
+struct GroceryListEntity: AppEntity, Hashable {
+    let id: String
+    let name: String
+
+    init(household: Household) {
+        id = household.id
+        name = household.name
+    }
+
+    static var typeDisplayRepresentation: TypeDisplayRepresentation { "Grocery List" }
+    var displayRepresentation: DisplayRepresentation { DisplayRepresentation(title: "\(name)") }
+
+    static var defaultQuery = GroceryListQuery()
+}
+
+struct GroceryListQuery: EntityStringQuery {
+    func entities(for identifiers: [String]) async throws -> [GroceryListEntity] {
+        let repo = await GroceryRepository.sharedForIntent()
+        return await repo.intentHouseholdChoices()
+            .filter { identifiers.contains($0.id) }
+            .map(GroceryListEntity.init)
+    }
+
+    func entities(matching string: String) async throws -> [GroceryListEntity] {
+        let repo = await GroceryRepository.sharedForIntent()
+        let households = await repo.intentHouseholdChoices()
+        let needle = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return households.map(GroceryListEntity.init) }
+
+        return households
+            .filter { $0.name.localizedCaseInsensitiveContains(needle) }
+            .map(GroceryListEntity.init)
+    }
+
+    func suggestedEntities() async throws -> [GroceryListEntity] {
+        let repo = await GroceryRepository.sharedForIntent()
+        return await repo.intentHouseholdChoices().map(GroceryListEntity.init)
+    }
+
+    func defaultResult() async -> GroceryListEntity? {
+        let repo = await GroceryRepository.sharedForIntent()
+        let households = await repo.intentHouseholdChoices()
+        guard households.count == 1, let household = households.first else {
+            return nil
+        }
+        return GroceryListEntity(household: household)
+    }
+}
+
 struct GroceryItemNameQuery: EntityStringQuery {
     func entities(for identifiers: [String]) async throws -> [GroceryItemNameEntity] {
         identifiers.compactMap(GroceryItemNameEntity.init)
@@ -113,7 +203,7 @@ struct GroceryItemNameQuery: EntityStringQuery {
 // MARK: - Result of an out-of-app add
 
 /// Outcome of an item-add initiated from outside the app (Siri / App Intents),
-/// returned by ``GroceryRepository/addItemFromIntent(_:)``.
+/// returned by ``GroceryRepository/addItemFromIntent(_:householdId:)``.
 enum IntentAddOutcome: Equatable {
     /// Item landed on `list`; `item` is the cleaned display name.
     case added(item: String, list: String)

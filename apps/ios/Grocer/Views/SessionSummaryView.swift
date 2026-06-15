@@ -1,3 +1,4 @@
+import PostHog
 import SwiftUI
 
 /// Shown after the shopper taps Finish Shopping. Summarizes the trip and lets
@@ -54,6 +55,14 @@ struct SessionSummaryView: View {
                 Haptics.success()
                 if !finished {
                     finished = true
+                    PostHogSDK.shared.capture("shopping_trip_finished", properties: [
+                        "items_found": progress.found,
+                        "items_replaced": progress.replaced,
+                        "items_out_of_stock": progress.outOfStock,
+                        "items_skipped": progress.skipped,
+                        "total_items": progress.total,
+                        "store_name": session.storeName ?? "unknown",
+                    ])
                     // Finish runs without blocking; the APNs end push is fire-and-forget.
                     Task { await repo.finishShopping(session, clearCompleted: clearCompleted, keepOutOfStock: keepOutOfStock) }
                 }

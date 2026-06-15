@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import PostHog
 import RevenueCat
 
 enum RevenueCatConfig {
@@ -11,11 +12,11 @@ enum RevenueCatConfig {
     #else
     static let apiKey = "appl_qQYLRddYzArxuGvGETeoYPAHlUd"
     #endif
-    static let grocerProEntitlementID = "grocer_pro"
+    static let grocerProEntitlementID = "Grocer Pro"
 
-    static let lifetimeProductID = "lifetime"
-    static let yearlyProductID = "yearly"
-    static let monthlyProductID = "monthly"
+    static let yearlyProductID = "grocer_pro_subscription_annual_1"
+    static let quarterlyProductID = "grocer_pro_subscription_quarterly_1"
+    static let monthlyProductID = "grocer_pro_subscription_monthly_1"
 
     private static var didConfigure = false
 
@@ -111,8 +112,8 @@ final class SubscriptionStore {
         guard let offering = currentOffering else { return [] }
 
         let preferred = uniquePackages([
-            lifetimePackage(in: offering),
             yearlyPackage(in: offering),
+            quarterlyPackage(in: offering),
             monthlyPackage(in: offering),
         ])
 
@@ -192,6 +193,13 @@ final class SubscriptionStore {
         do {
             let result = try await Purchases.shared.purchase(package: package)
             update(with: result.customerInfo)
+            if !result.userCancelled {
+                PostHogSDK.shared.capture("subscription_purchased", properties: [
+                    "product_id": package.storeProduct.productIdentifier,
+                    "package_identifier": package.identifier,
+                    "price": package.storeProduct.localizedPriceString,
+                ])
+            }
         } catch {
             recordFailure(error)
         }
@@ -207,6 +215,9 @@ final class SubscriptionStore {
         do {
             let restoredCustomerInfo = try await Purchases.shared.restorePurchases()
             update(with: restoredCustomerInfo)
+            PostHogSDK.shared.capture("purchases_restored", properties: [
+                "has_active_entitlement": RevenueCatConfig.hasGrocerPro(restoredCustomerInfo),
+            ])
         } catch {
             recordFailure(error)
         }
@@ -234,16 +245,16 @@ final class SubscriptionStore {
         lastErrorMessage = nil
     }
 
-    private func lifetimePackage(in offering: Offering) -> Package? {
-        offering.lifetime
-            ?? offering.package(identifier: RevenueCatConfig.lifetimeProductID)
-            ?? package(in: offering, productID: RevenueCatConfig.lifetimeProductID)
-    }
-
     private func yearlyPackage(in offering: Offering) -> Package? {
         offering.annual
             ?? offering.package(identifier: RevenueCatConfig.yearlyProductID)
             ?? package(in: offering, productID: RevenueCatConfig.yearlyProductID)
+    }
+
+    private func quarterlyPackage(in offering: Offering) -> Package? {
+        offering.threeMonth
+            ?? offering.package(identifier: RevenueCatConfig.quarterlyProductID)
+            ?? package(in: offering, productID: RevenueCatConfig.quarterlyProductID)
     }
 
     private func monthlyPackage(in offering: Offering) -> Package? {

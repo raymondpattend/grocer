@@ -51,6 +51,9 @@ struct RootView: View {
                 }
             } else {
                 repo.stopForegroundRefreshLoop()
+                // Queue a background catch-up sync for changes that arrive (or
+                // whose silent push gets throttled) while we're not foreground.
+                AppDelegate.scheduleBackgroundRefresh()
             }
         }
         .sheet(isPresented: Binding(
@@ -59,6 +62,15 @@ struct RootView: View {
         )) {
             JoinedGroupSheet()
         }
+        .overlay {
+            // While CloudKit accepts the invite (before the joined sheet is
+            // ready) show a blocking spinner so the tap feels responsive.
+            if repo.isAcceptingInvite && repo.joinedHouseholdId == nil {
+                AcceptingInviteOverlay()
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: repo.isAcceptingInvite)
         .fullScreenCover(item: Binding(
             get: { appUpdateGate.requiredUpdate },
             set: { _ in }
@@ -122,6 +134,34 @@ private struct RequiredAppUpdateView: View {
         .frame(maxWidth: 440)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(.systemBackground))
+    }
+}
+
+// MARK: - Accepting Invite Overlay
+
+/// Blocking spinner shown while a CloudKit share invite is being accepted, so
+/// the "Join" tap feels responsive before the joined-group sheet appears.
+private struct AcceptingInviteOverlay: View {
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.25)
+                .ignoresSafeArea()
+
+            VStack(spacing: 16) {
+                ProgressView()
+                    .controlSize(.large)
+                    .tint(.white)
+
+                Text("Joining group\u{2026}")
+                    .font(.headline)
+                    .foregroundStyle(.white)
+            }
+            .padding(28)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .environment(\.colorScheme, .dark)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(Text("Joining group"))
     }
 }
 
@@ -367,9 +407,9 @@ private struct OnboardingView: View {
             }
         }
         .toolbar(.hidden, for: .navigationBar)
-        // .safeAreaInset(edge: .bottom, spacing: 0) {
-        //     SyncStatusBar(state: repo.syncState)
-        // }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            SyncStatusBar(state: repo.syncState, pendingCount: repo.pendingCloudWriteCount)
+        }
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
             case .profile:
@@ -655,15 +695,30 @@ private extension UIImage {
 /// Small sync status pill shown when offline / syncing.
 struct SyncStatusBar: View {
     let state: GroceryRepository.SyncState
+    let pendingCount: Int
 
     var body: some View {
         switch state {
-        case .idle, .syncing:
+        case .idle where pendingCount == 0:
             EmptyView()
-        case .offline, .error:
-            label(String(localized: "Offline — changes will sync later"), systemImage: "icloud.slash", tint: .gray)
+        case .idle:
+            label(pendingText, systemImage: "icloud.and.arrow.up", tint: .orange)
+        case .syncing:
+            label(String(localized: "Saving changes…"), systemImage: "icloud.and.arrow.up", tint: .blue)
+        case .offline:
+            label(pendingCount > 0 ? pendingText : String(localized: "Offline — changes will sync later"),
+                  systemImage: "icloud.slash", tint: .gray)
+        case .error(let message):
+            label(message.isEmpty ? String(localized: "Sync needs attention") : message,
+                  systemImage: "exclamationmark.icloud", tint: .red)
         }
-        // Errors are not handled here because they are often unreliable or inaccurate
+    }
+
+    private var pendingText: String {
+        if pendingCount == 1 {
+            return String(localized: "1 pending change")
+        }
+        return String(localized: "\(pendingCount) pending changes")
     }
 
     private func label(_ text: String, systemImage: String, tint: Color) -> some View {
