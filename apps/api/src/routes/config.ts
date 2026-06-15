@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import type { Env } from "../env.js";
+import { externalPurchaseStorefronts } from "./billing.js";
 
 export const configRoute = new Hono<{ Bindings: Env }>();
 
@@ -36,6 +37,11 @@ configRoute.get("/config/ios", (c) => {
       parseList: true,
       feedback: true,
       liveActivities: true,
+    },
+    payments: {
+      externalPurchaseStorefronts: externalPurchaseStorefronts(
+        c.env.IOS_EXTERNAL_PURCHASE_STOREFRONTS,
+      ),
     },
   });
 });

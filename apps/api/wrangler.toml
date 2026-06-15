@@ -41,7 +41,7 @@ index_name = "grocer-image-embeddings"
 
 # ---------------------------------------------------------------------------
 # Non-secret vars. Secrets (APNS_PRIVATE_KEY, OPENAI_API_KEY,
-# LIVE_ACTIVITY_API_SECRET) are set with
+# LIVE_ACTIVITY_API_SECRET, STRIPE_SECRET_KEY, STRIPE_PRICE_*) are set with
 # `wrangler secret put` and, for local dev, via .dev.vars (see .dev.vars.example).
 # ---------------------------------------------------------------------------
 [vars]
@@ -52,6 +52,7 @@ APNS_BUNDLE_ID="org.narro.grocer"
 IOS_MIN_BUILD = "1"
 IOS_LATEST_BUILD = "1"
 IOS_UPDATE_URL = "https://narro.org/grocer"
+IOS_EXTERNAL_PURCHASE_STOREFRONTS = "USA"
 POSTHOG_HOST = "https://us.i.posthog.com"
 
 [observability]

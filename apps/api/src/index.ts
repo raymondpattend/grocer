@@ -11,6 +11,7 @@ import { suggestionsRoute } from "./routes/suggestions.js";
 import { parseListRoute } from "./routes/parseList.js";
 import { liveActivityRoute } from "./routes/liveActivity.js";
 import { productImageRoute } from "./routes/productImage.js";
+import { billingRoute } from "./routes/billing.js";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -34,6 +35,7 @@ app.route("/", suggestionsRoute);
 app.route("/", parseListRoute);
 app.route("/", liveActivityRoute);
 app.route("/", productImageRoute);
+app.route("/", billingRoute);
 
 app.notFound((c) => c.json({ ok: false, error: "Not found" }, 404));
 

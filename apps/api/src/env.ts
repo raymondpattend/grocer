@@ -17,6 +17,13 @@ export interface Env {
   IOS_MIN_BUILD: string;
   IOS_LATEST_BUILD: string;
   IOS_UPDATE_URL?: string;
+  IOS_EXTERNAL_PURCHASE_STOREFRONTS?: string;
+
+  // Billing / web checkout
+  STRIPE_SECRET_KEY: string;
+  STRIPE_PRICE_ANNUAL: string;
+  STRIPE_PRICE_QUARTERLY: string;
+  STRIPE_PRICE_MONTHLY: string;
 
   // OpenAI — used for product image generation, embeddings, and list parsing
   OPENAI_API_KEY: string;

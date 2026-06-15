@@ -46,9 +46,9 @@ settings:
     # Gates CloudKit. Default YES (normal builds use CloudKit). Build with
     # GR_CLOUDKIT_ENABLED=NO for UI-only / local sample-data mode.
     GR_CLOUDKIT_ENABLED: "YES"
-    # Secret build setting injected by local/CI xcconfig. Empty means optional
-    # Live Activity Worker calls are skipped instead of sent unsigned.
-    LIVE_ACTIVITY_API_SECRET: ""
+    # LIVE_ACTIVITY_API_SECRET is injected by Config/Secrets.xcconfig. Do not set
+    # an empty project-level value here; that overrides the xcconfig secret and
+    # makes the app skip all signed Live Activity / APNs registration calls.
     # PostHog host is public; token is set per-config in Config/*.xcconfig.
     POSTHOG_HOST: "https://us.i.posthog.com"
     APS_ENVIRONMENT: development

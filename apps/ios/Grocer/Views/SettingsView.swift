@@ -7,6 +7,7 @@ struct SettingsView: View {
     @Environment(SettingsStore.self) private var settings
     @Environment(SubscriptionStore.self) private var subscriptions
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
 
     @State private var showProPaywall = false
     @State private var displayName = ""
@@ -232,10 +233,14 @@ struct SettingsView: View {
 
                 Button {
                     Haptics.selection()
-                    showProPaywall = true
+                    if subscriptions.hasGrocerPro {
+                        openManageSubscription()
+                    } else {
+                        showProPaywall = true
+                    }
                 } label: {
                     Text(subscriptions.hasGrocerPro
-                         ? String(localized: "View Plans")
+                         ? String(localized: "Manage Subscription")
                          : String(localized: "Try for free"))
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(Color(.systemBackground))
@@ -249,6 +254,14 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(18)
         }
+    }
+
+    private func openManageSubscription() {
+        guard let url = subscriptions.managementURL else {
+            subscriptions.recordErrorMessage(String(localized: "Subscription management is not available yet."))
+            return
+        }
+        openURL(url)
     }
 
     // MARK: - General
@@ -611,6 +624,15 @@ struct InviteToGroupSheet: View {
     @State private var preparingShare = false
     @State private var shareError: String?
     @State private var showingContacts = false
+    @State private var linkCopied = false
+
+    private var groupName: String {
+        repo.currentHousehold?.name ?? String(localized: "My List")
+    }
+
+    private var tint: Color {
+        repo.currentHousehold?.tint ?? .accentColor
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -621,59 +643,59 @@ struct InviteToGroupSheet: View {
             .padding(.horizontal, 20)
             .padding(.top, 16)
 
-            hero
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            Spacer(minLength: 0)
+
+            Text("Shopping is better with friends")
+                .font(.system(size: 46, weight: .black))
+                .fontWidth(.compressed)
+                .textCase(.uppercase)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, 24)
-                .padding(.bottom, 40)
 
-            VStack(alignment: .leading, spacing: 16) {
-                Text("Group Sharing")
-                    .font(.largeTitle.bold())
-
-                Text("Add family and friends to share your grocery lists, see who\u{2019}s shopping in real time, and get live updates when items are added or a trip wraps up.")
-
-                Text("It\u{2019}s free, and saves you from ever texting \u{201c}what do we still need?\u{201d} again.")
-            }
-            .font(.body)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 24)
-
-            Text("Pick people from your contacts and we\u{2019}ll text them an invite link. You can remove members at any time from Settings.")
-                .font(.footnote)
+            Text("Share your list so family and friends always know what to grab.")
+                .font(.body)
                 .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 24)
-                .padding(.top, 16)
-                .padding(.bottom, 8)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 32)
+                .padding(.top, 12)
+
+            Spacer(minLength: 0)
+
+            shareCard
+                .padding(.horizontal, 48)
+
+            Spacer(minLength: 0)
         }
         .safeAreaInset(edge: .bottom) {
-          VStack(spacing: 0) {
-            Button {
-                Haptics.selection()
-                if let reason = repo.sharingUnavailableReason {
-                    shareError = reason
-                } else {
-                    showingContacts = true
+            HStack(spacing: 12) {
+                Button(action: invite) {
+                    Text("Invite People")
+                        .font(.headline)
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 18)
+                        .background(Color.primary, in: Capsule())
                 }
-            } label: {
-                Text("Choose Contacts")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 6)
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .padding(.horizontal, 24)
-            .padding(.top, 12)
-            .padding(.bottom, 4)
 
-            if #available(iOS 26.0, *) {
-                Button("Get a link instead", action: copyInviteLink)
-                    .font(.subheadline)
-                    .disabled(preparingShare)
-                    .padding(.bottom, 12)
+                Button(action: copyLink) {
+                    Text(linkCopied ? "Copied!" : "Copy Link")
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 18)
+                        .overlay {
+                            if preparingShare { ProgressView() }
+                        }
+                        .background {
+                            Capsule().stroke(Color.primary.opacity(0.18), lineWidth: 1.5)
+                        }
+                }
+                .disabled(preparingShare)
             }
-          }
+            .padding(.horizontal, 20)
+            .padding(.top, 12)
+            .padding(.bottom, 8)
         }
         .sheet(isPresented: $showingContacts) {
             InviteContactsView()
@@ -685,10 +707,80 @@ struct InviteToGroupSheet: View {
         } message: { Text(shareError ?? "") }
     }
 
-    /// Secondary escape hatch for recipients who won't resolve via iCloud:
-    /// mint a single-use link and hand it to the system share sheet.
-    @available(iOS 26.0, *)
-    private func copyInviteLink() {
+    /// Tilted preview of the group being shared — mirrors the card recipients
+    /// see, so the user knows exactly what they're handing over.
+    private var shareCard: some View {
+        ZStack(alignment: .topLeading) {
+            Image(systemName: "cart.fill")
+                .font(.system(size: 150))
+                .foregroundStyle(.white.opacity(0.08))
+                .rotationEffect(.degrees(-12))
+                .offset(x: 110, y: 70)
+
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Shared List")
+                    .font(.caption.weight(.bold))
+                    .tracking(1.5)
+                    .textCase(.uppercase)
+                    .foregroundStyle(.white.opacity(0.85))
+
+                HStack(spacing: 10) {
+                    Image(systemName: repo.currentHousehold?.icon ?? "cart.fill")
+                        .font(.title3.weight(.semibold))
+                    Text(groupName)
+                        .font(.title2.bold())
+                        .lineLimit(1)
+                }
+                .foregroundStyle(.white)
+                .padding(.top, 8)
+
+                Spacer(minLength: 12)
+
+                HStack {
+                    memberAvatars
+                    Spacer()
+                    Text("Grocer")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.85))
+                }
+            }
+            .padding(20)
+        }
+        .frame(height: 190)
+        .background(tint.gradient)
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .rotationEffect(.degrees(-4))
+        .shadow(color: tint.opacity(0.35), radius: 24, x: 0, y: 14)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text("Preview of \(groupName)"))
+    }
+
+    @ViewBuilder
+    private var memberAvatars: some View {
+        let members = repo.currentMembers.prefix(4)
+        HStack(spacing: -10) {
+            ForEach(Array(members.enumerated()), id: \.element.id) { _, member in
+                ProfilePicture(
+                    imageData: repo.isCurrentUser(member) ? repo.profileImageData : member.profileImageData,
+                    size: 30
+                )
+                .overlay(Circle().stroke(.white.opacity(0.6), lineWidth: 1.5))
+            }
+        }
+    }
+
+    private func invite() {
+        Haptics.selection()
+        if let reason = repo.sharingUnavailableReason {
+            shareError = reason
+        } else {
+            showingContacts = true
+        }
+    }
+
+    /// Mints a single-use invite link and drops it on the clipboard, with a brief
+    /// "Copied!" confirmation on the button itself.
+    private func copyLink() {
         if let reason = repo.sharingUnavailableReason {
             Haptics.error()
             shareError = reason
@@ -699,21 +791,23 @@ struct InviteToGroupSheet: View {
         Task {
             defer { preparingShare = false }
             do {
-                let url = try await repo.prepareOneTimeInviteURL()
+                let url: URL
+                if #available(iOS 26.0, *) {
+                    // Single-use link that can't be reshared once accepted.
+                    url = try await repo.prepareOneTimeInviteURL()
+                } else {
+                    url = try await repo.prepareInviteLink()
+                }
+                UIPasteboard.general.url = url
                 Haptics.success()
-                ShareSheetPresenter.presentInvite(url: url)
+                withAnimation { linkCopied = true }
+                try? await Task.sleep(for: .seconds(2))
+                withAnimation { linkCopied = false }
             } catch {
                 Haptics.error()
                 shareError = error.localizedDescription
             }
         }
-    }
-
-    private var hero: some View {
-        Image("SharePromo")
-            .resizable()
-            .scaledToFit()
-            .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
     }
 
     private var closeButton: some View {

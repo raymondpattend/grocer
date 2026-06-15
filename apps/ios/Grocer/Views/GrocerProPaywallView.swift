@@ -13,12 +13,14 @@ struct GrocerProPaywallView: View {
     @Environment(SubscriptionStore.self) private var subscriptions
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
+    @Environment(\.colorScheme) private var colorScheme
 
     @State private var selectedPackageID: String?
     @State private var showAllPlans = false
     @State private var infoMessage: String?
     @State private var showSubscribeOptions = false
-    @State private var showWebCheckout = false
+    @State private var webCheckout: CheckoutPresentation?
+    @State private var pendingWebCheckoutURL: URL?
     /// Set when the user picks "Use App Store" so the StoreKit purchase is
     /// kicked off only after the options sheet finishes dismissing — starting it
     /// while the sheet is still on screen leaves the purchase sheet unable to
@@ -27,7 +29,6 @@ struct GrocerProPaywallView: View {
 
     private let termsURL = URL(string: "https://grocer.narro.org/terms")
     private let privacyURL = URL(string: "https://grocer.narro.org/privacy")
-    private let webCheckoutURL = URL(string: "https://google.com")!
 
     private var copy: GrocerProPaywallCopy {
         subscriptions.paywallCopy(for: context)
@@ -82,90 +83,68 @@ struct GrocerProPaywallView: View {
                 purchaseAfterDismiss = false
                 purchaseSelected()
             }
+            if let url = pendingWebCheckoutURL {
+                pendingWebCheckoutURL = nil
+                webCheckout = CheckoutPresentation(url: url)
+            }
         }) {
             subscribeOptionsSheet
         }
-        .fullScreenCover(isPresented: $showWebCheckout) {
-            WebCheckoutView(url: webCheckoutURL)
+        .fullScreenCover(item: $webCheckout) { checkout in
+            WebCheckoutView(url: checkout.url) { completed in
+                if completed {
+                    dismiss()
+                }
+            }
         }
     }
 
     // MARK: - Subscribe options sheet
 
     private var subscribeOptionsSheet: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: 12) {
             Text("Subscribe your way")
                 .font(.system(.title2, design: .rounded).weight(.bold))
                 .foregroundStyle(Palette.primaryText)
-                .padding(.top, 28)
+                .padding(.top, 24)
+                .padding(.bottom, 4)
 
-            VStack(spacing: 12) {
-                Button {
-                    Haptics.selection()
-                    showSubscribeOptions = false
-                    showWebCheckout = true
-                } label: {
-                    subscribeOptionLabel(
-                        title: String(localized: "Choose payment method"),
-                        subtitle: String(localized: "Pay your way on the web"),
-                        icon: "creditcard",
-                        prominent: true
-                    )
-                }
-                .buttonStyle(.plain)
-
-                Button {
-                    Haptics.selection()
-                    purchaseAfterDismiss = true
-                    showSubscribeOptions = false
-                } label: {
-                    subscribeOptionLabel(
-                        title: String(localized: "Use App Store"),
-                        subtitle: String(localized: "Pay with your Apple Account"),
-                        icon: "applelogo",
-                        prominent: false
-                    )
-                }
-                .buttonStyle(.plain)
+            // Primary path: black pill with white text in light theme, inverted
+            // to a white pill with black text in dark theme.
+            Button {
+                Haptics.selection()
+                openSelectedWebCheckout()
+            } label: {
+                Text("Choose payment method")
+                    .font(.headline)
+                    .foregroundStyle(colorScheme == .dark ? Color.black : Color.white)
+                    .frame(maxWidth: .infinity, minHeight: 56)
+                    .background(Capsule().fill(colorScheme == .dark ? Color.white : Color.black))
+                    .contentShape(Capsule())
             }
+            .buttonStyle(.plain)
+
+            Button {
+                Haptics.selection()
+                purchaseAfterDismiss = true
+                showSubscribeOptions = false
+            } label: {
+                Text("Continue with App Store")
+                    .font(.headline)
+                    .foregroundStyle(Palette.primaryText)
+                    .frame(maxWidth: .infinity, minHeight: 56)
+                    .background(Capsule().fill(Palette.surface))
+                    .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
 
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 20)
         .frame(maxWidth: .infinity)
         .background(Palette.background)
-        .presentationDetents([.height(280)])
+        .presentationDetents([.height(208)])
         .presentationDragIndicator(.visible)
-    }
-
-    private func subscribeOptionLabel(title: String, subtitle: String,
-                                      icon: String, prominent: Bool) -> some View {
-        HStack(spacing: 14) {
-            Image(systemName: icon)
-                .font(.title3)
-                .foregroundStyle(prominent ? Palette.primaryText : Palette.accent)
-                .frame(width: 28)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.headline)
-                    .foregroundStyle(prominent ? Palette.primaryText : Palette.primaryText)
-                Text(subtitle)
-                    .font(.subheadline)
-                    .foregroundStyle(prominent ? Palette.primaryText.opacity(0.8) : Palette.secondaryText)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(prominent ? Palette.accent.opacity(0.9) : Palette.surface)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .strokeBorder(prominent ? Color.clear : Palette.hairline)
-        )
-        .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
     // MARK: - Scroll content
@@ -336,8 +315,10 @@ struct GrocerProPaywallView: View {
 
     private var legal: some View {
         VStack(spacing: 14) {
-            Text("Upon confirmation, the payment will be charged to your Apple Account. Your subscription automatically renews unless it is cancelled at least 24 hours before the end of the current period.")
-            Text("After purchase, you can manage and turn off auto-renewal in your Apple Account settings.")
+            Text("Your subscription automatically renews unless it is cancelled before the end of the current period.")
+            Text(subscriptions.canOfferWebCheckout
+                 ? String(localized: "Choose App Store or web checkout, then manage renewal from Settings.")
+                 : String(localized: "After purchase, you can manage and turn off auto-renewal in your Apple Account settings."))
         }
         .font(.footnote)
         .foregroundStyle(Palette.secondaryText.opacity(0.7))
@@ -417,7 +398,11 @@ struct GrocerProPaywallView: View {
 
         Button {
             Haptics.selection()
-            showSubscribeOptions = true
+            if subscriptions.canOfferWebCheckout {
+                showSubscribeOptions = true
+            } else {
+                purchaseSelected()
+            }
         } label: {
             if #available(iOS 26.0, *) {
                 label.glassEffect(
@@ -439,6 +424,18 @@ struct GrocerProPaywallView: View {
         guard let package = selectedPackage else { return }
         Haptics.selection()
         Task { await subscriptions.purchase(package) }
+    }
+
+    private func openSelectedWebCheckout() {
+        guard let package = selectedPackage else { return }
+        guard let checkoutURL = subscriptions.checkoutURL(for: package) else {
+            subscriptions.recordErrorMessage(String(localized: "Checkout is not available yet. Try again in a moment."))
+            showSubscribeOptions = false
+            return
+        }
+
+        pendingWebCheckoutURL = checkoutURL
+        showSubscribeOptions = false
     }
 
     private func restorePurchases() {
@@ -580,6 +577,11 @@ struct GrocerProPaywallView: View {
         Quote(text: String(localized: "I love seeing what my family grabs in real time. Total game changer."),
               name: String(localized: "Emily Davis"), emoji: "👋"),
     ]
+}
+
+private struct CheckoutPresentation: Identifiable {
+    let id = UUID()
+    let url: URL
 }
 
 // MARK: - Plan model + card

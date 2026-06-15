@@ -878,12 +878,11 @@ private struct HistoryItemsView: View {
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
+                    .grocerLiquidGlass(in: Circle(), interactive: true)
+                    .contentShape(Circle())
             }
             .buttonStyle(.plain)
             .tint(.primary)
-            .grocerGlassButton()
-            .clipShape(Circle())
             .accessibilityLabel("Back")
 
             VStack(alignment: .leading, spacing: 2) {

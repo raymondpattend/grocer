@@ -36,4 +36,12 @@ describe("ios config", () => {
       status: "ok",
     });
   });
+
+  it("includes external purchase storefronts for iOS payment gating", async () => {
+    await expect(iosConfig("/config/ios")).resolves.toMatchObject({
+      payments: {
+        externalPurchaseStorefronts: ["USA"],
+      },
+    });
+  });
 });

@@ -20,19 +20,95 @@ enum RevenueCatConfig {
 
     private static var didConfigure = false
 
-    static func configure() {
+    static func configure(appUserID: String) {
         guard !didConfigure else { return }
 
         #if DEBUG
         Purchases.logLevel = .debug
         #endif
 
-        Purchases.configure(withAPIKey: apiKey)
+        Purchases.configure(withAPIKey: apiKey, appUserID: appUserID)
         didConfigure = true
     }
 
     static func hasGrocerPro(_ customerInfo: CustomerInfo?) -> Bool {
         customerInfo?.entitlements.all[grocerProEntitlementID]?.isActive == true
+    }
+
+    static func storeIdentifier(for store: Store) -> String {
+        switch store {
+        case .appStore: return "APP_STORE"
+        case .macAppStore: return "MAC_APP_STORE"
+        case .playStore: return "PLAY_STORE"
+        case .stripe: return "STRIPE"
+        case .promotional: return "PROMOTIONAL"
+        case .unknownStore: return "UNKNOWN"
+        case .amazon: return "AMAZON"
+        case .rcBilling: return "RC_BILLING"
+        case .external: return "EXTERNAL"
+        case .paddle: return "PADDLE"
+        case .testStore: return "TEST_STORE"
+        case .galaxy: return "GALAXY"
+        @unknown default: return "UNKNOWN"
+        }
+    }
+}
+
+enum BillingPolicy {
+    static func checkoutURL(
+        baseURLString: String,
+        purchaseUID: String,
+        packageIdentifier: String
+    ) -> URL? {
+        workerURL(baseURLString: baseURLString, path: "checkout", queryItems: [
+            URLQueryItem(name: "packageId", value: packageIdentifier),
+            URLQueryItem(name: "uid", value: purchaseUID),
+        ])
+    }
+
+    static func billingPortalURL(baseURLString: String, purchaseUID: String) -> URL? {
+        workerURL(baseURLString: baseURLString, path: "api/billing/portal", queryItems: [
+            URLQueryItem(name: "uid", value: purchaseUID),
+        ])
+    }
+
+    static func canOfferWebCheckout(
+        storefrontCountryCode: String?,
+        allowedStorefronts: [String],
+        debugAllowsMissingStorefront: Bool = false
+    ) -> Bool {
+        guard let storefront = storefrontCountryCode?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .uppercased(),
+              !storefront.isEmpty else {
+            return debugAllowsMissingStorefront
+        }
+
+        let allowed = Set(allowedStorefronts.map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        })
+        return allowed.contains(storefront)
+    }
+
+    static func isWebSubscription(storeIdentifier: String?) -> Bool {
+        guard let storeIdentifier else { return false }
+        return !["APP_STORE", "MAC_APP_STORE", "PLAY_STORE", "TEST_STORE", "PROMOTIONAL"].contains(storeIdentifier)
+    }
+
+    private static func workerURL(
+        baseURLString: String,
+        path: String,
+        queryItems: [URLQueryItem]
+    ) -> URL? {
+        guard let base = URL(string: baseURLString),
+              var components = URLComponents(
+                url: base.appendingPathComponent(path),
+                resolvingAgainstBaseURL: false
+              ) else {
+            return nil
+        }
+        components.queryItems = queryItems
+        return components.url
     }
 }
 
@@ -81,19 +157,58 @@ final class SubscriptionStore {
     private(set) var customerInfo: CustomerInfo?
     private(set) var offerings: Offerings?
     private(set) var currentOffering: Offering?
+    private(set) var purchaseUID: String?
+    private(set) var storefrontCountryCode: String?
+    private(set) var externalPurchaseStorefronts = ["USA"]
     private(set) var isLoading = false
     private(set) var isPurchasing = false
     private(set) var isRestoring = false
     var lastErrorMessage: String?
 
     @ObservationIgnored private var customerInfoTask: Task<Void, Never>?
+    @ObservationIgnored private var didStart = false
+    @ObservationIgnored private var isStarting = false
 
     var hasGrocerPro: Bool {
         RevenueCatConfig.hasGrocerPro(customerInfo)
     }
 
+    private var activeEntitlement: EntitlementInfo? {
+        customerInfo?.entitlements.all[RevenueCatConfig.grocerProEntitlementID]
+    }
+
+    var activeStoreIdentifier: String? {
+        guard let store = activeEntitlement?.store else { return nil }
+        return RevenueCatConfig.storeIdentifier(for: store)
+    }
+
+    var activeProductIdentifier: String? {
+        activeEntitlement?.productIdentifier
+    }
+
+    var isWebSubscription: Bool {
+        BillingPolicy.isWebSubscription(storeIdentifier: activeStoreIdentifier)
+    }
+
+    var canOfferWebCheckout: Bool {
+        #if DEBUG
+        let allowMissingStorefront = true
+        #else
+        let allowMissingStorefront = false
+        #endif
+        return BillingPolicy.canOfferWebCheckout(
+            storefrontCountryCode: storefrontCountryCode,
+            allowedStorefronts: externalPurchaseStorefronts,
+            debugAllowsMissingStorefront: allowMissingStorefront
+        )
+    }
+
     var managementURL: URL? {
-        customerInfo?.managementURL
+        if isWebSubscription {
+            return billingPortalURL()
+        }
+        return customerInfo?.managementURL
+            ?? URL(string: "itms-apps://apps.apple.com/account/subscriptions")
     }
 
     var displayStatus: String {
@@ -151,22 +266,32 @@ final class SubscriptionStore {
     }
 
     @MainActor
-    func start() {
-        guard customerInfoTask == nil else { return }
+    func start() async {
+        guard !didStart, !isStarting else { return }
+        isStarting = true
+        defer {
+            isStarting = false
+            didStart = true
+        }
+
+        let uid = await PurchaseIdentity.shared.getOrCreateUID()
+        purchaseUID = uid
+        RevenueCatConfig.configure(appUserID: uid)
 
         customerInfoTask = Task { [weak self] in
             for await customerInfo in Purchases.shared.customerInfoStream {
-                self?.update(with: customerInfo)
+                await self?.update(with: customerInfo)
             }
         }
 
-        Task {
-            await refresh()
-        }
+        await refreshPaymentGating()
+        await refresh()
     }
 
     @MainActor
     func refresh() async {
+        guard Purchases.isConfigured else { return }
+
         isLoading = true
         defer { isLoading = false }
 
@@ -178,6 +303,7 @@ final class SubscriptionStore {
             update(with: latestCustomerInfo)
             self.offerings = latestOfferings
             currentOffering = latestOfferings.current
+            await refreshPaymentGating()
         } catch {
             recordFailure(error)
         }
@@ -243,6 +369,41 @@ final class SubscriptionStore {
     @MainActor
     func clearError() {
         lastErrorMessage = nil
+    }
+
+    @MainActor
+    func recordErrorMessage(_ message: String) {
+        lastErrorMessage = message
+    }
+
+    func checkoutURL(for package: Package) -> URL? {
+        guard let purchaseUID else { return nil }
+        return BillingPolicy.checkoutURL(
+            baseURLString: APIClient.baseURLString,
+            purchaseUID: purchaseUID,
+            packageIdentifier: package.identifier
+        )
+    }
+
+    func billingPortalURL() -> URL? {
+        guard let purchaseUID else { return nil }
+        return BillingPolicy.billingPortalURL(
+            baseURLString: APIClient.baseURLString,
+            purchaseUID: purchaseUID
+        )
+    }
+
+    private func refreshPaymentGating() async {
+        if Purchases.isConfigured {
+            storefrontCountryCode = Purchases.shared.storeFrontCountryCode?.uppercased()
+        }
+
+        guard let config = await APIClient.shared.config(),
+              let storefronts = config.payments?.externalPurchaseStorefronts,
+              !storefronts.isEmpty else {
+            return
+        }
+        externalPurchaseStorefronts = storefronts.map { $0.uppercased() }
     }
 
     private func yearlyPackage(in offering: Offering) -> Package? {

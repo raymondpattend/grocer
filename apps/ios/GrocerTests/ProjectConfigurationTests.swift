@@ -69,11 +69,18 @@ final class ProjectConfigurationTests: XCTestCase {
     func testLiveActivityWorkerEndpointsAuthenticateCallers() throws {
         let apiClient = try source("Grocer/Services/APIClient.swift")
         let route = try source("../api/src/routes/liveActivity.ts")
+        let project = try source("project.yml")
+        let secretExample = try source("Config/Secrets.xcconfig.example")
 
         XCTAssertTrue(apiClient.contains("HMAC<SHA256>"))
         XCTAssertTrue(apiClient.contains("x-grocer-signature"))
         XCTAssertTrue(route.contains("authenticateLiveActivityRequest"))
         XCTAssertTrue(route.contains("x-grocer-signature"))
         XCTAssertTrue(route.contains("consumeRateLimit"))
+        XCTAssertTrue(secretExample.contains("LIVE_ACTIVITY_API_SECRET ="))
+        XCTAssertFalse(
+            project.contains("LIVE_ACTIVITY_API_SECRET: \"\""),
+            "An empty project-level LIVE_ACTIVITY_API_SECRET overrides Config/Secrets.xcconfig and disables Live Activity/APNs calls."
+        )
     }
 }

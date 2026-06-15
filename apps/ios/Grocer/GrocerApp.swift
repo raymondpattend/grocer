@@ -66,8 +66,6 @@ struct GrocerApp: App {
             options.sessionReplay.sessionSampleRate = 0.0
             options.sessionReplay.onErrorSampleRate = 0.0
         }
-
-        RevenueCatConfig.configure()
     }
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var repository = GroceryRepository.makeShared()
@@ -83,7 +81,7 @@ struct GrocerApp: App {
                 .environment(subscriptions)
                 .environment(appUpdateGate)
                 .task {
-                    subscriptions.start()
+                    await subscriptions.start()
                     await repository.bootstrap()
                     if PostHogConfiguration.isConfigured {
                         let memberId = settings.memberIdOrDevice

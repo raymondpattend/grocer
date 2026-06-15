@@ -8,12 +8,13 @@ struct HomeView: View {
     @Environment(GroceryRepository.self) private var repo
     @Environment(SubscriptionStore.self) private var subscriptions
 
-    @AppStorage("home.separateShared") private var separateShared = false
+    @AppStorage("home.separateShared") private var separateShared = true
 
     @State private var path: [String] = []
     @State private var showNewGroup = false
     @State private var showProPaywall = false
     @State private var editingGroup: Household?
+    @State private var collapsedSharers: Set<String> = []
     @Namespace private var zoomNamespace
 
     private static let freeOwnedGroupLimit = 2
@@ -99,10 +100,12 @@ struct HomeView: View {
             } else {
                 skeleton
             }
-        } else if separateShared && !sharedHouseholds.isEmpty {
+        } else if separateShared {
+            // Filled state: always show both section headers, even when a
+            // section is empty, so the layout reads consistently.
             VStack(alignment: .leading, spacing: 24) {
                 groupSection(title: String(localized: "My Groups"), households: ownedHouseholds, includesProUpsell: true)
-                groupSection(title: String(localized: "Shared with Me"), households: sharedHouseholds)
+                sharedBySharerSection
             }
         } else if isAtFreeOwnedGroupLimit {
             VStack(spacing: 14) {
@@ -117,19 +120,106 @@ struct HomeView: View {
         }
     }
 
-    @ViewBuilder
     private func groupSection(title: String,
                               households: [Household],
                               includesProUpsell: Bool = false) -> some View {
-        if !households.isEmpty {
-            VStack(alignment: .leading, spacing: 12) {
-                Text(title)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 4)
+        VStack(alignment: .leading, spacing: 12) {
+            sectionHeader(title)
+            if households.isEmpty {
+                emptySectionPlaceholder(String(localized: "No groups here yet."))
+            } else {
                 groupCollection(households)
-                if includesProUpsell && isAtFreeOwnedGroupLimit {
-                    proGroupUpsellCard
+            }
+            if includesProUpsell && isAtFreeOwnedGroupLimit {
+                proGroupUpsellCard
+            }
+        }
+    }
+
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 4)
+    }
+
+    private func emptySectionPlaceholder(_ text: String) -> some View {
+        Text(text)
+            .font(.subheadline)
+            .foregroundStyle(.tertiary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 8)
+    }
+
+    // MARK: - Shared groups, broken out by who shared them
+
+    /// One sharer (the owner of the shared zone) and the groups they shared
+    /// into this account. Keyed by CloudKit zone owner so groups from the same
+    /// person collapse under a single header even across multiple groups.
+    private struct SharerGroup: Identifiable {
+        let id: String
+        let member: HouseholdMember?
+        let households: [Household]
+    }
+
+    private var sharedGroupsBySharer: [SharerGroup] {
+        let grouped = Dictionary(grouping: sharedHouseholds) { $0.recordOwnerName ?? "shared" }
+        return grouped
+            .map { key, houses in
+                let sorted = houses.sorted {
+                    $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+                }
+                // The owner member carries the sharer's name + avatar; look it up
+                // from whichever of their groups already has it synced.
+                let owner = sorted.compactMap { repo.member(id: $0.ownerMemberId, householdId: $0.id) }.first
+                return SharerGroup(id: key, member: owner, households: sorted)
+            }
+            .sorted { ($0.member?.displayName ?? "~") < ($1.member?.displayName ?? "~") }
+    }
+
+    @ViewBuilder
+    private var sharedBySharerSection: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            sectionHeader(String(localized: "Shared with Me"))
+            if sharedHouseholds.isEmpty {
+                emptySectionPlaceholder(String(localized: "Nothing shared with you yet."))
+            } else {
+                ForEach(sharedGroupsBySharer) { sharer in
+                    let collapsed = collapsedSharers.contains(sharer.id)
+                    VStack(alignment: .leading, spacing: 12) {
+                        Button {
+                            Haptics.selection()
+                            withAnimation(.snappy) {
+                                if collapsed {
+                                    collapsedSharers.remove(sharer.id)
+                                } else {
+                                    collapsedSharers.insert(sharer.id)
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 8) {
+                                MemberAvatarView(member: sharer.member, size: 26)
+                                Text(sharer.member?.displayName ?? String(localized: "Shared"))
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(1)
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.horizontal, 4)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(sharer.member?.displayName ?? String(localized: "Shared"))
+                        .accessibilityHint(collapsed
+                                           ? String(localized: "Expand shared groups")
+                                           : String(localized: "Collapse shared groups"))
+
+                        if !collapsed {
+                            groupCollection(sharer.households)
+                                .transition(.opacity)
+                        }
+                    }
                 }
             }
         }
@@ -437,6 +527,12 @@ private extension View {
                   colorTheme: .orange, createdAt: .now, updatedAt: .now,
                   recordOwnerName: "someoneElse"),
     ]
+    let members = [
+        HouseholdMember(id: "m9", householdId: "h3", displayName: "Tom",
+                        profileImageData: nil, iCloudUserRecordName: nil,
+                        role: .owner, joinedAt: .now,
+                        recordZoneName: nil, recordOwnerName: "someoneElse"),
+    ]
     let lists = [
         GroceryList(id: "l1", householdId: "h1", name: "List",
                     createdAt: .now, updatedAt: .now, archived: false),
@@ -460,7 +556,7 @@ private extension View {
     ]
     HomeView()
         .grocerPreviewEnvironment(repository: GrocerPreview.repository(
-            households: households, lists: lists, items: items
+            households: households, members: members, lists: lists, items: items
         ))
 }
 #endif

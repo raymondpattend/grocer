@@ -83,15 +83,13 @@ struct HapticBackButton: View {
             Haptics.tap()
             dismiss()
         } label: {
-            // Matches the native back chevron weight/placement, with a full
-            // 44pt-tall hit area so taps anywhere on the button register (not
-            // just on the glyph).
+            // Matches the native back chevron weight, centered in a square 44pt
+            // hit area so taps anywhere on the button register (not just on the
+            // glyph). The square keeps the system's glass background a circle.
             Image(systemName: "chevron.backward")
                 .font(.body.weight(.semibold))
-                .padding(.trailing, 16)
-                .padding(.vertical, 8)
-                .frame(minWidth: 44, minHeight: 44, alignment: .leading)
-                .contentShape(Rectangle())
+                .frame(width: 44, height: 44)
+                .contentShape(Circle())
         }
         .accessibilityLabel(Text("Back"))
     }

@@ -1,6 +1,12 @@
-# RevenueCat Setup
+# RevenueCat + Web Billing Setup
 
-Grocer integrates RevenueCat through Swift Package Manager and uses the hosted RevenueCat Paywall plus Customer Center.
+Grocer integrates RevenueCat through Swift Package Manager and uses a custom
+SwiftUI paywall. Native App Store purchases go through RevenueCat's iOS SDK.
+Web purchases go through Stripe checkout hosted by the Grocer Worker, then sync
+back into RevenueCat through RevenueCat's Stripe server-notification integration.
+
+RevenueCat is the entitlement source in the app. The Worker never unlocks
+features directly.
 
 ## 1. Swift Package
 
@@ -34,24 +40,28 @@ If you add it manually in Xcode, choose `File > Add Package Dependencies...`, en
 
 ## 2. App Configuration
 
-Configuration lives in `Grocer/Services/SubscriptionStore.swift`:
+Configuration lives in `Grocer/Services/SubscriptionStore.swift`. The app first
+creates or loads a stable purchase UID from Keychain / iCloud KVS, then uses it
+as RevenueCat's `appUserID`:
 
 ```swift
 enum RevenueCatConfig {
     static let apiKey = "test_tSaSOTwPRseDzLdzjuGNqrnTOSb"
-    static let grocerProEntitlementID = "grocer_pro"
+    static let grocerProEntitlementID = "Grocer Pro"
 
-    static func configure() {
+    static func configure(appUserID: String) {
         #if DEBUG
         Purchases.logLevel = .debug
         #endif
 
-        Purchases.configure(withAPIKey: apiKey)
+        Purchases.configure(withAPIKey: apiKey, appUserID: appUserID)
     }
 }
 ```
 
-`GrocerApp` calls `RevenueCatConfig.configure()` once during startup and injects `SubscriptionStore.shared` into SwiftUI.
+`GrocerApp` injects `SubscriptionStore.shared` into SwiftUI and calls
+`await subscriptions.start()` during startup. Do not call `Purchases.shared`
+before that async startup has configured RevenueCat.
 
 The current key is a RevenueCat Test Store key. Before App Store release, replace it with the public Apple app SDK key from RevenueCat.
 
@@ -61,27 +71,54 @@ Create one entitlement:
 
 | Display name | Identifier |
 | --- | --- |
-| Grocer Pro | `grocer_pro` |
+| Grocer Pro | `Grocer Pro` |
 
 Configure products:
 
 | Product | Identifier | Type | Entitlement |
 | --- | --- | --- | --- |
-| Lifetime | `lifetime` | Non-consumable | `grocer_pro` |
-| Yearly | `yearly` | Auto-renewable subscription | `grocer_pro` |
-| Monthly | `monthly` | Auto-renewable subscription | `grocer_pro` |
+| Annual | `grocer_pro_subscription_annual_1` | Auto-renewable subscription | `Grocer Pro` |
+| Quarterly | `grocer_pro_subscription_quarterly_1` | Auto-renewable subscription | `Grocer Pro` |
+| Monthly | `grocer_pro_subscription_monthly_1` | Auto-renewable subscription | `Grocer Pro` |
 
 Create an offering, make it the default/current offering, and add packages:
 
 | Package | Product |
 | --- | --- |
-| Lifetime | `lifetime` |
-| Annual | `yearly` |
-| Monthly | `monthly` |
+| Annual | `grocer_pro_subscription_annual_1` |
+| Three month | `grocer_pro_subscription_quarterly_1` |
+| Monthly | `grocer_pro_subscription_monthly_1` |
 
-Then create and attach a RevenueCat Paywall to that offering. Grocer presents `PaywallView`, so the dashboard paywall controls the product order, copy, trials, experiments, and styling.
+Grocer renders its own paywall, but pricing, trial text, package order, and
+paywall copy metadata still come from the current RevenueCat offering.
 
-## 4. Entitlement Checking
+## 4. Web Checkout / Stripe Sync
+
+The iOS app builds web checkout URLs like:
+
+```text
+https://grocer.narro.org/checkout?packageId=$rc_monthly&uid=<purchase_uid>
+```
+
+The Worker creates or reuses a Stripe customer, then redirects to hosted Stripe
+Checkout. Checkout creates subscriptions with
+`metadata.user_id = <purchase_uid>` for RevenueCat webhook identification. The
+Worker also writes `metadata.app_user_id` for compatibility, but RevenueCat
+should be configured to read the `user_id` metadata field. This exact match is
+what grants the Stripe subscription to the same RevenueCat customer used by the
+iOS SDK.
+
+Required Worker secrets:
+
+| Variable | Purpose |
+| --- | --- |
+| `STRIPE_SECRET_KEY` | Stripe server API key |
+| `STRIPE_PRICE_ANNUAL` | Stripe annual recurring Price ID |
+| `STRIPE_PRICE_QUARTERLY` | Stripe quarterly recurring Price ID |
+| `STRIPE_PRICE_MONTHLY` | Stripe monthly recurring Price ID |
+| `REVENUECAT_SECRET_KEY` | RevenueCat secret key for server-side trial eligibility |
+
+## 5. Entitlement Checking
 
 Use `SubscriptionStore.hasGrocerPro` anywhere in SwiftUI:
 
@@ -99,7 +136,7 @@ if subscriptions.hasGrocerPro {
 
 The store keeps `CustomerInfo` current by fetching it on startup and listening to `Purchases.shared.customerInfoStream`.
 
-## 5. Purchases, Restores, And Customer Info
+## 6. Purchases, Restores, And Customer Info
 
 Manual purchase support is available when you need a custom paywall:
 
@@ -127,20 +164,30 @@ Task {
 }
 ```
 
-The Settings screen already exposes hosted paywall purchase, restore, and Customer Center actions.
+The Settings screen exposes purchase, restore, and management actions through
+the custom paywall and store-aware management routing below.
 
-## 6. Customer Center
+## 7. Subscription Management
 
-Customer Center makes sense once the app needs purchase management, cancellation guidance, refunds, win-back/promotional flows, or support actions inside the app. Grocer presents it from Settings using `CustomerCenterView`.
+Settings routes management based on the active RevenueCat entitlement store:
 
-Configure Customer Center in the RevenueCat dashboard before release so the hosted screen knows which support and management options to show.
+- App Store/Test Store subscriptions open Apple's subscription management URL
+  or RevenueCat's `managementURL` when provided.
+- Stripe/web subscriptions open `/api/billing/portal?uid=<purchase_uid>`, which
+  redirects to Stripe Billing Portal.
 
-## 7. Best Practices
+## 8. Best Practices
 
-- Keep all products attached to the `grocer_pro` entitlement so Lifetime, Yearly, and Monthly unlock the same app access.
-- Use RevenueCat offerings and paywalls instead of hardcoding price strings or package order.
+- Keep all products attached to the `Grocer Pro` entitlement so Annual,
+  Quarterly, and Monthly unlock the same app access.
+- Keep the purchase UID stable. Do not use the CloudKit member ID or device ID
+  as the RevenueCat `appUserID`.
+- Use RevenueCat offerings instead of hardcoding price strings or package order.
 - Show a restore purchases action; Apple expects users to have a way to recover access.
 - Call `customerInfo()` when entering premium areas; RevenueCat caches it, so repeated checks are safe.
 - Leave debug logs enabled only in debug builds.
 - Do not ship a Test Store API key to production.
-- Test the full flow with RevenueCat Test Store first, then App Store sandbox/TestFlight, then production products.
+- Configure RevenueCat ↔ Stripe dashboard integration before testing web
+  checkout entitlement sync.
+- Test the full flow with RevenueCat Test Store first, then App Store
+  sandbox/TestFlight, Stripe test mode, and production products.

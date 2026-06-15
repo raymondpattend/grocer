@@ -20,7 +20,7 @@ pnpm install
 pnpm --filter @grocer/api exec wrangler d1 create grocer   # paste id into wrangler.toml
 pnpm --filter @grocer/api exec wrangler d1 migrations apply grocer --local
 
-# APNs secrets for local dev (optional unless testing pushes)
+# APNs / Stripe / RevenueCat secrets for local dev (optional unless testing pushes or checkout)
 cp apps/api/.dev.vars.example apps/api/.dev.vars
 
 pnpm dev:api            # http://localhost:8787
@@ -39,11 +39,17 @@ to APNs.
 # Apply migrations to the remote D1
 pnpm --filter @grocer/api exec wrangler d1 migrations apply grocer --remote
 
-# Set APNs secret (private key) and any other secrets
+# Set APNs, Stripe, RevenueCat, OpenAI, and PostHog secrets as needed
 pnpm --filter @grocer/api exec wrangler secret put APNS_PRIVATE_KEY
+pnpm --filter @grocer/api exec wrangler secret put STRIPE_SECRET_KEY
+pnpm --filter @grocer/api exec wrangler secret put STRIPE_PRICE_ANNUAL
+pnpm --filter @grocer/api exec wrangler secret put STRIPE_PRICE_QUARTERLY
+pnpm --filter @grocer/api exec wrangler secret put STRIPE_PRICE_MONTHLY
+pnpm --filter @grocer/api exec wrangler secret put REVENUECAT_SECRET_KEY
 
 # Non-secret APNs config lives in wrangler.toml [vars]; edit as needed:
 #   APNS_ENVIRONMENT, APNS_TEAM_ID, APNS_KEY_ID, APNS_BUNDLE_ID
+#   IOS_EXTERNAL_PURCHASE_STOREFRONTS
 
 pnpm deploy:api
 ```
@@ -69,7 +75,8 @@ All responses are JSON. Invalid bodies return `400` with
   "upgradeRequired": false,
   "status": "ok",
   "updateUrl": "https://narro.org/grocer",
-  "features": { "suggestions": true, "parseList": true, "feedback": true, "liveActivities": true }
+  "features": { "suggestions": true, "parseList": true, "feedback": true, "liveActivities": true },
+  "payments": { "externalPurchaseStorefronts": ["USA"] }
 }
 ```
 
@@ -114,6 +121,28 @@ Pass the app's numeric `CFBundleVersion` as `build`. When it is below
 
 `start` / `update` / `end` return `{ ok, sent, failed }`. Start/end can also
 include `{ notificationsSent, notificationsFailed }`.
+
+### Billing / web checkout
+
+| Method & path | Purpose |
+| --- | --- |
+| `GET /checkout?packageId=&uid=` | Redirects to a hosted Stripe Checkout Session for a RevenueCat package and Grocer purchase UID |
+| `GET /checkout/success?session_id=` | Displays success after Stripe returns a completed Checkout Session |
+| `GET /api/billing/portal?uid=` | Redirects an existing web subscriber to Stripe Billing Portal |
+
+Supported package identifiers map to Stripe price env vars:
+
+| RevenueCat package/product | Stripe env var |
+| --- | --- |
+| `$rc_annual`, `grocer_pro_subscription_annual_1` | `STRIPE_PRICE_ANNUAL` |
+| `$rc_three_month`, `$rc_quarterly`, `grocer_pro_subscription_quarterly_1` | `STRIPE_PRICE_QUARTERLY` |
+| `$rc_monthly`, `grocer_pro_subscription_monthly_1` | `STRIPE_PRICE_MONTHLY` |
+
+Stripe customers and subscriptions are tagged with
+`metadata.user_id = <Grocer purchase UID>` for RevenueCat webhook
+identification. The Worker also writes `metadata.app_user_id` for compatibility,
+but RevenueCat should be configured to read `user_id` so web purchases unlock
+the same mobile entitlement.
 
 ## Code layout
 

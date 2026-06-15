@@ -205,6 +205,9 @@ struct IOSConfig: Decodable {
         let feedback: Bool
         let liveActivities: Bool
     }
+    struct Payments: Decodable {
+        let externalPurchaseStorefronts: [String]
+    }
     let minimumSupportedBuild: Int
     let latestBuild: Int
     /// Optional: older/leaner server responses omit this field. When absent we
@@ -215,6 +218,7 @@ struct IOSConfig: Decodable {
     let status: String
     let updateUrl: String
     let features: Features
+    let payments: Payments?
 
     var updateURL: URL? {
         URL(string: updateUrl)
