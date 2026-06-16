@@ -8,6 +8,8 @@
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "dev:api": "pnpm --filter @grocer/api dev",
+    "dev:web": "pnpm --filter @grocer/web dev",
+    "start:web": "pnpm --filter @grocer/web start",
     "deploy:api": "pnpm --filter @grocer/api deploy",
     "test:api": "pnpm --filter @grocer/api test"
   },

@@ -1,7 +1,9 @@
 # Node / pnpm
 node_modules/
 dist/
+.next/
 .turbo/
+*.tsbuildinfo
 *.log
 npm-debug.log*
 pnpm-debug.log*
