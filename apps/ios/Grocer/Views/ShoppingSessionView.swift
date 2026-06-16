@@ -14,6 +14,7 @@ struct ShoppingSessionView: View {
     @State private var selectedItem: GroceryItem?
     @State private var showCompleted = true
     @State private var showFinish = false
+    @State private var showFinishConfirm = false
     @State private var showAddItem = false
     @State private var editingStore = false
     @State private var storeText = ""
@@ -80,7 +81,7 @@ struct ShoppingSessionView: View {
                         shopItemButton(item, canManageTrip: canManageTrip)
                     }
                 } header: {
-                    CategoryHeader(category: group.category)
+                    CategoryHeader(category: group.category, count: group.items.count)
                 }
             }
 
@@ -153,6 +154,12 @@ struct ShoppingSessionView: View {
         .navigationDestination(isPresented: $showFinish) {
             SessionSummaryView(session: session) { onExit() }
         }
+        .alert("Finish shopping?", isPresented: $showFinishConfirm) {
+            Button("Finish Anyway") { showFinish = true }
+            Button("Keep Shopping", role: .cancel) {}
+        } message: {
+            Text("^[\(progress.remaining) item](inflect: true) still on the list. Finish the trip anyway?")
+        }
         .alert("Store", isPresented: $editingStore) {
             TextField("Store name", text: $storeText)
             Button("Save") { repo.setStore(session, to: storeText) }
@@ -220,7 +227,10 @@ struct ShoppingSessionView: View {
         default:
             break
         }
-        withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+        // `.snappy` is critically damped (no overshoot). A bouncy spring made
+        // rows visibly jump past their spot while a category Section collapsed
+        // around them — `.snappy` keeps the section reflow clean.
+        withAnimation(.snappy(duration: 0.25)) {
             repo.mark(item, as: status, replacement: replacement)
         }
     }
@@ -268,7 +278,7 @@ struct ShoppingSessionView: View {
             }
             ProgressView(value: Double(progress.total - progress.remaining), total: Double(max(progress.total, 1)))
                 .tint(tint)
-                .animation(.easeInOut(duration: 0.4), value: progress.remaining)
+                .animation(.snappy(duration: 0.25), value: progress.remaining)
             HStack(spacing: 16) {
                 stat("\(progress.remaining)", String(localized: "left"))
                 stat("\(progress.found)", String(localized: "found"))
@@ -339,18 +349,26 @@ struct ShoppingSessionView: View {
     // MARK: - Finish button
 
     private var finishButton: some View {
-        Button {
+        let allHandled = progress.remaining == 0
+        return Button {
             Haptics.selection()
-            showFinish = true
+            if allHandled {
+                showFinish = true
+            } else {
+                showFinishConfirm = true
+            }
         } label: {
             Label("Finish Shopping", systemImage: "flag.checkered")
                 .font(.headline).frame(maxWidth: .infinity).padding(.vertical, 6)
         }
-        .buttonStyle(.borderedProminent)
+        .grocerGlassButton(prominent: true)
         .tint(tint)
         .controlSize(.large)
+        // Dimmed while items remain — still fully tappable, just signals there's
+        // unfinished work. Goes fully opaque once everything's been handled.
+        .opacity(allHandled ? 1 : 0.55)
+        .animation(.easeInOut(duration: 0.25), value: allHandled)
         .padding()
-        .background(.bar)
     }
 }
 
@@ -365,14 +383,25 @@ struct ShopItemRow: View {
         HStack(spacing: 12) {
             ProductImageView(itemName: item.name, size: 44)
 
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 5) {
                 Text(item.name)
                     .font(.body.weight(.medium))
-                if let detail = detail {
-                    Text(detail)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                if quantityText != nil || item.notes != nil {
+                    HStack(spacing: 6) {
+                        if let quantityText {
+                            Text(quantityText)
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 9)
+                                .padding(.vertical, 3)
+                                .grocerLiquidGlass(in: Capsule())
+                        }
+                        if let notes = item.notes {
+                            Text(notes)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
                 }
             }
 
@@ -388,8 +417,10 @@ struct ShopItemRow: View {
         .contentShape(Rectangle())
     }
 
-    private var detail: String? {
-        [item.quantity, item.notes].compactMap { $0 }.joined(separator: " · ").nilIfEmpty
+    /// Quantity shown as a multiplier ("50x bunches") in the glass pill.
+    private var quantityText: String? {
+        guard let qty = item.quantity?.nilIfEmpty else { return nil }
+        return Quantity.shoppingDisplayString(qty).nilIfEmpty
     }
 }
 
@@ -515,7 +546,7 @@ struct ShoppingItemDetailView: View {
                     .background(tint.opacity(0.12), in: Capsule())
 
                 if let qty = item.quantity {
-                    Text(qty)
+                    Text(Quantity.displayString(qty))
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 10)

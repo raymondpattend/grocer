@@ -75,7 +75,7 @@ extension ListColorTheme {
         case .teal: return String(localized: "Teal")
         case .mint: return String(localized: "Mint")
         case .brown: return String(localized: "Brown")
-        case .gray: return String(localized: "Gray")
+        case .gray: return String(localized: "Slate")
         }
     }
 }

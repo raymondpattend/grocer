@@ -9,38 +9,32 @@ struct WebCheckoutView: View {
     let url: URL
     var onClose: (Bool) -> Void = { _ in }
 
-    private static let checkoutSafeAreaTop = Color(
-        red: 104.0 / 255.0,
-        green: 205.0 / 255.0,
-        blue: 102.0 / 255.0
-    )
-
     @Environment(SubscriptionStore.self) private var subscriptions
     @Environment(\.dismiss) private var dismiss
     @State private var didCompleteCheckout = false
+    @State private var didCloseCheckout = false
     @State private var isLoading = true
 
     var body: some View {
         ZStack(alignment: .topLeading) {
             Color(.systemBackground).ignoresSafeArea()
 
-            VStack(spacing: 0) {
-                Self.checkoutSafeAreaTop
-                    .frame(height: 0)
-                    .ignoresSafeArea(edges: .top)
-                Spacer(minLength: 0)
-            }
-            .allowsHitTesting(false)
-
-            // Fill under the home indicator while leaving the top safe area
-            // visible for Stripe's hosted checkout chrome.
-            WebView(url: url, onLoadingChange: { loading in
-                isLoading = loading
-            }) {
-                checkoutDidComplete()
-            }
+            // Render the web content edge-to-edge, including under the top
+            // safe area, so the page fills the whole screen.
+            WebView(
+                url: url,
+                onLoadingChange: { loading in
+                    isLoading = loading
+                },
+                onCheckoutSuccess: {
+                    checkoutDidComplete()
+                },
+                onCheckoutCancel: {
+                    close()
+                }
+            )
                 .opacity(isLoading ? 0 : 1)
-                .ignoresSafeArea(edges: .bottom)
+                .ignoresSafeArea()
 
             if isLoading {
                 ProgressView()
@@ -63,8 +57,11 @@ struct WebCheckoutView: View {
 //            .padding(.top, 8)
         }
         // Checkout always renders in light theme regardless of the device's
-        // appearance, so the Stripe page styling stays consistent.
-        .preferredColorScheme(.light)
+        // appearance, so the Stripe page styling stays consistent. Use the
+        // environment value (not `preferredColorScheme`, which is a
+        // window-level preference that would flip the whole app) so only this
+        // view's subtree is forced light.
+        .environment(\.colorScheme, .light)
     }
 
     private func checkoutDidComplete() {
@@ -78,6 +75,8 @@ struct WebCheckoutView: View {
     }
 
     private func close() {
+        guard !didCloseCheckout else { return }
+        didCloseCheckout = true
         Haptics.selection()
         Task {
             await subscriptions.refresh()
@@ -93,6 +92,7 @@ private struct WebView: UIViewRepresentable {
     let url: URL
     var onLoadingChange: (Bool) -> Void = { _ in }
     let onCheckoutSuccess: () -> Void
+    let onCheckoutCancel: () -> Void
 
     func makeUIView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
@@ -116,17 +116,24 @@ private struct WebView: UIViewRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onLoadingChange: onLoadingChange, onCheckoutSuccess: onCheckoutSuccess)
+        Coordinator(
+            onLoadingChange: onLoadingChange,
+            onCheckoutSuccess: onCheckoutSuccess,
+            onCheckoutCancel: onCheckoutCancel
+        )
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate {
         private let onLoadingChange: (Bool) -> Void
         private let onCheckoutSuccess: () -> Void
+        private let onCheckoutCancel: () -> Void
 
         init(onLoadingChange: @escaping (Bool) -> Void,
-             onCheckoutSuccess: @escaping () -> Void) {
+             onCheckoutSuccess: @escaping () -> Void,
+             onCheckoutCancel: @escaping () -> Void) {
             self.onLoadingChange = onLoadingChange
             self.onCheckoutSuccess = onCheckoutSuccess
+            self.onCheckoutCancel = onCheckoutCancel
         }
 
         func webView(
@@ -134,7 +141,14 @@ private struct WebView: UIViewRepresentable {
             decidePolicyFor navigationAction: WKNavigationAction,
             decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
         ) {
-            if Self.isCheckoutSuccess(navigationAction.request.url) {
+            let url = navigationAction.request.url
+            if Self.isCheckoutCancel(url) {
+                onCheckoutCancel()
+                decisionHandler(.cancel)
+                return
+            }
+
+            if Self.isCheckoutSuccess(url) {
                 onCheckoutSuccess()
             }
             decisionHandler(.allow)
@@ -162,6 +176,11 @@ private struct WebView: UIViewRepresentable {
         private static func isCheckoutSuccess(_ url: URL?) -> Bool {
             guard let url else { return false }
             return url.path.contains("/checkout/success")
+        }
+
+        private static func isCheckoutCancel(_ url: URL?) -> Bool {
+            guard let url else { return false }
+            return url.path.contains("/checkout/cancelled")
         }
     }
 }

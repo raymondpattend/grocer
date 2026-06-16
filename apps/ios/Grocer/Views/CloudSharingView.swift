@@ -10,7 +10,7 @@ enum ShareSheetPresenter {
 
     static func presentInvite(url: URL) {
         let controller = UIActivityViewController(activityItems: [url], applicationActivities: nil)
-        controller.setValue(String(localized: "Join my Grocer group"), forKey: "subject")
+        controller.setValue(String(localized: "Join my Grocer list"), forKey: "subject")
         present(controller)
     }
 

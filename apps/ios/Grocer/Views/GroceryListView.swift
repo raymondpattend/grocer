@@ -10,6 +10,8 @@ struct GroceryListView: View {
 
     @State private var showingAddSearch = false
     @State private var showingSettings = false
+    @State private var showingInvite = false
+    @State private var showingHistory = false
     @State private var sessionForNav: ShoppingSession?
     @State private var selectedItem: GroceryItem?
     @State private var showStartTrip = false
@@ -19,11 +21,16 @@ struct GroceryListView: View {
     var body: some View {
         List {
             if let session = repo.activeSession {
-                ActiveSessionBanner(session: session, progress: repo.progress(for: session), tint: tint) {
+                ActiveSessionBanner(
+                    session: session,
+                    progress: repo.progress(for: session),
+                    shopper: repo.member(id: session.startedByMemberId, householdId: session.householdId),
+                    tint: tint
+                ) {
                     Haptics.selection()
                     sessionForNav = session
                 }
-                .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 12, trailing: 16))
+                .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 12, trailing: 0))
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
             }
@@ -35,13 +42,13 @@ struct GroceryListView: View {
                             itemButton(item)
                         }
                     } header: {
-                        CategoryHeader(category: group.category)
+                        CategoryHeader(category: group.category, count: group.items.count)
                     }
                 }
 
                 if repo.pendingItems.isEmpty {
                     ContentUnavailableView("Nothing on the list", systemImage: "checklist",
-                                           description: Text("Add what you need for \(repo.currentHousehold?.name ?? String(localized: "this group"))."))
+                                           description: Text("Add what you need for \(repo.currentHousehold?.name ?? String(localized: "this list"))."))
                     .padding(.top, 40)
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
@@ -60,15 +67,15 @@ struct GroceryListView: View {
             } else if repo.currentHousehold != nil {
                 // A group is selected but its list hasn't arrived yet — e.g.
                 // a freshly joined shared group whose records are still
-                // syncing. Showing "No groups yet" here would be misleading.
-                ContentUnavailableView("Syncing group…", systemImage: "icloud.and.arrow.down",
-                                       description: Text("\(repo.currentHousehold?.name ?? String(localized: "This group"))'s list is on its way."))
+                // syncing. Showing "No lists yet" here would be misleading.
+                ContentUnavailableView("Syncing list…", systemImage: "icloud.and.arrow.down",
+                                       description: Text("\(repo.currentHousehold?.name ?? String(localized: "This list")) is on its way."))
                 .padding(.top, 40)
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
             } else if repo.hasCompletedInitialLoad {
-                ContentUnavailableView("No groups yet", systemImage: "person.2",
-                                       description: Text("Create a group to start planning."))
+                ContentUnavailableView("No lists yet", systemImage: "person.2",
+                                       description: Text("Create a list to start planning."))
                 .padding(.top, 40)
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
@@ -96,25 +103,38 @@ struct GroceryListView: View {
             ItemDetailView(item: item)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if repo.currentList != nil && repo.activeSession == nil {
-                startShoppingButton
+            if repo.currentList != nil {
+                VStack(alignment: .trailing, spacing: 12) {
+                    floatingAddButton
+                    if repo.activeSession == nil {
+                        startShoppingButton
+                    }
+                }
+                .padding(.horizontal)
+                .padding(.bottom)
             }
         }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) { HapticBackButton() }
             ToolbarItemGroup(placement: .topBarTrailing) {
-                Button { Haptics.tap(); showingAddSearch = true } label: { Image(systemName: "plus") }
-                    .disabled(repo.currentList == nil)
+                if repo.isOwnerOfCurrentGroup && repo.currentHousehold != nil {
+                    Button { Haptics.tap(); showingInvite = true } label: { Image(systemName: "person.crop.circle.badge.plus") }
+                }
+                Button { Haptics.tap(); showingHistory = true } label: { Image(systemName: "clock.arrow.circlepath") }
                 Button { Haptics.tap(); showingSettings = true } label: { Image(systemName: "gearshape") }
             }
         }
         .fullScreenCover(isPresented: $showingAddSearch) {
             AddItemSearchView(tint: tint)
         }
+        .sheet(isPresented: $showingInvite) {
+            InviteToGroupSheet()
+        }
         .navigationDestination(isPresented: $showingSettings) { SettingsView() }
+        .navigationDestination(isPresented: $showingHistory) { TripHistoryView() }
         .sheet(isPresented: $showStartTrip) {
             StartTripSheet(
-                groupName: repo.currentHousehold?.name ?? String(localized: "this group"),
+                groupName: repo.currentHousehold?.name ?? String(localized: "this list"),
                 itemCount: repo.pendingItems.count,
                 tint: tint
             ) {
@@ -132,14 +152,29 @@ struct GroceryListView: View {
         Button {
             showStartTrip = true
         } label: {
-            Label("Start Shopping", systemImage: "cart.fill")
+            Label("Start Trip", systemImage: "cart.fill")
                 .font(.headline).frame(maxWidth: .infinity).padding(.vertical, 6)
         }
         .grocerGlassButton(prominent: true)
         .tint(tint)
         .controlSize(.large)
-        .padding()
         .disabled(repo.pendingItems.isEmpty)
+    }
+
+    /// Small floating glass add button, parked above the Start Shopping CTA.
+    private var floatingAddButton: some View {
+        Button {
+            Haptics.tap()
+            showingAddSearch = true
+        } label: {
+            Image(systemName: "plus")
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.primary)
+                .frame(width: 24, height: 24)
+                .padding(14)
+        }
+        .grocerGlassButton()
+        .buttonBorderShape(.circle)
     }
 
     private func itemButton(_ item: GroceryItem) -> some View {
@@ -194,7 +229,7 @@ struct GroceryItemRow: View {
 
                 HStack(spacing: 4) {
                     if let qty = item.quantity {
-                        Text(qty)
+                        Text(Quantity.displayString(qty))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -297,7 +332,7 @@ struct StartTripSheet: View {
                     Image(systemName: "cart.fill")
                         .font(.system(size: 40))
                         .foregroundStyle(tint)
-                    Text("Start Shopping")
+                    Text("Start Trip")
                         .font(.title2.bold())
                     Text("^[\(itemCount) item](inflect: true) on \(groupName)")
                         .font(.subheadline)
@@ -320,7 +355,7 @@ struct StartTripSheet: View {
                     dismiss()
                     onStart()
                 } label: {
-                    Label("Start Shopping", systemImage: "cart.fill")
+                    Label("Start Trip", systemImage: "cart.fill")
                         .font(.headline)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 6)
@@ -343,33 +378,39 @@ struct StartTripSheet: View {
 struct ActiveSessionBanner: View {
     let session: ShoppingSession
     let progress: SessionProgress
+    var shopper: HouseholdMember?
     var tint: Color = .green
     let onTap: () -> Void
 
     var body: some View {
         Button(action: onTap) {
-            HStack(spacing: 12) {
-                Image(systemName: "cart.fill")
-                    .font(.title2).foregroundStyle(.white)
-                    .frame(width: 44, height: 44)
-                    .background(Circle().fill(tint))
-                VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 14) {
+                ZStack(alignment: .bottomTrailing) {
+                    MemberAvatarView(member: shopper, size: 48)
+                    Image(systemName: "cart.fill")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.white)
+                        .padding(5)
+                        .background(Circle().fill(tint))
+                        .overlay(Circle().strokeBorder(Color(.systemGroupedBackground), lineWidth: 2))
+                        .offset(x: 4, y: 4)
+                }
+                VStack(alignment: .leading, spacing: 3) {
                     Text(headline)
                         .font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
+                        .lineLimit(2)
                     Text(String(localized: "\(progress.found) found · \(progress.remaining) left"))
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                Spacer()
-                Text("View")
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.right")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(tint)
-                Image(systemName: "chevron.right")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.quaternary)
             }
-            .padding(14)
-            .background(Color(.secondarySystemGroupedBackground))
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(tint.opacity(0.12))
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
         .buttonStyle(.plain)
     }

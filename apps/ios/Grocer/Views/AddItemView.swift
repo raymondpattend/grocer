@@ -141,6 +141,8 @@ struct AddItemSearchView: View {
     @State private var contentAppeared = false
     @State private var showHistory = false
     @State private var showDiscardConfirm = false
+    /// Whether the software keyboard is currently up — hides the bottom action.
+    @State private var keyboardVisible = false
 
     /// Debounce handle for the AI parse; cancelled and rescheduled on each edit.
     @State private var parseTask: Task<Void, Never>?
@@ -171,6 +173,9 @@ struct AddItemSearchView: View {
         ZStack {
             Color(.systemGroupedBackground)
                 .ignoresSafeArea()
+                // Tapping anywhere off a text field dismisses the keyboard.
+                .contentShape(Rectangle())
+                .onTapGesture { dismissKeyboard() }
 
             addFlowContent
                 .opacity(contentAppeared ? (showHistory ? 0 : 1) : 0)
@@ -185,6 +190,7 @@ struct AddItemSearchView: View {
                 HistoryItemsView(
                     suggestions: historySuggestions,
                     tint: tint,
+                    hasProposedItems: hasProposedItems,
                     onSelect: { name, quantity, category in
                         // Stay in History after adding so several previously-bought
                         // items can be batch-added; the user closes via Back.
@@ -225,9 +231,17 @@ struct AddItemSearchView: View {
             scheduleParse(after: .milliseconds(500))
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if !showHistory {
+            // Hide the bottom action while the keyboard is up so it doesn't ride
+            // above the keyboard; it returns once typing dismisses.
+            if !showHistory && !keyboardVisible {
                 bottomAction
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+            withAnimation(.easeInOut(duration: 0.2)) { keyboardVisible = true }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            withAnimation(.easeInOut(duration: 0.2)) { keyboardVisible = false }
         }
         .alert("Discard proposed items?", isPresented: $showDiscardConfirm) {
             Button("Discard", role: .destructive) {
@@ -250,9 +264,9 @@ struct AddItemSearchView: View {
             }
         } label: {
             Label("History", systemImage: "clock.arrow.circlepath")
-                .font(.footnote.weight(.semibold))
+                .font(.callout.weight(.semibold))
                 .foregroundStyle(.primary)
-                .padding(.horizontal, 10)
+                .padding(.horizontal, 8)
                 .frame(height: 34)
         }
         .tint(.primary)
@@ -264,18 +278,7 @@ struct AddItemSearchView: View {
         .accessibilityLabel("Add from history")
     }
 
-    @ViewBuilder
     private var addFlowContent: some View {
-        if #available(iOS 26.0, *) {
-            GlassEffectContainer(spacing: 14) {
-                flowStack
-            }
-        } else {
-            flowStack
-        }
-    }
-
-    private var flowStack: some View {
         VStack(spacing: 0) {
             header
                 .padding(.horizontal, 16)
@@ -283,42 +286,72 @@ struct AddItemSearchView: View {
                 .padding(.bottom, 8)
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    composePanel
-                    proposedPanel
-                }
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
-                // Reserve space for the floating History pill (height 34 + 16
-                // bottom inset) so a long proposed list can scroll clear of it
-                // instead of having its last rows overlapped.
-                .padding(.bottom, historySuggestions.isEmpty ? 24 : 74)
+                // The glass container lives inside the ScrollView so the cards'
+                // glass is rendered (and clipped) within the scroll bounds — otherwise
+                // it draws over the pinned header when the list scrolls up.
+                scrollContent
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+                    // Reserve space for the floating History pill (height 34 + 16
+                    // bottom inset) so a long proposed list can scroll clear of it
+                    // instead of having its last rows overlapped.
+                    .padding(.bottom, historySuggestions.isEmpty ? 24 : 74)
             }
             .scrollDismissesKeyboard(.interactively)
+        }
+    }
+
+    @ViewBuilder
+    private var scrollContent: some View {
+        if #available(iOS 26.0, *) {
+            GlassEffectContainer(spacing: 14) {
+                panels
+            }
+        } else {
+            panels
+        }
+    }
+
+    private var panels: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            composePanel
+            proposedPanel
         }
     }
 
     private var header: some View {
         HStack(spacing: 12) {
             Text("Add Items")
-                .font(.largeTitle.weight(.bold))
+                // ~10% larger than .headline (17pt).
+                .font(.system(size: 18.7, weight: .semibold))
+                .padding(.horizontal, 16)
+                .frame(height: 36)
+                .grocerLiquidGlass(in: Capsule())
+                // Purely a label — taps pass through to nothing.
+                .allowsHitTesting(false)
 
             Spacer()
 
             Button {
                 Haptics.tap()
-                attemptClose()
+                // While typing, the button drops the keyboard; otherwise it closes.
+                if keyboardVisible {
+                    dismissKeyboard()
+                } else {
+                    attemptClose()
+                }
             } label: {
-                Image(systemName: "xmark")
+                Image(systemName: keyboardVisible ? "keyboard.chevron.compact.down" : "xmark")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
                     .grocerLiquidGlass(in: Circle(), interactive: true)
+                    .contentTransition(.symbolEffect(.replace))
             }
             .buttonStyle(.plain)
             .tint(.primary)
-            .accessibilityLabel("Close")
+            .accessibilityLabel(keyboardVisible ? "Dismiss keyboard" : "Close")
         }
     }
 
@@ -675,6 +708,16 @@ struct AddItemSearchView: View {
             inputFocused = true
         }
     }
+
+    /// Resign whatever field is editing — the compose field or a draft row's text
+    /// field — so a tap off the inputs drops the keyboard.
+    private func dismissKeyboard() {
+        guard keyboardVisible else { return }
+        inputFocused = false
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil
+        )
+    }
 }
 
 /// A food detected from the input text, before it becomes an editable draft.
@@ -835,6 +878,9 @@ private struct ParsedGroceryDraftSkeletonRow: View {
 private struct HistoryItemsView: View {
     let suggestions: [GroceryItemSuggestion]
     var tint: Color
+    /// Whether the add flow currently has at least one staged item — gates the
+    /// header's confirm checkmark.
+    var hasProposedItems: Bool
     var onSelect: (String, String, GroceryCategory) -> Void
     var onRemove: (String) -> Void
     var onClose: () -> Void
@@ -869,32 +915,65 @@ private struct HistoryItemsView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 12) {
-            Button {
-                Haptics.tap()
-                onClose()
-            } label: {
-                Image(systemName: "chevron.left")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 44, height: 44)
-                    .grocerLiquidGlass(in: Circle(), interactive: true)
-                    .contentShape(Circle())
-            }
-            .buttonStyle(.plain)
-            .tint(.primary)
-            .accessibilityLabel("Back")
+        ZStack {
+            Text("History")
+                .font(.headline)
+                .padding(.horizontal, 16)
+                .frame(height: 36)
+                .grocerLiquidGlass(in: Capsule())
+                // Purely a label — taps pass through to nothing.
+                .allowsHitTesting(false)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text("History")
-                    .font(.title2.weight(.bold))
-                Text("Previously added by the group")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
+            HStack(spacing: 12) {
+                circleButton(systemImage: "chevron.left", accessibilityLabel: "Back") {
+                    onClose()
+                }
 
-            Spacer()
+                Spacer()
+
+                // Once at least one item is staged, offer a checkmark to confirm
+                // and return to the add flow. Filled + tinted so it reads as the
+                // primary action, clearly distinct from the glass back button.
+                if hasProposedItems {
+                    Button {
+                        Haptics.tap()
+                        onClose()
+                    } label: {
+                        Image(systemName: "checkmark")
+                            .font(.subheadline.weight(.bold))
+                            // Checkmark inverts against the fill: dark on the light
+                            // (dark-theme) circle, light on the dark (light-theme) one.
+                            .foregroundStyle(Color(.systemBackground))
+                            .frame(width: 44, height: 44)
+                            // Solid primary fill — white in dark mode, black in light.
+                            .background(Color.primary, in: Circle())
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Done")
+                    .transition(.scale(scale: 0.85).combined(with: .opacity))
+                }
+            }
         }
+        .animation(.spring(response: 0.3, dampingFraction: 0.84), value: hasProposedItems)
+    }
+
+    private func circleButton(systemImage: String, accessibilityLabel: String,
+                              action: @escaping () -> Void) -> some View {
+        Button {
+            Haptics.tap()
+            action()
+        } label: {
+            Image(systemName: systemImage)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 44, height: 44)
+                .grocerLiquidGlass(in: Circle(), interactive: true)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .tint(.primary)
+        .accessibilityLabel(accessibilityLabel)
     }
 
     private var searchField: some View {
@@ -1067,15 +1146,9 @@ private struct HistoryItemRow: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                if let last = suggestion.quantity?.trimmingCharacters(in: .whitespaces), !last.isEmpty {
-                    Text("Last: \(last)")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Label(suggestion.category.localizedName, systemImage: suggestion.category.systemImage)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                }
+                Label(suggestion.category.localizedName, systemImage: suggestion.category.systemImage)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
             }
         }
         .contentShape(Rectangle())

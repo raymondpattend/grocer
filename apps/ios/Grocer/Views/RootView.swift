@@ -156,7 +156,7 @@ private struct AcceptingInviteOverlay: View {
                     .controlSize(.large)
                     .tint(.white)
 
-                Text("Joining group\u{2026}")
+                Text("Joining list\u{2026}")
                     .font(.headline)
                     .foregroundStyle(.white)
             }
@@ -165,7 +165,7 @@ private struct AcceptingInviteOverlay: View {
             .environment(\.colorScheme, .dark)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(Text("Joining group"))
+        .accessibilityLabel(Text("Joining list"))
     }
 }
 
@@ -290,7 +290,7 @@ private struct JoinedGroupSheet: View {
 }
 
 #if DEBUG
-#Preview("Joined Group") {
+#Preview("Joined List") {
     @Previewable @State var isPresented = true
     Color.clear
         .sheet(isPresented: $isPresented) {
@@ -480,7 +480,7 @@ private struct OnboardingProfileSheet: View {
                 VStack(spacing: 8) {
                     Text("Your Profile")
                         .font(.title2.bold())
-                    Text("This is how your group will see you.")
+                    Text("This is how list members will see you.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -528,7 +528,7 @@ private struct OnboardingProfileSheet: View {
                 .tint(.green)
                 .disabled(!canContinue || !repo.hasCompletedInitialLoad)
 
-                Button("Join an Existing Group", action: onJoinExisting)
+                Button("Join an Existing List", action: onJoinExisting)
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.secondary)
             }
@@ -610,12 +610,12 @@ private struct JoinExistingGroupHelpView: View {
         NavigationStack {
             List {
                 Section {
-                    Label("Ask a group owner to send an invite from Settings.", systemImage: "person.crop.circle.badge.plus")
+                    Label("Ask a list owner to send an invite from Settings.", systemImage: "person.crop.circle.badge.plus")
                     Label("Open the invite link on this iPhone.", systemImage: "link")
-                    Label("Grocer will add the shared group after iCloud accepts it.", systemImage: "icloud.and.arrow.down")
+                    Label("Grocer will add the shared list after iCloud accepts it.", systemImage: "icloud.and.arrow.down")
                 }
             }
-            .navigationTitle("Join a Group")
+            .navigationTitle("Join a List")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -647,7 +647,7 @@ private struct JoinExistingGroupHelpView: View {
         }
 }
 
-#Preview("Onboarding Create Group") {
+#Preview("Onboarding Create List") {
     @Previewable @State var isPresented = true
     Color.clear
         .sheet(isPresented: $isPresented) {
@@ -775,11 +775,12 @@ private struct CloudIssueDetailSheet: View {
 
     var body: some View {
         VStack(spacing: 20) {
+            Spacer(minLength: 24)
+
             Image(systemName: CloudIssueChip.icon(for: issue))
                 .font(.system(size: 44, weight: .semibold))
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(CloudIssueChip.tint(for: issue))
-                .padding(.top, 28)
 
             Text(heading)
                 .font(.title2.bold())
@@ -805,7 +806,7 @@ private struct CloudIssueDetailSheet: View {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 6)
                 }
-                .buttonStyle(.borderedProminent)
+                .grocerGlassButton(prominent: true)
                 .controlSize(.large)
             } else {
                 Button(action: retry) {
@@ -817,14 +818,20 @@ private struct CloudIssueDetailSheet: View {
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 6)
                 }
-                .buttonStyle(.borderedProminent)
+                .grocerGlassButton(prominent: true)
                 .controlSize(.large)
                 .disabled(isRetrying)
             }
 
-            Button("Dismiss") { dismiss() }
-                .font(.subheadline.weight(.medium))
-                .padding(.bottom, 12)
+            Button(role: .cancel) { dismiss() } label: {
+                Text("Close")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+            }
+            .grocerGlassButton()
+            .controlSize(.large)
+            .padding(.bottom, 12)
         }
         .padding(.horizontal, 28)
         .frame(maxWidth: .infinity)
@@ -851,7 +858,7 @@ private struct CloudIssueDetailSheet: View {
     private var explanation: String {
         switch issue {
         case .iCloudUnavailable:
-            return String(localized: "Grocer keeps your groups in sync through iCloud. Open Settings, tap your name, and make sure you're signed in to iCloud with iCloud Drive turned on for Grocer.")
+            return String(localized: "Grocer keeps your lists in sync through iCloud. Open Settings, tap your name, and make sure you're signed in to iCloud with iCloud Drive turned on for Grocer.")
         case .offline:
             return String(localized: "Your changes are saved on this device and will sync automatically once you're back online. Check your Wi‑Fi or cellular connection.")
         case .syncError(let message):
@@ -868,11 +875,18 @@ private struct CloudIssueDetailSheet: View {
 
 struct CategoryHeader: View {
     let category: GroceryCategory
+    var count: Int?
     var body: some View {
-        Label(category.localizedName, systemImage: category.systemImage)
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .textCase(nil)
+        HStack(spacing: 6) {
+            Label(category.localizedName, systemImage: category.systemImage)
+            if let count {
+                Text("•")
+                Text("^[\(count) item](inflect: true)")
+            }
+        }
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(.secondary)
+        .textCase(nil)
     }
 }
 

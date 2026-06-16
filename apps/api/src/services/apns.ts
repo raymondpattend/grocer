@@ -374,21 +374,16 @@ function shoppingTripNotificationCopy(args: {
     };
   }
 
-  const progress =
-    args.itemsFound !== undefined && args.totalItems !== undefined
-      ? ` ${args.itemsFound}/${args.totalItems} items handled.`
-      : "";
-
   if (args.event === "completed") {
     return {
       title: "Shopping Finished",
-      body: `${shopper} finished shopping${store}.${progress}`,
+      body: `${shopper} finished shopping${store}.`,
     };
   }
 
   return {
     title: "Shopping Cancelled",
-    body: `${shopper} ended the shopping trip${store}.${progress}`,
+    body: `${shopper} ended the shopping trip${store}.`,
   };
 }
 

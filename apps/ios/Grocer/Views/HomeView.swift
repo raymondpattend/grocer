@@ -15,6 +15,7 @@ struct HomeView: View {
     @State private var showProPaywall = false
     @State private var editingGroup: Household?
     @State private var collapsedSharers: Set<String> = []
+    @State private var didHapticOnLoad = false
     @Namespace private var zoomNamespace
 
     private static let freeOwnedGroupLimit = 2
@@ -38,7 +39,7 @@ struct HomeView: View {
             }
             .background(Color(.systemGroupedBackground))
             .refreshable { await repo.manualRefresh() }
-            .navigationTitle("My Groups")
+            .navigationTitle("My Lists")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
@@ -48,7 +49,7 @@ struct HomeView: View {
                     } label: {
                         Image(systemName: separateShared ? "person.2.fill" : "person.2")
                     }
-                    .accessibilityLabel("Separate shared groups")
+                    .accessibilityLabel("Separate shared lists")
 
                     Button {
                         addGroupTapped()
@@ -56,8 +57,8 @@ struct HomeView: View {
                         Image(systemName: "plus")
                     }
                     .accessibilityLabel(isAtFreeOwnedGroupLimit
-                                        ? String(localized: "Upgrade to add group")
-                                        : String(localized: "New group"))
+                                        ? String(localized: "Upgrade to add list")
+                                        : String(localized: "New list"))
                 }
             }
             .navigationDestination(for: String.self) { householdId in
@@ -73,6 +74,15 @@ struct HomeView: View {
                 if let firstStale = path.firstIndex(where: { !valid.contains($0) }) {
                     path.removeSubrange(firstStale...)
                 }
+            }
+            // Tap when the first load lands, so the skeleton handing off to real
+            // content has a tactile "ready" beat. Only fires once, and only if
+            // we hadn't already finished loading by the time the view appeared.
+            .onAppear { didHapticOnLoad = repo.hasCompletedInitialLoad }
+            .onChange(of: repo.hasCompletedInitialLoad) { _, loaded in
+                guard loaded, !didHapticOnLoad else { return }
+                didHapticOnLoad = true
+                Haptics.success()
             }
             .sheet(isPresented: $showNewGroup) {
                 NavigationStack {
@@ -94,8 +104,8 @@ struct HomeView: View {
     private var content: some View {
         if repo.households.isEmpty {
             if repo.hasCompletedInitialLoad {
-                ContentUnavailableView("No groups yet", systemImage: "person.2",
-                                       description: Text("Create a group to start planning."))
+                ContentUnavailableView("No lists yet", systemImage: "person.2",
+                                       description: Text("Create a list to start planning."))
                 .padding(.top, 40)
             } else {
                 skeleton
@@ -104,7 +114,7 @@ struct HomeView: View {
             // Filled state: always show both section headers, even when a
             // section is empty, so the layout reads consistently.
             VStack(alignment: .leading, spacing: 24) {
-                groupSection(title: String(localized: "My Groups"), households: ownedHouseholds, includesProUpsell: true)
+                groupSection(title: String(localized: "My Lists"), households: ownedHouseholds, includesProUpsell: true)
                 sharedBySharerSection
             }
         } else if isAtFreeOwnedGroupLimit {
@@ -126,7 +136,7 @@ struct HomeView: View {
         VStack(alignment: .leading, spacing: 12) {
             sectionHeader(title)
             if households.isEmpty {
-                emptySectionPlaceholder(String(localized: "No groups here yet."))
+                emptySectionPlaceholder(String(localized: "No lists here yet."))
             } else {
                 groupCollection(households)
             }
@@ -212,8 +222,8 @@ struct HomeView: View {
                         .buttonStyle(.plain)
                         .accessibilityLabel(sharer.member?.displayName ?? String(localized: "Shared"))
                         .accessibilityHint(collapsed
-                                           ? String(localized: "Expand shared groups")
-                                           : String(localized: "Collapse shared groups"))
+                                           ? String(localized: "Expand shared lists")
+                                           : String(localized: "Collapse shared lists"))
 
                         if !collapsed {
                             groupCollection(sharer.households)
@@ -370,7 +380,7 @@ struct HomeView: View {
         .buttonStyle(.plain)
         .groupZoomSource(id: house.id, in: zoomNamespace)
         .contextMenu { contextActions(house) }
-        .overlay(alignment: .topTrailing) { cardMenu(house) }
+        .overlay(alignment: .topTrailing) { sharedBadge(house) }
     }
 
     /// The first few pending items, as a mini read-only list that fades out at
@@ -409,30 +419,19 @@ struct HomeView: View {
         }
     }
 
-    /// Top-right accessory: an ellipsis menu for groups you own, or a "shared"
-    /// badge for groups shared into your account.
+    /// Top-right accessory for groups shared into your account.
     @ViewBuilder
-    private func cardMenu(_ house: Household) -> some View {
+    private func sharedBadge(_ house: Household) -> some View {
         if repo.isSharedWithMe(house) {
             Image(systemName: "person.2.fill")
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .frame(width: 44, height: 44)
                 .accessibilityLabel("Shared with you")
-        } else {
-            Menu {
-                contextActions(house)
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-            }
         }
     }
 
-    /// Shared actions for both the ellipsis menu and the press-and-hold context menu.
+    /// Press-and-hold actions for group cards.
     @ViewBuilder
     private func contextActions(_ house: Household) -> some View {
         if !repo.isSharedWithMe(house) {
@@ -449,7 +448,7 @@ struct HomeView: View {
             repo.selectHousehold(house.id)
             editingGroup = house
         } label: {
-            Label("Edit Group", systemImage: "paintbrush")
+            Label("Edit List", systemImage: "paintbrush")
         }
     }
 
@@ -480,14 +479,58 @@ struct HomeView: View {
         repo.activeSession(for: repo.list(for: house)?.id) != nil
     }
 
+    // Number of preview rows to fake per skeleton card. Varied per card so the
+    // grid doesn't read as a rigid template.
+    private static let skeletonRowCounts = [4, 2, 3, 3]
+    // Point widths for the faked item-name lines, so rows look organic rather
+    // than uniform.
+    private static let skeletonRowWidths: [CGFloat] = [120, 78, 100, 64]
+
     private var skeleton: some View {
         LazyVGrid(columns: [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)],
                   spacing: 14) {
-            ForEach(0..<4, id: \.self) { _ in
-                ShimmerRect(cornerRadius: 20)
-                    .frame(height: Self.cardHeight)
+            ForEach(0..<4, id: \.self) { index in
+                skeletonCard(rows: Self.skeletonRowCounts[index % Self.skeletonRowCounts.count])
             }
         }
+    }
+
+    /// A placeholder that mirrors `gridCard`: a few item-preview rows up top,
+    /// then a title bar and count line anchored to the bottom. Matching the real
+    /// layout keeps the hand-off to loaded content from jumping.
+    private func skeletonCard(rows: Int) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(0..<rows, id: \.self) { row in
+                    HStack(spacing: 7) {
+                        ShimmerCircle()
+                            .frame(width: 22, height: 22)
+                        ShimmerRect(cornerRadius: 4)
+                            .frame(width: Self.skeletonRowWidths[row % Self.skeletonRowWidths.count],
+                                   height: 10)
+                        Spacer(minLength: 0)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+
+            VStack(alignment: .leading, spacing: 6) {
+                ShimmerRect(cornerRadius: 5)
+                    .frame(width: 96, height: 16)
+                ShimmerRect(cornerRadius: 4)
+                    .frame(width: 56, height: 11)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(height: Self.cardHeight)
+        .background(Color(.secondarySystemGroupedBackground),
+                    in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .strokeBorder(Color(.separator).opacity(0.6), lineWidth: 1)
+        }
+        .accessibilityHidden(true)
     }
 }
 

@@ -126,11 +126,13 @@ struct GrocerProGroupUpsellCopy {
 enum GrocerProPaywallContext {
     case general
     case groupLimit
+    case inviteLimit
 
     var metadataKey: String {
         switch self {
         case .general: return "general"
         case .groupLimit: return "group_limit"
+        case .inviteLimit: return "invite_limit"
         }
     }
 
@@ -139,12 +141,17 @@ enum GrocerProPaywallContext {
         case .general:
             return GrocerProPaywallCopy(
                 headline: String(localized: "Shop smarter\nwith Grocer Pro"),
-                subtitle: String(localized: "Unlimited groups, smarter shopping, history, and more, for the whole family.")
+                subtitle: String(localized: "Unlimited lists, smarter shopping, history, and more, for the whole family.")
             )
         case .groupLimit:
             return GrocerProPaywallCopy(
-                headline: String(localized: "Pro users can make\nunlimited groups"),
-                subtitle: String(localized: "Start with 2 groups, upgrade to Pro to make as many as you need.")
+                headline: String(localized: "Pro users can make\nunlimited lists"),
+                subtitle: String(localized: "Start with 2 lists, upgrade to Pro to make as many as you need.")
+            )
+        case .inviteLimit:
+            return GrocerProPaywallCopy(
+                headline: String(localized: "Invite the whole\nfamily with Pro"),
+                subtitle: String(localized: "Free lists can be shared with 2 people. Upgrade to Pro to invite as many as you like.")
             )
         }
     }
@@ -252,7 +259,7 @@ final class SubscriptionStore {
         let fallback = GrocerProGroupUpsellCopy(
             title: String(localized: "Upgrade to Grocer Pro"),
             subtitle: String(localized: "Unlimited lists, live activities, and more."),
-            accessibilityLabel: String(localized: "Upgrade to Grocer Pro. Create unlimited grocery groups.")
+            accessibilityLabel: String(localized: "Upgrade to Grocer Pro. Create unlimited grocery lists.")
         )
         guard let cardCopy = currentOffering?.metadata["home_group_limit_card"] as? [String: Any] else {
             return fallback

@@ -849,7 +849,7 @@ struct CloudKitUnavailable: LocalizedError {
 
 struct CloudInviteURLUnavailable: LocalizedError {
     var errorDescription: String? {
-        "CloudKit couldn't create an invite link for this group. Please try inviting again."
+        "CloudKit couldn't create an invite link for this list. Please try inviting again."
     }
 }
 

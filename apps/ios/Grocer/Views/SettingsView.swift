@@ -21,6 +21,8 @@ struct SettingsView: View {
     @State private var editingGroup: Household?
     @State private var openMemberRowId: String?
 
+    private static let proAccent = Color(red: 0.06, green: 0.72, blue: 0.51)
+
     var body: some View {
         ScrollView {
             VStack(spacing: 28) {
@@ -42,6 +44,7 @@ struct SettingsView: View {
         .swipeBackEnabled()
         .toolbar {
             ToolbarItem(placement: .topBarLeading) { HapticBackButton() }
+            ToolbarItem(placement: .principal) { GrocerGlassTitle("Settings") }
         }
         .onAppear {
             displayName = repo.displayName
@@ -61,12 +64,12 @@ struct SettingsView: View {
         }
         .confirmationDialog(
             repo.isOwnerOfCurrentGroup
-                ? String(localized: "Delete this group?")
-                : String(localized: "Leave this group?"),
+                ? String(localized: "Delete this list?")
+                : String(localized: "Leave this list?"),
             isPresented: $confirmLeave,
             titleVisibility: .visible
         ) {
-            Button(repo.isOwnerOfCurrentGroup ? String(localized: "Delete Group") : String(localized: "Leave Group"),
+            Button(repo.isOwnerOfCurrentGroup ? String(localized: "Delete List") : String(localized: "Leave List"),
                    role: .destructive) {
                 Haptics.warning()
                 repo.leaveCurrentGroup()
@@ -74,8 +77,8 @@ struct SettingsView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text(repo.isOwnerOfCurrentGroup
-                 ? String(localized: "As the owner, this deletes the group and its list for everyone.")
-                 : String(localized: "You’ll stop seeing this group’s lists on this device."))
+                 ? String(localized: "As the owner, this deletes the list for everyone.")
+                 : String(localized: "You’ll stop seeing this list on this device."))
         }
         .confirmationDialog("Delete all data?", isPresented: $confirmPurge, titleVisibility: .visible) {
             Button("Delete Everything", role: .destructive) {
@@ -84,7 +87,7 @@ struct SettingsView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This permanently deletes all groups, lists, and items from iCloud. You can create or join a group again afterward.")
+            Text("This permanently deletes all lists and items from iCloud. You can create or join a list again afterward.")
         }
         .sheet(isPresented: $showInviteIntro) {
             InviteToGroupSheet()
@@ -212,11 +215,12 @@ struct SettingsView: View {
     // MARK: - Grocer Pro
 
     private var proCard: some View {
-        card {
+        HStack(spacing: 14) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
                     Text("Grocer")
-                        .font(.title2.weight(.bold))
+                        .font(.system(.title2, design: .rounded).weight(.bold))
+                        .foregroundStyle(.white)
                     Text("Pro")
                         .font(.caption.weight(.bold))
                         .foregroundStyle(.black)
@@ -229,7 +233,8 @@ struct SettingsView: View {
                      ? subscriptions.displayStatus
                      : String(localized: "Get Pro to unlock all features"))
                     .font(.body)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.white.opacity(0.68))
+                    .fixedSize(horizontal: false, vertical: true)
 
                 Button {
                     Haptics.selection()
@@ -243,17 +248,60 @@ struct SettingsView: View {
                          ? String(localized: "Manage Subscription")
                          : String(localized: "Try for free"))
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(Color(.systemBackground))
+                        .foregroundStyle(.black)
                         .padding(.horizontal, 22)
                         .padding(.vertical, 11)
-                        .background(Color.primary, in: Capsule())
+                        .background(.white, in: Capsule())
                 }
                 .buttonStyle(.plain)
                 .padding(.top, 4)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(18)
+
+            Spacer(minLength: 12)
+
+            ZStack {
+                Image(systemName: "sparkle")
+                    .font(.system(size: 24, weight: .semibold))
+                    .offset(x: -22, y: -22)
+                Image(systemName: "lock.open")
+                    .font(.system(size: 42, weight: .medium))
+                    .rotationEffect(.degrees(8))
+            }
+            .foregroundStyle(.white)
+            .frame(width: 74, height: 62)
         }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .fill(Color(red: 0.05, green: 0.06, blue: 0.05))
+
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .fill(
+                    RadialGradient(
+                        colors: [Self.proAccent.opacity(0.72), .clear],
+                        center: .bottomTrailing,
+                        startRadius: 4,
+                        endRadius: 190
+                    )
+                )
+
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .fill(
+                    RadialGradient(
+                        colors: [Color.green.opacity(0.28), .clear],
+                        center: UnitPoint(x: 0.62, y: 0.86),
+                        startRadius: 0,
+                        endRadius: 150
+                    )
+                )
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .strokeBorder(Self.proAccent.opacity(0.34), lineWidth: 1)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .shadow(color: Self.proAccent.opacity(0.18), radius: 20, y: 8)
     }
 
     private func openManageSubscription() {
@@ -267,7 +315,7 @@ struct SettingsView: View {
     // MARK: - General
 
     private var generalSection: some View {
-        settingsSection(String(localized: "Group")) {
+        settingsSection(String(localized: "List")) {
             card {
                 if repo.isOwnerOfCurrentGroup {
                     HStack(spacing: 14) {
@@ -275,7 +323,7 @@ struct SettingsView: View {
                             .font(.body)
                             .foregroundStyle(Color.accentColor)
                             .frame(width: 24)
-                        TextField("Group Name", text: $groupName)
+                        TextField("List Name", text: $groupName)
                             .submitLabel(.done)
                             .onSubmit { commitGroupName() }
                         commitButton(isEnabled: canSaveGroupName) {
@@ -290,9 +338,9 @@ struct SettingsView: View {
                             .font(.body)
                             .foregroundStyle(Color.accentColor)
                             .frame(width: 24)
-                        Text("Group")
+                        Text("List")
                         Spacer()
-                        Text(repo.currentHousehold?.name ?? String(localized: "Group"))
+                        Text(repo.currentHousehold?.name ?? String(localized: "List"))
                             .foregroundStyle(.secondary)
                     }
                     .padding(.horizontal, 16)
@@ -306,7 +354,7 @@ struct SettingsView: View {
                         Haptics.selection()
                         editingGroup = repo.currentHousehold
                     } label: {
-                        rowLabel(String(localized: "Customize Group"), systemImage: "paintbrush", chevron: true)
+                        rowLabel(String(localized: "Customize List"), systemImage: "paintbrush", chevron: true)
                     }
                     .buttonStyle(.plain)
                 }
@@ -333,7 +381,7 @@ struct SettingsView: View {
                     Haptics.selection()
                     showInviteIntro = true
                 } label: {
-                    rowLabel(String(localized: "Invite to Group"), systemImage: "person.crop.circle.badge.plus",
+                    rowLabel(String(localized: "Invite to List"), systemImage: "person.crop.circle.badge.plus",
                              enabled: canInvite)
                 }
                 .buttonStyle(.plain)
@@ -351,11 +399,11 @@ struct SettingsView: View {
 
     private var membersFooter: String? {
         if !repo.isOwnerOfCurrentGroup {
-            return String(localized: "Only the group owner can invite people.")
+            return String(localized: "Only the list owner can invite people.")
         } else if let reason = repo.sharingUnavailableReason {
             return reason
         } else if repo.isOwnerOfCurrentGroup {
-            return String(localized: "Swipe left on a member to remove them from this group.")
+            return String(localized: "Swipe left on a member to remove them from this list.")
         }
         return nil
     }
@@ -389,7 +437,7 @@ struct SettingsView: View {
             card {
                 if repo.households.count > 1 || !repo.isOwnerOfCurrentGroup {
                     Button(role: .destructive) { confirmLeave = true } label: {
-                        rowLabel(repo.isOwnerOfCurrentGroup ? String(localized: "Delete Group") : String(localized: "Leave Group"),
+                        rowLabel(repo.isOwnerOfCurrentGroup ? String(localized: "Delete List") : String(localized: "Leave List"),
                                  systemImage: repo.isOwnerOfCurrentGroup ? "trash" : "rectangle.portrait.and.arrow.right",
                                  destructive: true)
                     }
@@ -619,15 +667,25 @@ private extension UIImage {
 
 struct InviteToGroupSheet: View {
     @Environment(GroceryRepository.self) private var repo
+    @Environment(SubscriptionStore.self) private var subscriptions
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
 
     @State private var preparingShare = false
     @State private var shareError: String?
     @State private var showingContacts = false
-    @State private var linkCopied = false
+    @State private var showingCopiedConfirmation = false
+    @State private var showProPaywall = false
 
     private var groupName: String {
         repo.currentHousehold?.name ?? String(localized: "My List")
+    }
+
+    /// Free accounts can only invite `freeInviteLimit` people per list. Once the
+    /// list already has that many participants, further invites require Pro.
+    private var isAtFreeInviteLimit: Bool {
+        !subscriptions.hasGrocerPro
+            && repo.invitedMemberCount >= GroceryRepository.freeInviteLimit
     }
 
     private var tint: Color {
@@ -635,7 +693,7 @@ struct InviteToGroupSheet: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
+        VStack(spacing: 30) {
             HStack {
                 Spacer()
                 closeButton
@@ -643,68 +701,60 @@ struct InviteToGroupSheet: View {
             .padding(.horizontal, 20)
             .padding(.top, 16)
 
-            Spacer(minLength: 0)
-
             Text("Shopping is better with friends")
-                .font(.system(size: 46, weight: .black))
-                .fontWidth(.compressed)
-                .textCase(.uppercase)
+                .font(.system(size: 40, weight: .bold, design: .rounded))
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, 24)
 
-            Text("Share your list so family and friends always know what to grab.")
-                .font(.body)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 32)
-                .padding(.top, 12)
-
-            Spacer(minLength: 0)
-
             shareCard
                 .padding(.horizontal, 48)
-
-            Spacer(minLength: 0)
         }
         .safeAreaInset(edge: .bottom) {
             HStack(spacing: 12) {
                 Button(action: invite) {
                     Text("Invite People")
                         .font(.headline)
-                        .foregroundStyle(.white)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 18)
-                        .background(Color.primary, in: Capsule())
+                        .foregroundStyle(primaryButtonForeground)
+                        .frame(maxWidth: .infinity, minHeight: 56)
+                        .background(Capsule().fill(primaryButtonBackground))
+                        .contentShape(Capsule())
                 }
+                .buttonStyle(.plain)
 
                 Button(action: copyLink) {
-                    Text(linkCopied ? "Copied!" : "Copy Link")
+                    Text("Copy Link")
                         .font(.headline)
-                        .foregroundStyle(.primary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 18)
-                        .overlay {
-                            if preparingShare { ProgressView() }
-                        }
-                        .background {
-                            Capsule().stroke(Color.primary.opacity(0.18), lineWidth: 1.5)
-                        }
+                        .foregroundStyle(preparingShare ? Color.secondary : Color.primary)
+                        .frame(maxWidth: .infinity, minHeight: 56)
+                        .background(Capsule().fill(copyButtonBackground))
+                        .contentShape(Capsule())
                 }
                 .disabled(preparingShare)
+                .buttonStyle(.plain)
             }
             .padding(.horizontal, 20)
-            .padding(.top, 12)
+            .padding(.top, 32)
             .padding(.bottom, 8)
         }
+        .presentationDetents([.height(512)])
+        .presentationDragIndicator(.visible)
         .sheet(isPresented: $showingContacts) {
             InviteContactsView()
+        }
+        .fullScreenCover(isPresented: $showProPaywall) {
+            GrocerProPaywallView(context: .inviteLimit)
         }
         .alert("Couldn\u{2019}t start sharing", isPresented: Binding(
             get: { shareError != nil }, set: { if !$0 { shareError = nil } }
         )) {
             Button("OK", role: .cancel) {}
         } message: { Text(shareError ?? "") }
+        .alert("Link Copied", isPresented: $showingCopiedConfirmation) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("The invite link has been copied.")
+        }
     }
 
     /// Tilted preview of the group being shared — mirrors the card recipients
@@ -769,8 +819,24 @@ struct InviteToGroupSheet: View {
         }
     }
 
+    private var primaryButtonForeground: Color {
+        colorScheme == .dark ? .black : .white
+    }
+
+    private var primaryButtonBackground: Color {
+        colorScheme == .dark ? .white : .black
+    }
+
+    private var copyButtonBackground: Color {
+        preparingShare ? Color.secondary.opacity(0.14) : Color.primary.opacity(0.06)
+    }
+
     private func invite() {
         Haptics.selection()
+        if isAtFreeInviteLimit {
+            showProPaywall = true
+            return
+        }
         if let reason = repo.sharingUnavailableReason {
             shareError = reason
         } else {
@@ -778,9 +844,13 @@ struct InviteToGroupSheet: View {
         }
     }
 
-    /// Mints a single-use invite link and drops it on the clipboard, with a brief
-    /// "Copied!" confirmation on the button itself.
+    /// Mints a single-use invite link and drops it on the clipboard.
     private func copyLink() {
+        if isAtFreeInviteLimit {
+            Haptics.selection()
+            showProPaywall = true
+            return
+        }
         if let reason = repo.sharingUnavailableReason {
             Haptics.error()
             shareError = reason
@@ -800,9 +870,7 @@ struct InviteToGroupSheet: View {
                 }
                 UIPasteboard.general.url = url
                 Haptics.success()
-                withAnimation { linkCopied = true }
-                try? await Task.sleep(for: .seconds(2))
-                withAnimation { linkCopied = false }
+                showingCopiedConfirmation = true
             } catch {
                 Haptics.error()
                 shareError = error.localizedDescription
@@ -812,20 +880,24 @@ struct InviteToGroupSheet: View {
 
     private var closeButton: some View {
         Button {
+            Haptics.tap()
             dismiss()
         } label: {
             Image(systemName: "xmark")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.primary)
-                .frame(width: 32, height: 32)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 44, height: 44)
+                .contentShape(Circle())
                 .modifier(GlassCircleBackground())
         }
+        .buttonStyle(.plain)
+        .tint(.primary)
         .accessibilityLabel("Close")
     }
 }
 
 #if DEBUG
-#Preview("Invite to Group") {
+#Preview("Invite to List") {
     @Previewable @State var isPresented = true
     Color.clear
         .sheet(isPresented: $isPresented) {

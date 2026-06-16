@@ -1,5 +1,5 @@
 "CFBundleDisplayName" = "Grocer";
 
-"NSContactsUsageDescription" = "Grocer uses your contacts so you can pick family and friends to invite to a group. Your contacts stay on your device.";
+"NSContactsUsageDescription" = "Grocer uses your contacts so you can pick family and friends to invite to a list. Your contacts stay on your device.";
 
 "NSUserTrackingUsageDescription" = "Grocer keeps your family grocery list in sync with iCloud.";

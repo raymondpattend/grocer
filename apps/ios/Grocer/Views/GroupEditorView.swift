@@ -32,7 +32,7 @@ struct GroupEditorView: View {
                         .font(.title2).foregroundStyle(.white)
                         .frame(width: 44, height: 44)
                         .background(Circle().fill(theme.color))
-                    TextField("Group name", text: $name).font(.headline)
+                    TextField("List name", text: $name).font(.headline)
                 }
             }
 
@@ -78,7 +78,7 @@ struct GroupEditorView: View {
             }
 
         }
-        .navigationTitle(isEditing ? String(localized: "Edit Group") : String(localized: "New Group"))
+        .navigationTitle(isEditing ? String(localized: "Edit List") : String(localized: "New List"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) { Button("Cancel") { Haptics.selection(); dismiss() } }
@@ -92,7 +92,7 @@ struct GroupEditorView: View {
             }
         }
         .onAppear(perform: load)
-        .alert("Couldn't Save Group", isPresented: Binding(
+        .alert("Couldn't Save List", isPresented: Binding(
             get: { saveError != nil },
             set: { if !$0 { saveError = nil } }
         )) {
@@ -116,7 +116,7 @@ struct GroupEditorView: View {
         if isEditing {
             guard repo.isOwnerOfCurrentGroup else {
                 Haptics.error()
-                saveError = String(localized: "Only the group owner can edit group details.")
+                saveError = String(localized: "Only the list owner can edit list details.")
                 return
             }
             repo.updateGroup(name: trimmedName, store: store, icon: icon, theme: theme)
@@ -142,8 +142,8 @@ struct GroupEditorView: View {
                 } else {
                     Haptics.error()
                     saveError = repo.usingCloudKit
-                        ? String(localized: "This group couldn't be saved to iCloud. Check Settings → Diagnostics for sync status, then try again.")
-                        : String(localized: "Sign in to iCloud to save groups across devices.")
+                        ? String(localized: "This list couldn't be saved to iCloud. Check Settings → Diagnostics for sync status, then try again.")
+                        : String(localized: "Sign in to iCloud to save lists across devices.")
                 }
             }
         }

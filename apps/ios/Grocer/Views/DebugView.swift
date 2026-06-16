@@ -211,15 +211,15 @@ struct DebugView: View {
             DebugRow(key: "Sessions", value: "\(repo.sessions.count)"),
             DebugRow(key: "Trip items", value: "\(repo.tripItems.count)"),
             DebugRow(key: "Events", value: "\(repo.events.count)"),
-            DebugRow(key: "Selected group", value: repo.selectedHouseholdId ?? "None", mono: true),
-            DebugRow(key: "Joined group", value: repo.joinedHouseholdId ?? "None", mono: true),
+            DebugRow(key: "Selected list", value: repo.selectedHouseholdId ?? "None", mono: true),
+            DebugRow(key: "Joined list", value: repo.joinedHouseholdId ?? "None", mono: true),
         ])
     }
 
     private var groupsSection: DebugSection {
         var rows: [DebugRow] = []
         if repo.households.isEmpty {
-            rows.append(DebugRow(key: "No groups", value: ""))
+            rows.append(DebugRow(key: "No lists", value: ""))
         }
         for household in repo.households {
             let memberCount = repo.members.filter { $0.householdId == household.id }.count
@@ -234,7 +234,7 @@ struct DebugView: View {
                 rows.append(DebugRow(key: "  Zone", value: "\(zone) / \(household.recordOwnerName ?? "—")", mono: true))
             }
         }
-        return DebugSection(title: "Groups", rows: rows)
+        return DebugSection(title: "Lists", rows: rows)
     }
 
     private var settingsSection: DebugSection {

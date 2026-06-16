@@ -704,10 +704,10 @@ final class GroceryRepository {
 
     var sharingUnavailableReason: String? {
         guard currentHousehold != nil else {
-            return String(localized: "Create a group before inviting members.")
+            return String(localized: "Create a list before inviting members.")
         }
         guard usingCloudKit else {
-            return String(localized: "Sign in to iCloud to invite members. Group sharing needs CloudKit, which isn't available in this build/session.")
+            return String(localized: "Sign in to iCloud to invite members. List sharing needs CloudKit, which isn't available in this build/session.")
         }
         switch syncState {
         case .idle, .syncing:
@@ -719,15 +719,25 @@ final class GroceryRepository {
         case .offline:
             return String(localized: "Reconnect to iCloud before inviting members.")
         case .error:
-            return String(localized: "iCloud sync is unavailable right now. Sharing will be available after this group syncs to iCloud.")
+            return String(localized: "iCloud sync is unavailable right now. Sharing will be available after this list syncs to iCloud.")
         }
         guard isOwnerOfCurrentGroup else {
-            return String(localized: "Only the group owner can invite members.")
+            return String(localized: "Only the list owner can invite members.")
         }
         return nil
     }
 
     var canShare: Bool { sharingUnavailableReason == nil }
+
+    /// Free accounts can invite up to this many people to a list. The list
+    /// owner does not count toward the limit — Grocer Pro lifts it entirely.
+    static let freeInviteLimit = 2
+
+    /// People on the current list besides the owner — i.e. the accepted
+    /// participants who count against `freeInviteLimit`.
+    var invitedMemberCount: Int {
+        max(0, currentMembers.count - 1)
+    }
     var displayName: String { currentMember?.displayName ?? settings.displayName }
     var profileImageData: Data? { currentMember?.profileImageData ?? settings.profileImageData }
 
@@ -1384,7 +1394,7 @@ final class GroceryRepository {
             return household
         } catch {
             print("[Repo] ❌ createGroup failed: \(error)")
-            syncState = .error(String(localized: "Couldn't save group: \(Self.shortError(error))"))
+            syncState = .error(String(localized: "Couldn't save list: \(Self.shortError(error))"))
             return nil
         }
     }
@@ -1438,7 +1448,7 @@ final class GroceryRepository {
     /// Update the current group's appearance (name, store, icon, theme).
     func updateGroup(name: String, store: String?, icon: String, theme: ListColorTheme) {
         guard isOwnerOfCurrentGroup else {
-            syncState = .error(String(localized: "Only the group owner can edit group details."))
+            syncState = .error(String(localized: "Only the list owner can edit list details."))
             return
         }
         guard var house = currentHousehold else { return }
@@ -1453,7 +1463,7 @@ final class GroceryRepository {
 
     func renameGroup(_ name: String) {
         guard isOwnerOfCurrentGroup else {
-            syncState = .error(String(localized: "Only the group owner can rename this group."))
+            syncState = .error(String(localized: "Only the list owner can rename this list."))
             return
         }
         guard var house = currentHousehold else { return }
@@ -1467,7 +1477,7 @@ final class GroceryRepository {
 
     func removeMember(_ member: HouseholdMember) {
         guard isOwnerOfCurrentGroup else {
-            syncState = .error(String(localized: "Only the group owner can remove members."))
+            syncState = .error(String(localized: "Only the list owner can remove members."))
             return
         }
         guard let household = households.first(where: { $0.id == member.householdId }) else { return }
@@ -1620,45 +1630,80 @@ final class GroceryRepository {
         let now = Date()
         let member = currentMember
         let session = activeSession(for: list.id)
-        let added = inputs.compactMap { input -> GroceryItem? in
-            let name = input.name.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !name.isEmpty else { return nil }
-            return GroceryItem(
-                id: cloud.makeRecordID().recordName,
-                householdId: household.id, listId: list.id,
-                name: name,
-                quantity: input.quantity?.nilIfBlank,
-                category: input.category,
-                notes: input.notes?.nilIfBlank,
-                requestedByMemberId: member?.id ?? settings.deviceId,
-                requestedByDisplayName: member?.displayName ?? settings.displayName,
-                status: .needed,
-                priority: input.priority,
-                replacementPreference: input.replacementPreference?.nilIfBlank,
-                replacementItemName: nil,
-                createdAt: now,
-                updatedAt: now,
-                completedAt: nil,
-                deletedAt: nil,
-                activeSessionId: session?.id
-            )
-        }
-        guard !added.isEmpty else { return [] }
 
-        items.append(contentsOf: added)
+        // Items still needed on this list, keyed by lowercased name. An add whose
+        // name matches one exactly (case aside) merges its quantity into that row
+        // instead of creating a duplicate — "10 bananas" + "5 bananas" → "15".
+        // New rows created in this same batch are folded in too, so repeated
+        // names within a single paste collapse together as well.
+        var byName: [String: GroceryItem] = [:]
+        for item in pendingItemsByListId[list.id] ?? [] {
+            let key = item.name.lowercased()
+            if byName[key] == nil { byName[key] = item }
+        }
+        let preexistingIds = Set(byName.values.map(\.id))
+
+        // Keys touched by this batch, in first-seen order, so persistence and the
+        // return value run in a stable order.
+        var touchedKeys: [String] = []
+
+        for input in inputs {
+            let name = input.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty else { continue }
+            let key = name.lowercased()
+
+            if var existing = byName[key] {
+                existing.quantity = Quantity.merged(existing.quantity, input.quantity)
+                existing.updatedAt = now
+                byName[key] = existing
+            } else {
+                byName[key] = GroceryItem(
+                    id: cloud.makeRecordID().recordName,
+                    householdId: household.id, listId: list.id,
+                    name: name,
+                    quantity: input.quantity?.nilIfBlank,
+                    category: input.category,
+                    notes: input.notes?.nilIfBlank,
+                    requestedByMemberId: member?.id ?? settings.deviceId,
+                    requestedByDisplayName: member?.displayName ?? settings.displayName,
+                    status: .needed,
+                    priority: input.priority,
+                    replacementPreference: input.replacementPreference?.nilIfBlank,
+                    replacementItemName: nil,
+                    createdAt: now,
+                    updatedAt: now,
+                    completedAt: nil,
+                    deletedAt: nil,
+                    activeSessionId: session?.id
+                )
+            }
+            if !touchedKeys.contains(key) { touchedKeys.append(key) }
+        }
+        guard !touchedKeys.isEmpty else { return [] }
+
+        let touched = touchedKeys.map { byName[$0]! }
+        let newItems = touched.filter { !preexistingIds.contains($0.id) }
+
+        items.append(contentsOf: newItems)
         performLocalPersistenceBatch {
-            for item in added {
+            for item in touched where preexistingIds.contains(item.id) {
+                replaceInWorkingSet(item)
+            }
+            for item in touched {
                 persist(item)
-                logEvent(.itemAdded, householdId: item.householdId, itemId: item.id, sessionId: session?.id,
+                let isNew = !preexistingIds.contains(item.id)
+                logEvent(isNew ? .itemAdded : .itemEdited,
+                         householdId: item.householdId, itemId: item.id, sessionId: session?.id,
                          metadata: ["name": item.name])
             }
         }
         // Prewarm the product image so it's a cache hit by the time it's viewed.
-        Task { await api.prewarmImages(added.map(\.name)) }
-        if let session, let lastItem = added.last {
+        // Only new items need it — merged ones were already on the list.
+        Task { await api.prewarmImages(newItems.map(\.name)) }
+        if let session, let lastItem = touched.last {
             pushLiveActivityUpdate(for: session, lastItem: lastItem, lastStatus: nil)
         }
-        return added
+        return touched
     }
 
     func update(_ item: GroceryItem) {
@@ -1896,6 +1941,17 @@ final class GroceryRepository {
                     item.status = .removed
                     item.deletedAt = now
                     item.completedAt = item.completedAt ?? now
+                    item.updatedAt = now
+                    changed.append(item)
+                } else {
+                    // Keep it on the list: the planning list only shows `.needed`
+                    // items, so a found/replaced item left as-is would silently
+                    // vanish. Reset it to needed so "Remove found items: off"
+                    // actually keeps the item visible.
+                    item.status = .needed
+                    item.completedAt = nil
+                    item.deletedAt = nil
+                    item.replacementItemName = nil
                     item.updatedAt = now
                     changed.append(item)
                 }

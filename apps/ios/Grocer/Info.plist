@@ -75,9 +75,9 @@
 	<key>NSUserTrackingUsageDescription</key>
 	<string>Grocer keeps your family grocery list in sync with iCloud.</string>
 	<!-- Shown when inviting people: we read contacts only to let you pick
-	     who to send a group invite to. Contacts never leave your device. -->
+	     who to send a list invite to. Contacts never leave your device. -->
 	<key>NSContactsUsageDescription</key>
-	<string>Grocer uses your contacts so you can pick family and friends to invite to a group. Your contacts stay on your device.</string>
+	<string>Grocer uses your contacts so you can pick family and friends to invite to a list. Your contacts stay on your device.</string>
 	<!-- App Store export compliance: only exempt encryption (HTTPS, etc.). -->
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>

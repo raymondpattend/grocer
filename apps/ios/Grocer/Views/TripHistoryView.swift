@@ -14,7 +14,7 @@ struct TripHistoryView: View {
                 ContentUnavailableView(
                     "No Trips Yet",
                     systemImage: "cart",
-                    description: Text("Finished shopping trips for this group will show up here.")
+                    description: Text("Finished shopping trips for this list will show up here.")
                 )
             } else {
                 List {
@@ -30,6 +30,11 @@ struct TripHistoryView: View {
         }
         .navigationTitle("Trip History")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                GrocerGlassTitle("Trip History")
+            }
+        }
     }
 
     @ViewBuilder

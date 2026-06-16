@@ -34,6 +34,17 @@ struct Quantity: Equatable {
 
     /// Recombine into a single string, e.g. "1.5 lb", "2 dozen", "3", or "".
     var formatted: String {
+        formatted(unit: unit)
+    }
+
+    /// Like `formatted`, but inflects the unit to match the amount for display —
+    /// "2 bunches", "1 jar", "3 boxes". Storage stays singular (use `formatted`);
+    /// this is only for labels and lists shown to the user.
+    var displayFormatted: String {
+        formatted(unit: GroceryUnits.form(unit, for: amount))
+    }
+
+    private func formatted(unit: String) -> String {
         let amountText = amount.map(Quantity.formatAmount) ?? ""
         let unitText = unit.trimmingCharacters(in: .whitespaces)
         switch (amountText.isEmpty, unitText.isEmpty) {
@@ -42,6 +53,54 @@ struct Quantity: Equatable {
         case (true, false): return unitText
         case (false, false): return "\(amountText) \(unitText)"
         }
+    }
+
+    /// Reformat a raw stored quantity string for display, inflecting the unit for
+    /// its amount ("2 bunch" → "2 bunches"). Leaves a blank string blank.
+    static func displayString(_ raw: String) -> String {
+        Quantity(parsing: raw).displayFormatted
+    }
+
+    /// Shopping-mode display: prefixes a numeric amount with a multiplier "x" so
+    /// counts read as "50x bunches". Falls back to the plain display when there's
+    /// no leading number ("dozen" stays "dozen", "1 jar" stays "1x jar").
+    var shoppingDisplayFormatted: String {
+        guard let amount else { return displayFormatted }
+        let amountText = "\(Quantity.formatAmount(amount))x"
+        let unitText = GroceryUnits.form(unit, for: amount)
+        return unitText.isEmpty ? amountText : "\(amountText) \(unitText)"
+    }
+
+    /// `shoppingDisplayFormatted` from a raw stored quantity string.
+    static func shoppingDisplayString(_ raw: String) -> String {
+        Quantity(parsing: raw).shoppingDisplayFormatted
+    }
+
+    /// Merges two free-form quantity strings for the same item into one, summing
+    /// their numeric amounts — e.g. "10" + "5" → "15", "1 dozen" + "1 dozen" →
+    /// "2 dozen". Used when an item is added whose name already matches one on
+    /// the list, so the amounts combine instead of creating a duplicate row.
+    ///
+    /// Units are reconciled best-effort: a shared unit (or one supplied by only
+    /// one side) is kept. In the rare case the two carry genuinely different
+    /// units, the existing side's unit is kept while the amounts are still summed
+    /// into the single surviving row. Returns `nil` when neither side has any
+    /// quantity at all.
+    static func merged(_ existing: String?, _ incoming: String?) -> String? {
+        let lhs = Quantity(parsing: existing ?? "")
+        let rhs = Quantity(parsing: incoming ?? "")
+
+        let unit = lhs.unit.isEmpty ? rhs.unit : lhs.unit
+        let amount: Double?
+        switch (lhs.amount, rhs.amount) {
+        case let (l?, r?): amount = l + r
+        case let (l?, nil): amount = l
+        case let (nil, r?): amount = r
+        case (nil, nil): amount = nil
+        }
+
+        let result = Quantity(amount: amount, unit: unit).formatted
+        return result.isEmpty ? nil : result
     }
 
     /// Drop a trailing ".0" so whole numbers read as "2" not "2.0".
@@ -67,6 +126,51 @@ enum GroceryUnits {
 
     static func step(for unit: String) -> Double {
         fractionalUnits.contains(unit.lowercased()) ? 0.5 : 1
+    }
+
+    /// Units that read the same regardless of count — abbreviations and collective
+    /// measures ("2 lb", "2 dozen", not "2 lbs" / "2 dozens").
+    private static let invariableUnits: Set<String> = [
+        "each", "dozen", "lb", "oz", "ml", "g", "kg",
+    ]
+
+    /// English plural of a unit ("bunch" → "bunches", "box" → "boxes", "loaf" →
+    /// "loaves"). Abbreviations and collective units are left untouched. Custom
+    /// units fall through to the standard rules.
+    static func pluralized(_ unit: String) -> String {
+        let trimmed = unit.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return trimmed }
+        let lower = trimmed.lowercased()
+        if invariableUnits.contains(lower) { return trimmed }
+
+        if lower.hasSuffix("fe") {
+            return String(trimmed.dropLast(2)) + "ves"      // knife → knives
+        }
+        if lower.hasSuffix("f") {
+            return String(trimmed.dropLast()) + "ves"       // loaf → loaves
+        }
+        if lower.hasSuffix("y"), let secondLast = lower.dropLast().last,
+           !"aeiou".contains(secondLast) {
+            return String(trimmed.dropLast()) + "ies"       // berry → berries
+        }
+        // A word already ending in a single "s" ("packs", "sticks", "cans") is
+        // almost always a custom unit the user already pluralized — leave it be
+        // rather than producing "packses". Only true sibilant singulars get "es".
+        if lower.hasSuffix("s") {
+            return lower.hasSuffix("ss") ? trimmed + "es" : trimmed  // glass → glasses, packs → packs
+        }
+        if lower.hasSuffix("x") || lower.hasSuffix("z")
+            || lower.hasSuffix("ch") || lower.hasSuffix("sh") {
+            return trimmed + "es"                            // bunch → bunches, box → boxes
+        }
+        return trimmed + "s"
+    }
+
+    /// The unit form matching `amount` — singular for exactly one (or no amount),
+    /// plural otherwise.
+    static func form(_ unit: String, for amount: Double?) -> String {
+        guard let amount, amount != 1 else { return unit }
+        return pluralized(unit)
     }
 }
 
@@ -175,6 +279,12 @@ struct QuantityStepperField: View {
         return unit.isEmpty ? (proposedUnit ?? "") : unit
     }
 
+    /// `effectiveUnit` inflected for the current amount ("bunches" at 4, "bunch"
+    /// at 1). Used only for the label — selection still keys off the singular.
+    private var displayUnit: String {
+        GroceryUnits.form(effectiveUnit, for: parsed.amount)
+    }
+
     private var amountLabel: String {
         parsed.amount.map(Quantity.formatAmount) ?? "0"
     }
@@ -197,7 +307,7 @@ struct QuantityStepperField: View {
     private var stepperControl: some View {
         QuantityStepperControl(
             amount: amountLabel,
-            accessibilityValue: "\(amountLabel) \(effectiveUnit)",
+            accessibilityValue: "\(amountLabel) \(displayUnit)",
             onDecrement: { adjust(-1) },
             onIncrement: { adjust(1) }
         )
@@ -225,7 +335,7 @@ struct QuantityStepperField: View {
             }
         } label: {
             HStack(spacing: 4) {
-                Text(effectiveUnit.isEmpty ? String(localized: "unit") : effectiveUnit)
+                Text(effectiveUnit.isEmpty ? String(localized: "unit") : displayUnit)
                     .foregroundStyle(effectiveUnit.isEmpty ? .secondary : .primary)
                     .lineLimit(1)
                 Image(systemName: "chevron.up.chevron.down")

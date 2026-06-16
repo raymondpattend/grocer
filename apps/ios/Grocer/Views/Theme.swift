@@ -137,22 +137,32 @@ private struct SwipeBackEnabler: UIViewControllerRepresentable {
     }
 }
 
+extension Color {
+    /// Toned-down accent palette. The stock system hues read as neon against the
+    /// app's glass surfaces, so green / teal / red are softened, and the flat gray
+    /// theme is replaced with a refined slate blue-gray.
+    static let grocerGreen = Color(red: 0.30, green: 0.64, blue: 0.42)
+    static let grocerTeal = Color(red: 0.27, green: 0.56, blue: 0.60)
+    static let grocerRed = Color(red: 0.80, green: 0.33, blue: 0.33)
+    static let grocerSlate = Color(red: 0.40, green: 0.44, blue: 0.52)
+}
+
 /// Maps the model-level `ListColorTheme` (UI-free) to SwiftUI colors.
 extension ListColorTheme {
     var color: Color {
         switch self {
-        case .green: return .green
+        case .green: return .grocerGreen
         case .blue: return .blue
         case .indigo: return .indigo
         case .purple: return .purple
         case .pink: return .pink
-        case .red: return .red
+        case .red: return .grocerRed
         case .orange: return .orange
         case .yellow: return .yellow
-        case .teal: return .teal
+        case .teal: return .grocerTeal
         case .mint: return .mint
         case .brown: return .brown
-        case .gray: return .gray
+        case .gray: return .grocerSlate
         }
     }
 
@@ -166,10 +176,30 @@ extension Household {
 extension ItemPriority {
     var markerColor: Color {
         switch self {
-        case .low: return .green
+        case .low: return .grocerGreen
         case .normal: return Color(.systemGray4)
-        case .high: return .red
+        case .high: return .grocerRed
         }
+    }
+}
+
+/// The app's standard navigation title: a small Liquid Glass capsule shown in
+/// place of the system inline title. Drop into a navigation bar with
+/// `.toolbar { ToolbarItem(placement: .principal) { GrocerGlassTitle("Settings") } }`.
+struct GrocerGlassTitle: View {
+    private let title: LocalizedStringKey
+
+    init(_ title: LocalizedStringKey) { self.title = title }
+
+    var body: some View {
+        Text(title)
+            // Matches the "Add Items" / "History" titles.
+            .font(.system(size: 18.7, weight: .semibold))
+            .padding(.horizontal, 16)
+            .frame(height: 36)
+            .grocerLiquidGlass(in: Capsule())
+            // Purely a label — taps pass through to nothing.
+            .allowsHitTesting(false)
     }
 }
 
@@ -192,7 +222,7 @@ struct PriorityLabel: View {
         switch priority {
         case .low: return Color(.systemGray)
         case .normal: return nil
-        case .high: return .red
+        case .high: return .grocerRed
         }
     }
 
