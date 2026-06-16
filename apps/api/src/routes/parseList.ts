@@ -15,13 +15,18 @@ parseListRoute.post("/parse-list", async (c) => {
 
   let aiItems: ParsedItem[] | null = null;
   try {
-    aiItems = await parseListWithAI(c.env, parsed.data.text);
+    aiItems = await parseListWithAI(c.env, parsed.data.text, {
+      executionCtx: c.executionCtx,
+      distinctId: "anonymous",
+    });
   } catch (err) {
     console.warn("AI list parsing failed; using deterministic fallback:", err);
   }
   const usedAI = !!(aiItems?.length);
   const items = usedAI ? aiItems! : parseList(parsed.data.text);
-  c.executionCtx.waitUntil(prewarmProductImages(c.env, items.map((item) => item.name)));
+  c.executionCtx.waitUntil(
+    prewarmProductImages(c.env, items.map((item) => item.name), 8, c.executionCtx),
+  );
 
   const posthog = createPostHogClient(c.env);
   posthog.capture({

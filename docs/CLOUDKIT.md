@@ -35,6 +35,25 @@ the first time the app saves a record. The schema below documents what the app
 writes (field keys come from `CloudKitSchema.swift`). Promote the schema to
 **production** from the CloudKit Console before shipping.
 
+### When "Deploy Schema Changes" shows nothing
+
+Deploy only copies fields that exist in **Development** but not **Production**.
+If a field was added to the app after `ShoppingTripItem` records were already
+saved in Development *without* that field, Development and Production can both
+be missing it — and there is nothing to deploy.
+
+Add the field manually in the CloudKit Console:
+
+1. Open [CloudKit Console](https://icloud.developer.apple.com/) → your container.
+2. Switch the environment to **Production** (top-left).
+3. **Schema** → **Record Types** → `ShoppingTripItem`.
+4. **Add Field** → name `replacementItemName`, type **String**, not queryable.
+5. Save, then repeat in **Development** if that environment is also missing the field.
+
+After the field exists, trip snapshots can store replacement names again. Until
+then, the app omits that field on `ShoppingTripItem` saves so trip completion
+still syncs.
+
 ### Household
 A group *is* the grocery list — it carries the store, icon, and color theme.
 | Field | Type |

@@ -262,7 +262,13 @@ export async function logApns(
   input: {
     sessionId?: string;
     deviceId?: string;
-    event: "start" | "update" | "end" | "start_notification" | "end_notification";
+    event:
+      | "start"
+      | "update"
+      | "end"
+      | "start_notification"
+      | "end_notification"
+      | "heads_up_notification";
     outcome: "sent" | "failed" | "expired";
     statusCode?: number;
     apnsId?: string;

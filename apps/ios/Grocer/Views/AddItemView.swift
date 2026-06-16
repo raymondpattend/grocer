@@ -19,6 +19,7 @@ struct AddItemView: View {
             if !repo.pastItemNames.isEmpty {
                 Section {
                     Button {
+                        Haptics.selection()
                         showPastItems = true
                     } label: {
                         Label("Add from Previous Items", systemImage: "clock.arrow.circlepath")
@@ -61,7 +62,10 @@ struct AddItemView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
-                Button("Cancel") { dismiss() }
+                Button("Cancel") {
+                    Haptics.tap()
+                    dismiss()
+                }
             }
             ToolbarItem(placement: .confirmationAction) {
                 Button("Add", action: save).bold()
@@ -1277,7 +1281,10 @@ private struct PastItemsSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel") {
+                        Haptics.tap()
+                        dismiss()
+                    }
                 }
             }
         }

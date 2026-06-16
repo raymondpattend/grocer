@@ -58,12 +58,20 @@ struct ItemActionSheet: View {
                     } label: {
                         Label("View Details", systemImage: "info.circle")
                     }
+                    .simultaneousGesture(TapGesture().onEnded {
+                        Haptics.selection()
+                    })
                 }
             }
             .navigationTitle("Quick Actions")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") {
+                        Haptics.tap()
+                        dismiss()
+                    }
+                }
             }
             .alert("Add Note", isPresented: $addingNote) {
                 TextField("Note", text: $note)
@@ -148,7 +156,12 @@ struct ReplacementSheet: View {
             .navigationTitle("Replacement")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        Haptics.tap()
+                        dismiss()
+                    }
+                }
             }
         }
     }

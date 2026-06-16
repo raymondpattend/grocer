@@ -118,6 +118,11 @@ actor APIClient {
         await post("/live-activity/end", body: payload)
     }
 
+    @discardableResult
+    func sendHeadsUp(_ payload: HeadsUpPayload) async -> FanoutResponse? {
+        await post("/live-activity/heads-up", body: payload)
+    }
+
     // MARK: - Transport
 
     private func get<T: Decodable>(
@@ -342,6 +347,14 @@ struct StartLiveActivityPayload: Encodable {
     let lastHandledItemName: String?
     let lastHandledItemStatus: String?
     let startedAt: String
+}
+
+struct HeadsUpPayload: Encodable {
+    let householdId: String
+    let sourceDeviceId: String
+    let shopperName: String
+    let storeName: String?
+    let sentAt: String
 }
 
 struct UpdateLiveActivityPayload: Encodable {

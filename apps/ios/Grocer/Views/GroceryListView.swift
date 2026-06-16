@@ -15,8 +15,17 @@ struct GroceryListView: View {
     @State private var sessionForNav: ShoppingSession?
     @State private var selectedItem: GroceryItem?
     @State private var showStartTrip = false
+    @State private var showHeadsUp = false
 
     private var tint: Color { repo.currentHousehold?.tint ?? .green }
+
+    /// The heads-up button only appears when there's something on the list to
+    /// shop for, and only when the group has someone else to notify.
+    private var canSendHeadsUp: Bool {
+        repo.currentHousehold != nil
+            && !repo.pendingItems.isEmpty
+            && repo.currentMembers.count > 1
+    }
 
     var body: some View {
         List {
@@ -117,6 +126,12 @@ struct GroceryListView: View {
         .toolbar {
             ToolbarItem(placement: .topBarLeading) { HapticBackButton() }
             ToolbarItemGroup(placement: .topBarTrailing) {
+                if canSendHeadsUp {
+                    Button { Haptics.tap(); showHeadsUp = true } label: {
+                        Image(systemName: "bell.and.waves.left.and.right")
+                    }
+                    .accessibilityLabel("Give the group a heads-up")
+                }
                 if repo.isOwnerOfCurrentGroup && repo.currentHousehold != nil {
                     Button { Haptics.tap(); showingInvite = true } label: { Image(systemName: "person.crop.circle.badge.plus") }
                 }
@@ -132,6 +147,9 @@ struct GroceryListView: View {
         }
         .navigationDestination(isPresented: $showingSettings) { SettingsView() }
         .navigationDestination(isPresented: $showingHistory) { TripHistoryView() }
+        .sheet(isPresented: $showHeadsUp) {
+            HeadsUpSheet()
+        }
         .sheet(isPresented: $showStartTrip) {
             StartTripSheet(
                 groupName: repo.currentHousehold?.name ?? String(localized: "this list"),
@@ -150,6 +168,7 @@ struct GroceryListView: View {
 
     private var startShoppingButton: some View {
         Button {
+            Haptics.selection()
             showStartTrip = true
         } label: {
             Label("Start Trip", systemImage: "cart.fill")
@@ -368,7 +387,10 @@ struct StartTripSheet: View {
             }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel") {
+                        Haptics.tap()
+                        dismiss()
+                    }
                 }
             }
         }

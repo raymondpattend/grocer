@@ -190,6 +190,19 @@ export type EndLiveActivityRequest = z.infer<
   typeof EndLiveActivityRequestSchema
 >;
 
+/**
+ * "Heads up, I'm about to shop" ping. Fans out a Time Sensitive notification to
+ * every other member of the group — no shopping session is involved yet.
+ */
+export const HeadsUpRequestSchema = z.object({
+  householdId: z.string().min(1),
+  sourceDeviceId: z.string().min(1).optional(),
+  shopperName: z.string().min(1),
+  storeName: z.string().nullable().optional(),
+  sentAt: isoDate,
+});
+export type HeadsUpRequest = z.infer<typeof HeadsUpRequestSchema>;
+
 export const PushFanoutResponseSchema = z.object({
   ok: z.boolean(),
   sent: z.number().int().nonnegative(),

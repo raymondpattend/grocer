@@ -118,6 +118,7 @@ targets:
       - path: Localization/Localizable.xcstrings
       # Shared types used by the widget target.
       - path: Grocer/Shared/GroceryActivityAttributes.swift
+      - path: Grocer/Shared/GroupDeepLink.swift
       - path: Grocer/Shared/WidgetSharedData.swift
     settings:
       base:

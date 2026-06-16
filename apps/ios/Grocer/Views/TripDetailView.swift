@@ -42,6 +42,11 @@ struct TripDetailView: View {
         }
         .navigationTitle("Trip")
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(true)
+        .swipeBackEnabled()
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) { HapticBackButton() }
+        }
     }
 
     private var headerSection: some View {

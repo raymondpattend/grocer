@@ -24,13 +24,19 @@ struct TripHistoryView: View {
                         } label: {
                             tripRow(trip)
                         }
+                        .simultaneousGesture(TapGesture().onEnded {
+                            Haptics.selection()
+                        })
                     }
                 }
             }
         }
         .navigationTitle("Trip History")
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(true)
+        .swipeBackEnabled()
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) { HapticBackButton() }
             ToolbarItem(placement: .principal) {
                 GrocerGlassTitle("Trip History")
             }

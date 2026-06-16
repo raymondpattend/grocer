@@ -392,6 +392,17 @@ final class GroceryRepository {
     private var cloudWriteTask: Task<Void, Never>?
     private var pendingCloudWrites: [String: PendingCloudWrite] = [:]
     private var nextCloudWriteRevision = 0
+    /// When Production CloudKit lacks `ShoppingTripItem.replacementItemName`, trip
+    /// item saves omit that field so session completion is not blocked.
+    private static let tripItemReplacementNameFieldKey = "grocer.cloudkit.tripItemReplacementNameFieldSupported"
+    private var supportsTripItemReplacementNameField: Bool {
+        get {
+            GrocerAppGroup.defaults.object(forKey: Self.tripItemReplacementNameFieldKey) as? Bool ?? true
+        }
+        set {
+            GrocerAppGroup.defaults.set(newValue, forKey: Self.tripItemReplacementNameFieldKey)
+        }
+    }
     /// Encoded `CKRecord` system fields keyed by record name. Lets the outbox
     /// re-save a record in one round trip (no pre-fetch for the change tag);
     /// refreshed on every fetch and after every successful save.
@@ -872,6 +883,7 @@ final class GroceryRepository {
     private func expireInactiveShoppingTrips(now: Date = Date()) async {
         let expired = sessions.filter { session in
             guard session.status == .active else { return false }
+            guard isStartedByCurrentUser(session) else { return false }
             return now.timeIntervalSince(lastActivityDate(for: session)) >= shoppingTripInactivityLimit
         }
 
@@ -1883,6 +1895,28 @@ final class GroceryRepository {
         }
     }
 
+    /// Sends a "heads up, I'm about to shop" Time Sensitive ping to everyone
+    /// else in the current group. No shopping session is started.
+    @discardableResult
+    func sendHeadsUp() async -> Bool {
+        guard let household = currentHousehold else { return false }
+        let member = currentMember
+        let payload = HeadsUpPayload(
+            householdId: household.id,
+            sourceDeviceId: settings.deviceId,
+            shopperName: member?.displayName ?? settings.displayName,
+            storeName: household.storeName?.nilIfBlank,
+            sentAt: ISO8601DateFormatter().string(from: Date())
+        )
+        let result = await api.sendHeadsUp(payload)
+        if let result {
+            print("[Repo] sendHeadsUp → sent=\(result.sent) failed=\(result.failed)")
+        } else {
+            print("[Repo] ⚠️ sendHeadsUp API call failed or returned nil")
+        }
+        return result != nil
+    }
+
     func setStore(_ session: ShoppingSession, to storeName: String?) {
         var updated = session
         updated.storeName = storeName?.nilIfBlank
@@ -1905,10 +1939,16 @@ final class GroceryRepository {
         let progress = progress(for: session)
         let payload = endPayload(session: ended, status: "completed", progress: progress)
         liveActivity.endLocalActivity(content: contentState(for: ended, overrideStatus: .completed))
+        await flushCriticalSessionWrites(sessionId: session.id)
         // Snapshot the trip's items *before* cleanup wipes their activeSessionId.
         captureTripItems(for: session, at: now)
         applyCleanup(session: session, clearCompleted: clearCompleted, keepOutOfStock: keepOutOfStock)
-        Task { await api.endLiveActivity(payload) }
+        await flushOutboxNow()
+        guard !hasPendingWrite(for: .session(ended)) else {
+            print("[Repo] ⚠️ finishShopping deferred Live Activity end; session completion still pending CloudKit")
+            return
+        }
+        await api.endLiveActivity(payload)
     }
 
     func cancelShopping(_ session: ShoppingSession) async {
@@ -1920,13 +1960,18 @@ final class GroceryRepository {
         replaceSession(cancelled)
         persist(cancelled)
         logEvent(.sessionCancelled, householdId: session.householdId, sessionId: session.id)
-        // A cancelled/auto-expired trip is still history; capture whatever was handled.
-        captureTripItems(for: session, at: now)
-
         let progress = progress(for: session)
         let payload = endPayload(session: cancelled, status: "cancelled", progress: progress)
         liveActivity.endLocalActivity(content: contentState(for: cancelled, overrideStatus: .cancelled))
-        Task { await api.endLiveActivity(payload) }
+        await flushCriticalSessionWrites(sessionId: session.id)
+        // A cancelled/auto-expired trip is still history; capture whatever was handled.
+        captureTripItems(for: session, at: now)
+        await flushOutboxNow()
+        guard !hasPendingWrite(for: .session(cancelled)) else {
+            print("[Repo] ⚠️ cancelShopping deferred Live Activity end; session cancellation still pending CloudKit")
+            return
+        }
+        await api.endLiveActivity(payload)
     }
 
     private func applyCleanup(session: ShoppingSession, clearCompleted: Bool, keepOutOfStock: Bool) {
@@ -1956,16 +2001,25 @@ final class GroceryRepository {
                     changed.append(item)
                 }
             case .outOfStock:
-                if !keepOutOfStock {
+                if keepOutOfStock {
                     item.status = .needed
                     item.completedAt = nil
                     item.deletedAt = nil
+                    item.replacementItemName = nil
+                    item.updatedAt = now
+                    changed.append(item)
+                } else {
+                    item.status = .removed
+                    item.deletedAt = now
+                    item.completedAt = item.completedAt ?? now
+                    item.updatedAt = now
                     changed.append(item)
                 }
             case .skipped:
                 item.status = .needed
                 item.completedAt = nil
                 item.deletedAt = nil
+                item.updatedAt = now
                 changed.append(item)
             default: break
             }
@@ -2525,6 +2579,10 @@ final class GroceryRepository {
         scheduleOutboxFlushDeferredIfNeeded()
     }
 
+    private func hasPendingWrite(for record: PendingCloudRecord) -> Bool {
+        pendingCloudWrites[record.key] != nil
+    }
+
     private func shouldQueueForCloud(_ record: PendingCloudRecord) -> Bool {
         if usingCloudKit { return true }
         guard let householdId = record.householdId else { return false }
@@ -2569,8 +2627,76 @@ final class GroceryRepository {
             }
             .sorted {
                 if $0.revision != $1.revision { return $0.revision < $1.revision }
+                let lp = Self.outboxPriority(for: $0.record)
+                let rp = Self.outboxPriority(for: $1.record)
+                if lp != rp { return lp < rp }
                 return $0.enqueuedAt < $1.enqueuedAt
             }
+    }
+
+    /// Session termination must reach CloudKit before trip-item snapshots so a
+    /// schema mismatch on one trip item cannot strand the group in Active.
+    private static func outboxPriority(for record: PendingCloudRecord) -> Int {
+        switch record {
+        case .session: return 0
+        case .event: return 1
+        case .item: return 2
+        case .tripItem: return 3
+        case .household, .member, .list: return 4
+        }
+    }
+
+    /// Flushes the session record and its lifecycle event before heavier trip-end
+    /// writes are enqueued.
+    private func flushCriticalSessionWrites(sessionId: String) async {
+        guard usingCloudKit else { return }
+        await cloudWriteTask?.value
+        await flushPendingWritesIndividually { record in
+            switch record {
+            case .session(let session):
+                return session.id == sessionId
+            case .event(let event):
+                return event.sessionId == sessionId
+            default:
+                return false
+            }
+        }
+    }
+
+    /// Saves matching outbox entries one record at a time so a poison record in
+    /// the same revision cannot block unrelated writes via atomic batch failure.
+    private func flushPendingWritesIndividually(
+        where include: (PendingCloudRecord) -> Bool
+    ) async {
+        guard usingCloudKit else { return }
+
+        var snapshotDirty = false
+        var systemFieldsDirty = false
+        var serverWon = false
+
+        while true {
+            let matching = eligiblePendingWrites().filter { include($0.record) }
+            guard !matching.isEmpty else { break }
+
+            let pendingBefore = Set(matching.map(\.key))
+            for write in matching {
+                guard pendingCloudWrites[write.key] == write else { continue }
+                let zone = recordID(for: write.record).zoneID
+                let outcome = await flushBatch([write], in: zone)
+                snapshotDirty = snapshotDirty || outcome.removedAny
+                systemFieldsDirty = systemFieldsDirty || outcome.systemFieldsChanged
+                serverWon = serverWon || outcome.serverWon
+            }
+
+            let stillPending = pendingBefore.filter { pendingCloudWrites[$0] != nil }
+            if stillPending.count == pendingBefore.count { break }
+        }
+
+        if systemFieldsDirty { localStore.saveSystemFields(recordSystemFields) }
+        if snapshotDirty { saveLocalSnapshot() }
+        if serverWon, !refreshInFlight {
+            try? await fetchAndApplyChanges()
+        }
     }
 
     /// Largest record count sent in a single CloudKit modify operation. CloudKit
@@ -2675,6 +2801,8 @@ final class GroceryRepository {
         var outcome = BatchOutcome()
         if syncState != .idle { syncState = .idle }
 
+        var atomicFailureWrites: [PendingCloudWrite] = []
+
         for (rid, saveResult) in results.save {
             guard let write = writeByRecordName[rid.recordName] else { continue }
             switch saveResult {
@@ -2684,10 +2812,32 @@ final class GroceryRepository {
                 outcome.systemFieldsChanged = true
                 if removeIfCurrent(write) { outcome.removedAny = true }
             case .failure(let error):
+                if writes.count > 1, Self.isBatchAtomicFailure(error) {
+                    atomicFailureWrites.append(write)
+                    continue
+                }
+                if Self.isTripItemReplacementNameSchemaError(error), case .tripItem = write.record {
+                    let resolution = await retryTripItemWithoutReplacementName(
+                        write: write, rid: rid, zone: zone, schemaError: error
+                    )
+                    outcome.removedAny = outcome.removedAny || resolution.removedAny
+                    outcome.systemFieldsChanged = outcome.systemFieldsChanged || resolution.systemFieldsChanged
+                    outcome.serverWon = outcome.serverWon || resolution.serverWon
+                    continue
+                }
                 let resolution = await handleSaveFailure(write: write, rid: rid, error: error, zone: zone)
                 outcome.removedAny = outcome.removedAny || resolution.removedAny
                 outcome.systemFieldsChanged = outcome.systemFieldsChanged || resolution.systemFieldsChanged
                 outcome.serverWon = outcome.serverWon || resolution.serverWon
+            }
+        }
+
+        if writes.count > 1, !atomicFailureWrites.isEmpty {
+            for write in atomicFailureWrites where pendingCloudWrites[write.key] == write {
+                let retryOutcome = await flushBatch([write], in: zone)
+                outcome.removedAny = outcome.removedAny || retryOutcome.removedAny
+                outcome.systemFieldsChanged = outcome.systemFieldsChanged || retryOutcome.systemFieldsChanged
+                outcome.serverWon = outcome.serverWon || retryOutcome.serverWon
             }
         }
 
@@ -2756,6 +2906,19 @@ final class GroceryRepository {
     /// merge; a dead zone discards; anything else defers for the next flush.
     private func handleSaveFailure(write: PendingCloudWrite, rid: CKRecord.ID, error: Error, zone: CKRecordZone.ID) async -> SaveFailureResolution {
         var outcome = SaveFailureResolution()
+        if Self.isTripItemReplacementNameSchemaError(error), case .tripItem = write.record {
+            return await retryTripItemWithoutReplacementName(
+                write: write, rid: rid, zone: zone, schemaError: error
+            )
+        }
+        if CloudKitSchemaTelemetry.parseMismatch(from: error) != nil {
+            reportSchemaMismatch(
+                error,
+                recordName: rid.recordName,
+                context: "icloud_save",
+                recovered: false
+            )
+        }
         if let ck = error as? CKError, ck.code == .serverRecordChanged {
             let resolution = await resolveConflict(write: write, error: ck, zone: zone)
             outcome.systemFieldsChanged = true
@@ -2798,17 +2961,94 @@ final class GroceryRepository {
     /// first save this session), avoiding redundant full-asset uploads on routine
     /// member saves (role repair, roster sync).
     private func applyFields(of pending: PendingCloudRecord, to record: CKRecord) {
-        guard case .member(let member) = pending else {
+        switch pending {
+        case .member(let member):
+            member.applyMetadata(to: record)
+            let recordName = pending.recordName
+            let newHash = member.profileImageData?.hashValue ?? 0
+            let serverHasRecord = recordSystemFields[recordName] != nil
+            if !serverHasRecord || lastUploadedMemberAvatarHash[recordName] != newHash {
+                member.applyProfileImage(to: record)
+            }
+        case .tripItem(let tripItem):
+            tripItem.apply(to: record, includeReplacementItemName: supportsTripItemReplacementNameField)
+        default:
             pending.apply(to: record)
-            return
         }
-        member.applyMetadata(to: record)
-        let recordName = pending.recordName
-        let newHash = member.profileImageData?.hashValue ?? 0
-        let serverHasRecord = recordSystemFields[recordName] != nil
-        if !serverHasRecord || lastUploadedMemberAvatarHash[recordName] != newHash {
-            member.applyProfileImage(to: record)
+    }
+
+    private func retryTripItemWithoutReplacementName(
+        write: PendingCloudWrite,
+        rid: CKRecord.ID,
+        zone: CKRecordZone.ID,
+        schemaError: Error
+    ) async -> SaveFailureResolution {
+        if supportsTripItemReplacementNameField {
+            supportsTripItemReplacementNameField = false
+            print("[Repo] ⚠️ ShoppingTripItem.replacementItemName missing in CloudKit schema; omitting field on trip snapshots")
+            reportSchemaMismatch(
+                schemaError,
+                recordName: rid.recordName,
+                context: "trip_item_omit_field",
+                recovered: true
+            )
         }
+
+        guard case .tripItem = write.record else {
+            return SaveFailureResolution()
+        }
+
+        let record = buildRecord(for: write.record, recordID: rid)
+
+        do {
+            let results = try await cloud.modify(saving: [record], deleting: [], in: zone)
+            if let saveResult = results.save[rid], case .success(let saved) = saveResult {
+                recordSystemFields[rid.recordName] = saved.encodedSystemFields()
+                if removeIfCurrent(write) {
+                    return SaveFailureResolution(removedAny: true, systemFieldsChanged: true, serverWon: false)
+                }
+            }
+        } catch {
+            print("[Repo] ⚠️ trip item retry without replacementItemName failed for \(rid.recordName): \(error)")
+            reportSchemaMismatch(
+                error,
+                recordName: rid.recordName,
+                context: "trip_item_omit_field_retry_failed",
+                recovered: false
+            )
+            _ = markWriteDeferred(write, error: error)
+            recordSyncFailure(error, context: "iCloud save failed")
+        }
+        return SaveFailureResolution()
+    }
+
+    private func reportSchemaMismatch(
+        _ error: Error,
+        recordName: String?,
+        context: String,
+        recovered: Bool
+    ) {
+        guard let mismatch = CloudKitSchemaTelemetry.parseMismatch(from: error) else { return }
+        CloudKitSchemaTelemetry.report(
+            mismatch: mismatch,
+            error: error,
+            context: context,
+            recordName: recordName,
+            recovered: recovered
+        )
+    }
+
+    private static func isBatchAtomicFailure(_ error: Error) -> Bool {
+        guard let ck = error as? CKError else { return false }
+        if ck.code == .batchRequestFailed { return true }
+        let message = ck.localizedDescription.lowercased()
+        return message.contains("atomic failure")
+    }
+
+    private static func isTripItemReplacementNameSchemaError(_ error: Error) -> Bool {
+        guard let mismatch = CloudKitSchemaTelemetry.parseMismatch(from: error) else { return false }
+        return mismatch.recordType.caseInsensitiveCompare(CK.RecordType.tripItem) == .orderedSame
+            && mismatch.fieldName == CK.Field.replacementItemName
     }
 
     private func rememberMemberAvatar(for pending: PendingCloudRecord) {
@@ -2864,11 +3104,15 @@ final class GroceryRepository {
             return ConflictResolution(resolved: false, serverWon: false)
         }
 
+        let localCompletedBeatsStaleCancellation = shouldKeepLocalCompletedSession(write: write, over: serverRecord)
         let localDate = updatedAt(of: write.record)
         let serverDate = (serverRecord[CK.Field.updatedAt] as? Date) ?? serverRecord.modificationDate
-        if let localDate, let serverDate, serverDate > localDate {
+        if !localCompletedBeatsStaleCancellation, let localDate, let serverDate, serverDate > localDate {
             print("[Repo] ↩︎ conflict: server newer for \(serverRecord.recordType) \(recordName); kept server")
             return ConflictResolution(resolved: true, serverWon: true)
+        }
+        if localCompletedBeatsStaleCancellation {
+            print("[Repo] ↻ conflict: keeping completed session over stale cancellation for \(recordName)")
         }
 
         // Local wins (newer, equal, or untimestamped): write our fields onto the
@@ -2929,11 +3173,15 @@ final class GroceryRepository {
                 return false
             }
             recordSystemFields[r.recordID.recordName] = serverRecord.encodedSystemFields()
+            let localCompletedBeatsStaleCancellation = shouldKeepLocalCompletedSession(localRecord: r, over: serverRecord)
             let localDate = r[CK.Field.updatedAt] as? Date
             let serverDate = (serverRecord[CK.Field.updatedAt] as? Date) ?? serverRecord.modificationDate
-            if let localDate, let serverDate, serverDate > localDate {
+            if !localCompletedBeatsStaleCancellation, let localDate, let serverDate, serverDate > localDate {
                 print("[Repo] ↩︎ conflict: server newer for \(r.recordType) \(r.recordID.recordName); kept server")
                 return true
+            }
+            if localCompletedBeatsStaleCancellation {
+                print("[Repo] ↻ conflict: keeping completed session over stale cancellation for \(r.recordID.recordName)")
             }
             for key in r.allKeys() { serverRecord[key] = r[key] }
             print("[Repo] ↻ retrying save for \(r.recordType) \(r.recordID.recordName) after conflict")
@@ -2973,9 +3221,32 @@ final class GroceryRepository {
     private func recordSyncFailure(_ error: Error, context: String) {
         if Self.isConnectivityError(error) {
             syncState = .offline
+        } else if Self.shouldSuppressUserVisibleSyncFailure(error) {
+            if case .syncing = syncState {
+                syncState = .idle
+            }
+            print("[Repo] ⚠️ \(context) deferred without surfacing sync issue: \(Self.shortError(error))")
         } else {
             syncState = .error(String(localized: "\(context): \(Self.shortError(error))"))
         }
+    }
+
+    private func shouldKeepLocalCompletedSession(write: PendingCloudWrite, over serverRecord: CKRecord) -> Bool {
+        guard write.operation == .save,
+              case .session(let session) = write.record,
+              session.status == .completed,
+              serverRecord.recordType == CK.RecordType.session,
+              (serverRecord[CK.Field.status] as? String) == SessionStatus.cancelled.rawValue else {
+            return false
+        }
+        return true
+    }
+
+    private func shouldKeepLocalCompletedSession(localRecord: CKRecord, over serverRecord: CKRecord) -> Bool {
+        localRecord.recordType == CK.RecordType.session
+            && serverRecord.recordType == CK.RecordType.session
+            && (localRecord[CK.Field.status] as? String) == SessionStatus.completed.rawValue
+            && (serverRecord[CK.Field.status] as? String) == SessionStatus.cancelled.rawValue
     }
 
     private func resetLocalSyncState() {
@@ -3124,6 +3395,26 @@ extension GroceryRepository {
         guard let ck = error as? CKError else { return false }
         switch ck.code {
         case .networkUnavailable, .networkFailure:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Recoverable CloudKit write/fetch failures should stay in diagnostics and
+    /// the outbox retry loop, but they should not interrupt the app with a red
+    /// "Sync issue" chip. The chip is reserved for problems that need the user.
+    static func shouldSuppressUserVisibleSyncFailure(_ error: Error) -> Bool {
+        guard let ck = error as? CKError else { return false }
+        switch ck.code {
+        case .requestRateLimited,
+             .serviceUnavailable,
+             .zoneBusy,
+             .serverRecordChanged,
+             .batchRequestFailed,
+             .partialFailure,
+             .limitExceeded,
+             .operationCancelled:
             return true
         default:
             return false

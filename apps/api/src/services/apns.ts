@@ -420,5 +420,43 @@ export function sendShoppingTripNotification(
   });
 }
 
+/**
+ * Send a Time Sensitive "heads up, I'm about to shop" alert. Unlike the trip
+ * lifecycle notifications this carries `interruption-level: time-sensitive` so
+ * it breaks through Focus/scheduled summaries — the recipient's last chance to
+ * add to the list before someone heads to the store.
+ */
+export function sendHeadsUpNotification(
+  env: Env,
+  deviceToken: string,
+  args: {
+    householdId: string;
+    shopperName?: string | null;
+    storeName?: string | null;
+  },
+): Promise<ApnsResult> {
+  const shopper = args.shopperName?.trim() || "Someone";
+  const store = args.storeName?.trim() ? ` to ${args.storeName.trim()}` : "";
+  const payload = {
+    aps: {
+      alert: {
+        title: "Heads up — shopping soon",
+        body: `${shopper} is about to head${store ? store : " out"} shopping. Add anything you need now.`,
+      },
+      sound: "default",
+      "interruption-level": "time-sensitive",
+      "thread-id": `heads-up-${args.householdId}`,
+    },
+    event: "shopping_heads_up",
+    householdId: args.householdId,
+  };
+
+  return postToApns(env, deviceToken, payload, {
+    priority: 10,
+    pushType: "alert",
+    topic: env.APNS_BUNDLE_ID,
+  });
+}
+
 /** Swift ActivityAttributes type name — must match GroceryActivityAttributes. */
 export const ACTIVITY_ATTRIBUTES_TYPE = "GroceryActivityAttributes";

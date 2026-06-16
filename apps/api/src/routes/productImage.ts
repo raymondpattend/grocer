@@ -1,9 +1,19 @@
 import { Hono } from "hono";
 import type { Env } from "../env.js";
+import {
+  captureAiEmbedding,
+  captureAiGeneration,
+  createAiSpanId,
+  createAiTraceId,
+} from "../lib/posthogAi.js";
 
 export const productImageRoute = new Hono<{ Bindings: Env }>();
 
 const SIMILARITY_THRESHOLD = 0.92;
+const OPENAI_EMBEDDINGS_URL = "https://api.openai.com/v1/embeddings";
+const OPENAI_IMAGE_GENERATIONS_URL = "https://api.openai.com/v1/images/generations";
+const EMBEDDING_MODEL = "text-embedding-3-small";
+const IMAGE_MODEL = "gpt-image-1.5";
 
 /**
  * In-flight generation promises keyed by normalized item name.
@@ -20,26 +30,96 @@ function r2Key(itemName: string): string {
   return `product-images/${normalize(itemName)}.png`;
 }
 
-async function embed(apiKey: string, text: string): Promise<number[]> {
-  const res = await fetch("https://api.openai.com/v1/embeddings", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "text-embedding-3-small",
-      input: text.trim().toLowerCase(),
-    }),
-  });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Embedding failed (${res.status}): ${body}`);
+async function embed(
+  env: Env,
+  text: string,
+  options: {
+    executionCtx?: ExecutionContext;
+    traceId?: string;
+    parentId?: string;
+    spanName?: string;
+  } = {},
+): Promise<number[]> {
+  const input = text.trim().toLowerCase();
+  const traceId = options.traceId ?? createAiTraceId("product-image");
+  const spanId = createAiSpanId("product-image-embedding");
+  const started = performance.now();
+  let httpStatus: number | undefined;
+  let captured = false;
+
+  try {
+    const res = await fetch(OPENAI_EMBEDDINGS_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: EMBEDDING_MODEL,
+        input,
+      }),
+    });
+    httpStatus = res.status;
+    const latencyMs = performance.now() - started;
+
+    if (!res.ok) {
+      const body = await res.text();
+      captureAiEmbedding({
+        env,
+        executionCtx: options.executionCtx,
+        traceId,
+        parentId: options.parentId,
+        spanId,
+        spanName: options.spanName ?? "product_image_embedding",
+        model: EMBEDDING_MODEL,
+        input,
+        latencyMs,
+        httpStatus,
+        isError: true,
+        error: body,
+      });
+      captured = true;
+      throw new Error(`Embedding failed (${res.status}): ${body}`);
+    }
+    const json = (await res.json()) as {
+      data: Array<{ embedding: number[] }>;
+      usage?: { prompt_tokens?: number; total_tokens?: number };
+    };
+    captureAiEmbedding({
+      env,
+      executionCtx: options.executionCtx,
+      traceId,
+      parentId: options.parentId,
+      spanId,
+      spanName: options.spanName ?? "product_image_embedding",
+      model: EMBEDDING_MODEL,
+      input,
+      inputTokens: json.usage?.prompt_tokens ?? json.usage?.total_tokens,
+      latencyMs,
+      httpStatus,
+      isError: false,
+    });
+    captured = true;
+    return json.data[0].embedding;
+  } catch (err) {
+    if (!captured) {
+      captureAiEmbedding({
+        env,
+        executionCtx: options.executionCtx,
+        traceId,
+        parentId: options.parentId,
+        spanId,
+        spanName: options.spanName ?? "product_image_embedding",
+        model: EMBEDDING_MODEL,
+        input,
+        latencyMs: performance.now() - started,
+        httpStatus,
+        isError: true,
+        error: err,
+      });
+    }
+    throw err;
   }
-  const json = (await res.json()) as {
-    data: Array<{ embedding: number[] }>;
-  };
-  return json.data[0].embedding;
 }
 
 function imageResponse(body: ReadableStream | Uint8Array): Response {
@@ -115,10 +195,15 @@ productImageRoute.get("/product-image", async (c) => {
   // 2. Embed the query and search Vectorize for a near-match
   const hasVectorize = typeof c.env.IMAGE_INDEX?.query === "function";
   let queryVec: number[] | undefined;
+  const traceId = createAiTraceId("product-image");
 
   if (hasVectorize) {
     try {
-      queryVec = await embed(c.env.OPENAI_API_KEY, name);
+      queryVec = await embed(c.env, name, {
+        executionCtx: c.executionCtx,
+        traceId,
+        spanName: "product_image_lookup_embedding",
+      });
 
       const matches = await c.env.IMAGE_INDEX.query(queryVec, {
         topK: 1,
@@ -149,7 +234,7 @@ productImageRoute.get("/product-image", async (c) => {
   // ~10s for the finished PNG. Cache/R2/vector hits above always return a plain
   // `image/png`, so a streaming client must branch on the response Content-Type.
   if (c.req.query("stream") === "1") {
-    return generateAndStream(c, c.env, name, exactKey, cacheKey, queryVec, hasVectorize);
+    return generateAndStream(c, c.env, name, exactKey, cacheKey, queryVec, hasVectorize, traceId);
   }
 
   // Non-stream path: coalesce concurrent generation requests for the same key.
@@ -163,7 +248,17 @@ productImageRoute.get("/product-image", async (c) => {
     return c.json({ ok: false, error: "Image generation failed" }, 502);
   }
 
-  const generation = generateAndCache(c.env, name, exactKey, queryVec, hasVectorize);
+  const generation = generateAndCache(
+    c.env,
+    name,
+    exactKey,
+    queryVec,
+    hasVectorize,
+    {
+      executionCtx: c.executionCtx,
+      traceId,
+    },
+  );
   inFlight.set(key, generation);
 
   try {
@@ -199,7 +294,7 @@ productImageRoute.post("/product-image/prewarm", async (c) => {
     return c.json({ ok: false, error: "Missing or empty 'names' array" }, 400);
   }
 
-  c.executionCtx.waitUntil(prewarmProductImages(c.env, names));
+  c.executionCtx.waitUntil(prewarmProductImages(c.env, names, 8, c.executionCtx));
   return c.json({ ok: true, queued: names.length }, 202);
 });
 
@@ -207,6 +302,7 @@ export async function prewarmProductImages(
   env: Env,
   itemNames: string[],
   limit = 8,
+  executionCtx?: ExecutionContext,
 ): Promise<void> {
   if (!env.OPENAI_API_KEY) return;
 
@@ -224,7 +320,7 @@ export async function prewarmProductImages(
   await Promise.all(
     names.map(async (name) => {
       try {
-        await ensureProductImage(env, name);
+        await ensureProductImage(env, name, executionCtx);
       } catch (err) {
         console.warn(`Image prewarm skipped for "${name}":`, err);
       }
@@ -232,9 +328,14 @@ export async function prewarmProductImages(
   );
 }
 
-async function ensureProductImage(env: Env, name: string): Promise<void> {
+async function ensureProductImage(
+  env: Env,
+  name: string,
+  executionCtx?: ExecutionContext,
+): Promise<void> {
   const key = normalize(name);
   if (!key) return;
+  const traceId = createAiTraceId("product-image-prewarm");
 
   const exactKey = r2Key(name);
   const exactHit = await env.IMAGES.get(exactKey);
@@ -245,7 +346,11 @@ async function ensureProductImage(env: Env, name: string): Promise<void> {
 
   if (hasVectorize) {
     try {
-      queryVec = await embed(env.OPENAI_API_KEY, name);
+      queryVec = await embed(env, name, {
+        executionCtx,
+        traceId,
+        spanName: "product_image_prewarm_embedding",
+      });
       const matches = await env.IMAGE_INDEX.query(queryVec, {
         topK: 1,
         returnMetadata: "all",
@@ -267,7 +372,10 @@ async function ensureProductImage(env: Env, name: string): Promise<void> {
     return;
   }
 
-  const generation = generateAndCache(env, name, exactKey, queryVec, hasVectorize);
+  const generation = generateAndCache(env, name, exactKey, queryVec, hasVectorize, {
+    executionCtx,
+    traceId,
+  });
   inFlight.set(key, generation);
   try {
     await generation;
@@ -376,45 +484,129 @@ async function generateAndCache(
   exactKey: string,
   queryVec: number[] | undefined,
   hasVectorize: boolean,
+  options: {
+    executionCtx?: ExecutionContext;
+    traceId?: string;
+  } = {},
 ): Promise<Uint8Array | null> {
-  const openaiRes = await fetch(
-    "https://api.openai.com/v1/images/generations",
-    {
+  const prompt = buildPrompt(name);
+  const traceId = options.traceId ?? createAiTraceId("product-image");
+  const spanId = createAiSpanId("product-image-generation");
+  const started = performance.now();
+  let httpStatus: number | undefined;
+  let captured = false;
+
+  try {
+    const openaiRes = await fetch(OPENAI_IMAGE_GENERATIONS_URL, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${env.OPENAI_API_KEY}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "gpt-image-1.5",
-        prompt: buildPrompt(name),
+        model: IMAGE_MODEL,
+        prompt,
         n: 1,
         size: "1024x1024",
         quality: "low",
         background: "transparent",
       }),
-    },
-  );
+    });
+    httpStatus = openaiRes.status;
+    const latencyMs = performance.now() - started;
 
-  if (!openaiRes.ok) {
-    const text = await openaiRes.text();
-    console.error("OpenAI image generation failed:", openaiRes.status, text);
-    return null;
+    if (!openaiRes.ok) {
+      const text = await openaiRes.text();
+      captureAiGeneration({
+        env,
+        executionCtx: options.executionCtx,
+        traceId,
+        spanId,
+        spanName: "product_image_generation",
+        model: IMAGE_MODEL,
+        input: [{ role: "user", content: prompt }],
+        latencyMs,
+        httpStatus,
+        isError: true,
+        error: text,
+        properties: {
+          "$ai_request_url": OPENAI_IMAGE_GENERATIONS_URL,
+          grocer_item_name: name,
+          grocer_image_key: exactKey,
+        },
+      });
+      captured = true;
+      console.error("OpenAI image generation failed:", openaiRes.status, text);
+      return null;
+    }
+
+    const result = (await openaiRes.json()) as {
+      data: Array<{ b64_json: string }>;
+      usage?: {
+        input_tokens?: number;
+        output_tokens?: number;
+      };
+    };
+
+    const b64 = result.data?.[0]?.b64_json;
+    captureAiGeneration({
+      env,
+      executionCtx: options.executionCtx,
+      traceId,
+      spanId,
+      spanName: "product_image_generation",
+      model: IMAGE_MODEL,
+      input: [{ role: "user", content: prompt }],
+      outputChoices: b64
+        ? [{
+          role: "assistant",
+          content: [{ type: "image", image: exactKey }],
+        }]
+        : [],
+      inputTokens: result.usage?.input_tokens,
+      outputTokens: result.usage?.output_tokens,
+      latencyMs,
+      httpStatus,
+      isError: !b64,
+      error: b64 ? undefined : "OpenAI returned no image data",
+      properties: {
+        "$ai_request_url": OPENAI_IMAGE_GENERATIONS_URL,
+        grocer_item_name: name,
+        grocer_image_key: exactKey,
+      },
+    });
+    captured = true;
+    if (!b64) {
+      console.error("OpenAI returned no image data");
+      return null;
+    }
+
+    const raw = b64ToBytes(b64);
+    await persistImage(env, name, exactKey, raw, queryVec, hasVectorize);
+    return raw;
+  } catch (err) {
+    if (!captured) {
+      captureAiGeneration({
+        env,
+        executionCtx: options.executionCtx,
+        traceId,
+        spanId,
+        spanName: "product_image_generation",
+        model: IMAGE_MODEL,
+        input: [{ role: "user", content: prompt }],
+        latencyMs: performance.now() - started,
+        httpStatus,
+        isError: true,
+        error: err,
+        properties: {
+          "$ai_request_url": OPENAI_IMAGE_GENERATIONS_URL,
+          grocer_item_name: name,
+          grocer_image_key: exactKey,
+        },
+      });
+    }
+    throw err;
   }
-
-  const result = (await openaiRes.json()) as {
-    data: Array<{ b64_json: string }>;
-  };
-
-  const b64 = result.data?.[0]?.b64_json;
-  if (!b64) {
-    console.error("OpenAI returned no image data");
-    return null;
-  }
-
-  const raw = b64ToBytes(b64);
-  await persistImage(env, name, exactKey, raw, queryVec, hasVectorize);
-  return raw;
 }
 
 /**
@@ -440,37 +632,62 @@ function generateAndStream(
   cacheKey: Request,
   queryVec: number[] | undefined,
   hasVectorize: boolean,
+  traceId: string = createAiTraceId("product-image"),
 ): Response {
   const sse = (event: string, data: unknown) =>
     new TextEncoder().encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
+      const prompt = buildPrompt(name);
+      const spanId = createAiSpanId("product-image-stream");
+      const started = performance.now();
+      let httpStatus: number | undefined;
+      let firstImageMs: number | undefined;
+      let captured = false;
       let finalB64: string | null = null;
       try {
-        const openaiRes = await fetch(
-          "https://api.openai.com/v1/images/generations",
-          {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${env.OPENAI_API_KEY}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              model: "gpt-image-1.5",
-              prompt: buildPrompt(name),
-              n: 1,
-              size: "1024x1024",
-              quality: "low",
-              background: "transparent",
-              stream: true,
-              partial_images: 2,
-            }),
+        const openaiRes = await fetch(OPENAI_IMAGE_GENERATIONS_URL, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${env.OPENAI_API_KEY}`,
+            "Content-Type": "application/json",
           },
-        );
+          body: JSON.stringify({
+            model: IMAGE_MODEL,
+            prompt,
+            n: 1,
+            size: "1024x1024",
+            quality: "low",
+            background: "transparent",
+            stream: true,
+            partial_images: 2,
+          }),
+        });
+        httpStatus = openaiRes.status;
 
         if (!openaiRes.ok || !openaiRes.body) {
           const text = openaiRes.body ? await openaiRes.text() : "(no body)";
+          captureAiGeneration({
+            env,
+            executionCtx: c.executionCtx,
+            traceId,
+            spanId,
+            spanName: "product_image_generation_stream",
+            model: IMAGE_MODEL,
+            input: [{ role: "user", content: prompt }],
+            latencyMs: performance.now() - started,
+            httpStatus,
+            stream: true,
+            isError: true,
+            error: text,
+            properties: {
+              "$ai_request_url": OPENAI_IMAGE_GENERATIONS_URL,
+              grocer_item_name: name,
+              grocer_image_key: exactKey,
+            },
+          });
+          captured = true;
           console.error("OpenAI stream failed:", openaiRes.status, text);
           controller.enqueue(sse("error", { message: "Image generation failed" }));
           return;
@@ -482,6 +699,7 @@ function generateAndStream(
         const emitImageEvent = (evt: OpenAIImageStreamEvent | null) => {
           if (!evt) return;
           if (evt.type === "image_generation.partial_image" && evt.b64_json) {
+            firstImageMs ??= performance.now() - started;
             controller.enqueue(
               sse("partial", {
                 index: evt.partial_image_index ?? 0,
@@ -489,6 +707,7 @@ function generateAndStream(
               }),
             );
           } else if (evt.type === "image_generation.completed" && evt.b64_json) {
+            firstImageMs ??= performance.now() - started;
             finalB64 = evt.b64_json;
             controller.enqueue(sse("complete", { b64_json: evt.b64_json }));
           }
@@ -514,7 +733,57 @@ function generateAndStream(
         if (!finalB64) {
           controller.enqueue(sse("error", { message: "No image produced" }));
         }
+        captureAiGeneration({
+          env,
+          executionCtx: c.executionCtx,
+          traceId,
+          spanId,
+          spanName: "product_image_generation_stream",
+          model: IMAGE_MODEL,
+          input: [{ role: "user", content: prompt }],
+          outputChoices: finalB64
+            ? [{
+              role: "assistant",
+              content: [{ type: "image", image: exactKey }],
+            }]
+            : [],
+          latencyMs: performance.now() - started,
+          httpStatus,
+          stream: true,
+          isError: !finalB64,
+          error: finalB64 ? undefined : "OpenAI returned no streamed image data",
+          properties: {
+            "$ai_request_url": OPENAI_IMAGE_GENERATIONS_URL,
+            grocer_item_name: name,
+            grocer_image_key: exactKey,
+            grocer_time_to_first_image_seconds: firstImageMs === undefined
+              ? undefined
+              : Math.round(firstImageMs) / 1_000,
+          },
+        });
+        captured = true;
       } catch (err) {
+        if (!captured) {
+          captureAiGeneration({
+            env,
+            executionCtx: c.executionCtx,
+            traceId,
+            spanId,
+            spanName: "product_image_generation_stream",
+            model: IMAGE_MODEL,
+            input: [{ role: "user", content: prompt }],
+            latencyMs: performance.now() - started,
+            httpStatus,
+            stream: true,
+            isError: true,
+            error: err,
+            properties: {
+              "$ai_request_url": OPENAI_IMAGE_GENERATIONS_URL,
+              grocer_item_name: name,
+              grocer_image_key: exactKey,
+            },
+          });
+        }
         console.error("Streaming generation error:", err);
         controller.enqueue(sse("error", { message: "Image generation failed" }));
       } finally {

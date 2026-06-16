@@ -367,6 +367,9 @@ struct SettingsView: View {
                     rowLabel(String(localized: "Trip History"), systemImage: "clock.arrow.circlepath", chevron: true)
                 }
                 .buttonStyle(.plain)
+                .simultaneousGesture(TapGesture().onEnded {
+                    Haptics.selection()
+                })
             }
         }
     }
@@ -436,7 +439,10 @@ struct SettingsView: View {
         settingsSection(String(localized: "More")) {
             card {
                 if repo.households.count > 1 || !repo.isOwnerOfCurrentGroup {
-                    Button(role: .destructive) { confirmLeave = true } label: {
+                    Button(role: .destructive) {
+                        Haptics.selection()
+                        confirmLeave = true
+                    } label: {
                         rowLabel(repo.isOwnerOfCurrentGroup ? String(localized: "Delete List") : String(localized: "Leave List"),
                                  systemImage: repo.isOwnerOfCurrentGroup ? "trash" : "rectangle.portrait.and.arrow.right",
                                  destructive: true)
@@ -445,7 +451,10 @@ struct SettingsView: View {
                     rowDivider
                 }
 
-                Button(role: .destructive) { confirmPurge = true } label: {
+                Button(role: .destructive) {
+                    Haptics.selection()
+                    confirmPurge = true
+                } label: {
                     HStack(spacing: 0) {
                         rowLabel(String(localized: "Reset All Data"), systemImage: "trash", destructive: true)
                         if purging { ProgressView().padding(.trailing, 16) }
@@ -907,6 +916,214 @@ struct InviteToGroupSheet: View {
 }
 #endif
 
+/// "I'm about to shop" sheet. Mirrors `InviteToGroupSheet`'s layout — big
+/// rounded title, a tilted group card, and a single capsule action — and fires
+/// a Time Sensitive heads-up to everyone else in the group.
+struct HeadsUpSheet: View {
+    @Environment(GroceryRepository.self) private var repo
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
+
+    @State private var sending = false
+    @State private var sent = false
+    @State private var sendError: String?
+
+    private var groupName: String {
+        repo.currentHousehold?.name ?? String(localized: "My List")
+    }
+
+    private var tint: Color {
+        repo.currentHousehold?.tint ?? .accentColor
+    }
+
+    private var otherMemberCount: Int {
+        max(0, repo.currentMembers.count - 1)
+    }
+
+    var body: some View {
+        VStack(spacing: 30) {
+            HStack {
+                Spacer()
+                closeButton
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 16)
+
+            VStack(spacing: 12) {
+                Text("Heading out soon?")
+                    .font(.system(size: 40, weight: .bold, design: .rounded))
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 24)
+
+                Text("We\u{2019}ll send a Time Sensitive alert so everyone can add what they need before you shop.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 36)
+            }
+
+            headsUpCard
+                .padding(.horizontal, 48)
+        }
+        .safeAreaInset(edge: .bottom) {
+            Button(action: send) {
+                Group {
+                    if sent {
+                        Label("Heads-Up Sent", systemImage: "checkmark")
+                    } else if otherMemberCount > 0 {
+                        Text("^[Notify \(otherMemberCount) person](inflect: true)")
+                    } else {
+                        Text("Send Heads-Up")
+                    }
+                }
+                .font(.headline)
+                .foregroundStyle(primaryButtonForeground)
+                .frame(maxWidth: .infinity, minHeight: 56)
+                .background(Capsule().fill(primaryButtonBackground))
+                .overlay(alignment: .trailing) {
+                    if sending { ProgressView().tint(primaryButtonForeground).padding(.trailing, 20) }
+                }
+                .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .disabled(sending || sent)
+            .padding(.horizontal, 20)
+            .padding(.top, 32)
+            .padding(.bottom, 8)
+        }
+        .presentationDetents([.height(496)])
+        .presentationDragIndicator(.visible)
+        .alert("Couldn\u{2019}t send heads-up", isPresented: Binding(
+            get: { sendError != nil }, set: { if !$0 { sendError = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: { Text(sendError ?? "") }
+    }
+
+    /// Tilted preview card — same silhouette as the invite sheet's share card,
+    /// re-skinned for the heads-up message.
+    private var headsUpCard: some View {
+        ZStack(alignment: .topLeading) {
+            Image(systemName: "bell.and.waves.left.and.right.fill")
+                .font(.system(size: 130))
+                .foregroundStyle(.white.opacity(0.08))
+                .rotationEffect(.degrees(-12))
+                .offset(x: 120, y: 70)
+
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Heads Up")
+                    .font(.caption.weight(.bold))
+                    .tracking(1.5)
+                    .textCase(.uppercase)
+                    .foregroundStyle(.white.opacity(0.85))
+
+                HStack(spacing: 10) {
+                    Image(systemName: repo.currentHousehold?.icon ?? "cart.fill")
+                        .font(.title3.weight(.semibold))
+                    Text(groupName)
+                        .font(.title2.bold())
+                        .lineLimit(1)
+                }
+                .foregroundStyle(.white)
+                .padding(.top, 8)
+
+                Spacer(minLength: 12)
+
+                HStack {
+                    memberAvatars
+                    Spacer()
+                    Label("Time Sensitive", systemImage: "clock.badge.exclamationmark")
+                        .labelStyle(.titleAndIcon)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.85))
+                }
+            }
+            .padding(20)
+        }
+        .frame(height: 190)
+        .background(tint.gradient)
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .rotationEffect(.degrees(-4))
+        .shadow(color: tint.opacity(0.35), radius: 24, x: 0, y: 14)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text("Heads-up to \(groupName)"))
+    }
+
+    @ViewBuilder
+    private var memberAvatars: some View {
+        let members = repo.currentMembers.prefix(4)
+        HStack(spacing: -10) {
+            ForEach(Array(members.enumerated()), id: \.element.id) { _, member in
+                ProfilePicture(
+                    imageData: repo.isCurrentUser(member) ? repo.profileImageData : member.profileImageData,
+                    size: 30
+                )
+                .overlay(Circle().stroke(.white.opacity(0.6), lineWidth: 1.5))
+            }
+        }
+    }
+
+    private var primaryButtonForeground: Color {
+        colorScheme == .dark ? .black : .white
+    }
+
+    private var primaryButtonBackground: Color {
+        colorScheme == .dark ? .white : .black
+    }
+
+    private func send() {
+        guard !sending, !sent else { return }
+        Haptics.selection()
+        sending = true
+        PostHogSDK.shared.capture("shopping_heads_up_sent", properties: [
+            "group_name": groupName,
+            "member_count": otherMemberCount,
+        ])
+        Task {
+            let ok = await repo.sendHeadsUp()
+            sending = false
+            if ok {
+                Haptics.success()
+                withAnimation(.snappy) { sent = true }
+                try? await Task.sleep(for: .seconds(0.9))
+                dismiss()
+            } else {
+                Haptics.error()
+                sendError = String(localized: "Something went wrong sending the heads-up. Please try again.")
+            }
+        }
+    }
+
+    private var closeButton: some View {
+        Button {
+            Haptics.tap()
+            dismiss()
+        } label: {
+            Image(systemName: "xmark")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 44, height: 44)
+                .contentShape(Circle())
+                .modifier(GlassCircleBackground())
+        }
+        .buttonStyle(.plain)
+        .tint(.primary)
+        .accessibilityLabel("Close")
+    }
+}
+
+#if DEBUG
+#Preview("Heads Up") {
+    @Previewable @State var isPresented = true
+    Color.clear
+        .sheet(isPresented: $isPresented) {
+            HeadsUpSheet()
+                .grocerPreviewEnvironment()
+        }
+}
+#endif
+
 /// Liquid glass circular background on iOS 26+, with a material fallback.
 private struct GlassCircleBackground: ViewModifier {
     func body(content: Content) -> some View {
@@ -946,7 +1163,12 @@ struct FeedbackView: View {
         .navigationTitle("Send Feedback")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } }
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Close") {
+                    Haptics.tap()
+                    dismiss()
+                }
+            }
             ToolbarItem(placement: .confirmationAction) {
                 Button("Send") { send() }
                     .disabled(message.trimmingCharacters(in: .whitespaces).isEmpty || sending)

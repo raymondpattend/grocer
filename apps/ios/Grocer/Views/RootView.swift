@@ -46,6 +46,10 @@ struct RootView: View {
         .onDisappear {
             repo.stopForegroundRefreshLoop()
         }
+        .onOpenURL { url in
+            guard let householdId = GroupDeepLink.householdId(from: url) else { return }
+            GroupNavigationCoordinator.shared.openGroup(householdId: householdId)
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 repo.startForegroundRefreshLoop()
@@ -116,7 +120,10 @@ private struct RequiredAppUpdateView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            Button(action: openUpdate) {
+            Button {
+                Haptics.selection()
+                openUpdate()
+            } label: {
                 Label("Update App", systemImage: "arrow.up.forward.app.fill")
                     .font(.headline)
                     .frame(maxWidth: .infinity)
@@ -216,6 +223,7 @@ private struct JoinedGroupSheet: View {
             Spacer()
 
             Button {
+                Haptics.tap()
                 repo.dismissJoinedHousehold()
                 dismiss()
             } label: {
@@ -397,6 +405,7 @@ private struct OnboardingView: View {
                 }
 
                 Button {
+                    Haptics.selection()
                     activeSheet = .profile
                 } label: {
                     Text("Continue")
@@ -517,7 +526,10 @@ private struct OnboardingProfileSheet: View {
             Spacer()
 
             VStack(spacing: 16) {
-                Button(action: continueToCreateGroup) {
+                Button {
+                    Haptics.selection()
+                    continueToCreateGroup()
+                } label: {
                     Text("Continue")
                         .font(.headline)
                         .frame(maxWidth: .infinity)
@@ -528,7 +540,10 @@ private struct OnboardingProfileSheet: View {
                 .tint(.green)
                 .disabled(!canContinue || !repo.hasCompletedInitialLoad)
 
-                Button("Join an Existing List", action: onJoinExisting)
+                Button("Join an Existing List") {
+                    Haptics.selection()
+                    onJoinExisting()
+                }
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.secondary)
             }
@@ -619,7 +634,10 @@ private struct JoinExistingGroupHelpView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+                    Button("Done") {
+                        Haptics.tap()
+                        dismiss()
+                    }
                 }
             }
         }
@@ -700,39 +718,60 @@ private extension UIImage {
 struct CloudIssueChip: View {
     let issue: GroceryRepository.CloudIssue?
 
-    @State private var showDetail = false
+    @State private var detailIssue: CloudIssuePresentation?
 
     var body: some View {
-        if let issue {
-            Button {
-                Haptics.tap()
-                showDetail = true
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: Self.icon(for: issue))
-                    Text(Self.title(for: issue))
-                        .fontWeight(.semibold)
-                    Image(systemName: "info.circle")
-                        .foregroundStyle(.secondary)
+        Group {
+            if let issue {
+                Button {
+                    Haptics.tap()
+                    detailIssue = CloudIssuePresentation(issue: issue)
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: Self.icon(for: issue))
+                        Text(Self.title(for: issue))
+                            .fontWeight(.semibold)
+                        Image(systemName: "info.circle")
+                            .foregroundStyle(.secondary)
+                    }
+                    .font(.footnote)
+                    .foregroundStyle(Self.tint(for: issue))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .overlay {
+                        Capsule().strokeBorder(Self.tint(for: issue).opacity(0.35), lineWidth: 1)
+                    }
                 }
-                .font(.footnote)
-                .foregroundStyle(Self.tint(for: issue))
-                .padding(.horizontal, 12)
-                .padding(.vertical, 7)
-                .background(.ultraThinMaterial, in: Capsule())
-                .overlay {
-                    Capsule().strokeBorder(Self.tint(for: issue).opacity(0.35), lineWidth: 1)
-                }
+                .buttonStyle(.plain)
+                .padding(.top, 4)
+                .accessibilityLabel(Text(Self.title(for: issue)))
+                .accessibilityHint(Text("Shows how to fix this"))
+                .transition(.move(edge: .top).combined(with: .opacity))
             }
-            .buttonStyle(.plain)
-            .padding(.top, 4)
-            .accessibilityLabel(Text(Self.title(for: issue)))
-            .accessibilityHint(Text("Shows how to fix this"))
-            .transition(.move(edge: .top).combined(with: .opacity))
-            .sheet(isPresented: $showDetail) {
-                CloudIssueDetailSheet(issue: issue)
-                    .presentationDetents([.medium])
-                    .presentationDragIndicator(.visible)
+        }
+        .onChange(of: issue) { _, newIssue in
+            guard detailIssue != nil else { return }
+            detailIssue = newIssue.map(CloudIssuePresentation.init(issue:))
+        }
+        .sheet(item: $detailIssue) { presentation in
+            CloudIssueDetailSheet(issue: presentation.issue)
+                .presentationDetents([.medium])
+                .presentationDragIndicator(.visible)
+        }
+    }
+
+    private struct CloudIssuePresentation: Identifiable, Equatable {
+        let issue: GroceryRepository.CloudIssue
+
+        var id: String {
+            switch issue {
+            case .iCloudUnavailable:
+                return "icloud-unavailable"
+            case .offline:
+                return "offline"
+            case .syncError(let message):
+                return "sync-error-\(message)"
             }
         }
     }
@@ -797,6 +836,7 @@ private struct CloudIssueDetailSheet: View {
 
             if showsOpenSettings {
                 Button {
+                    Haptics.selection()
                     if let url = URL(string: UIApplication.openSettingsURLString) {
                         openURL(url)
                     }
@@ -809,7 +849,10 @@ private struct CloudIssueDetailSheet: View {
                 .grocerGlassButton(prominent: true)
                 .controlSize(.large)
             } else {
-                Button(action: retry) {
+                Button {
+                    Haptics.selection()
+                    retry()
+                } label: {
                     HStack(spacing: 8) {
                         if isRetrying { ProgressView().controlSize(.small) }
                         Text(isRetrying ? "Checking…" : "Try Again")
@@ -823,7 +866,10 @@ private struct CloudIssueDetailSheet: View {
                 .disabled(isRetrying)
             }
 
-            Button(role: .cancel) { dismiss() } label: {
+            Button(role: .cancel) {
+                Haptics.tap()
+                dismiss()
+            } label: {
                 Text("Close")
                     .font(.headline)
                     .frame(maxWidth: .infinity)

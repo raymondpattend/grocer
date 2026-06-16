@@ -98,6 +98,29 @@ final class CloudKitMappingTests: XCTestCase {
         XCTAssertEqual(decoded.activeSessionId, "trip")
     }
 
+    func testShoppingTripItemApplyCanOmitReplacementItemName() throws {
+        let record = CKRecord(recordType: CK.RecordType.tripItem, recordID: recordID("trip_item"))
+        let tripItem = ShoppingTripItem(
+            id: "trip_item",
+            householdId: "home",
+            sessionId: "trip",
+            itemId: "item",
+            name: "Milk",
+            quantity: "1",
+            category: .dairy,
+            outcome: .replaced,
+            replacementItemName: "Oat milk",
+            requestedByMemberId: "member",
+            requestedByDisplayName: "Ray",
+            createdAt: date
+        )
+
+        tripItem.apply(to: record, includeReplacementItemName: false)
+
+        XCTAssertNil(record[CK.Field.replacementItemName])
+        XCTAssertEqual(record[CK.Field.status] as? String, ItemStatus.replaced.rawValue)
+    }
+
     func testGroceryItemApplyWritesMutableFields() throws {
         let record = CKRecord(recordType: CK.RecordType.item, recordID: recordID("item"))
         let item = GroceryItem(

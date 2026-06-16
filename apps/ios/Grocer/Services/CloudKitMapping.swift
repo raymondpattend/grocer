@@ -256,6 +256,13 @@ extension ShoppingTripItem: CloudKitApplicable {
     }
 
     func apply(to r: CKRecord) {
+        apply(to: r, includeReplacementItemName: true)
+    }
+
+    /// Production CloudKit may lag behind the app on new fields. Callers that
+    /// know the schema is missing `replacementItemName` can omit it and still
+    /// save the rest of the trip snapshot.
+    func apply(to r: CKRecord, includeReplacementItemName: Bool) {
         r[CK.Field.householdId] = householdId as CKRecordValue
         r[CK.Field.sessionId] = sessionId as CKRecordValue
         r[CK.Field.itemId] = itemId as CKRecordValue
@@ -263,7 +270,9 @@ extension ShoppingTripItem: CloudKitApplicable {
         r[CK.Field.quantity] = quantity as CKRecordValue?
         r[CK.Field.category] = category.rawValue as CKRecordValue
         r[CK.Field.status] = outcome.rawValue as CKRecordValue
-        r[CK.Field.replacementItemName] = replacementItemName as CKRecordValue?
+        if includeReplacementItemName {
+            r[CK.Field.replacementItemName] = replacementItemName as CKRecordValue?
+        }
         r[CK.Field.requestedByMemberId] = requestedByMemberId as CKRecordValue
         r[CK.Field.requestedByDisplayName] = requestedByDisplayName as CKRecordValue
         r[CK.Field.createdAt] = createdAt as CKRecordValue

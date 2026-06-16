@@ -12,6 +12,7 @@ struct SessionSummaryView: View {
     @State private var clearFound = true
     @State private var keepOutOfStock = true
     @State private var finished = false
+    @State private var isFinishing = false
 
     private var progress: SessionProgress { repo.progress(for: session) }
 
@@ -67,16 +68,25 @@ struct SessionSummaryView: View {
         .navigationBarBackButtonHidden(true)
         .safeAreaInset(edge: .bottom) {
             Button {
-                finishTrip()
+                Task { await finishTrip() }
             } label: {
-                Text("Done")
-                    .font(.headline).frame(maxWidth: .infinity).padding(.vertical, 6)
+                HStack(spacing: 8) {
+                    if isFinishing {
+                        ProgressView()
+                    }
+                    Text(isFinishing ? "Finishing..." : "Done")
+                        .font(.headline)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
             }
             .grocerGlassButton(prominent: true)
             .tint(tint)
             .controlSize(.large)
             .padding()
+            .disabled(isFinishing)
         }
+        .interactiveDismissDisabled(isFinishing)
     }
 
     // MARK: - Sections
@@ -182,21 +192,21 @@ struct SessionSummaryView: View {
 
     // MARK: - Finish
 
-    private func finishTrip() {
+    private func finishTrip() async {
+        guard !finished, !isFinishing else { return }
         Haptics.success()
-        if !finished {
-            finished = true
-            PostHogSDK.shared.capture("shopping_trip_finished", properties: [
-                "items_found": progress.found,
-                "items_replaced": progress.replaced,
-                "items_out_of_stock": progress.outOfStock,
-                "items_skipped": progress.skipped,
-                "total_items": progress.total,
-                "store_name": session.storeName ?? "unknown",
-            ])
-            // Finish runs without blocking; the APNs end push is fire-and-forget.
-            Task { await repo.finishShopping(session, clearCompleted: clearFound, keepOutOfStock: keepOutOfStock) }
-        }
+        finished = true
+        isFinishing = true
+        PostHogSDK.shared.capture("shopping_trip_finished", properties: [
+            "items_found": progress.found,
+            "items_replaced": progress.replaced,
+            "items_out_of_stock": progress.outOfStock,
+            "items_skipped": progress.skipped,
+            "total_items": progress.total,
+            "store_name": session.storeName ?? "unknown",
+        ])
+        await repo.finishShopping(session, clearCompleted: clearFound, keepOutOfStock: keepOutOfStock)
+        isFinishing = false
         onDone()
     }
 }

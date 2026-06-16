@@ -3,7 +3,11 @@ import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { sentry } from "@sentry/hono/cloudflare";
 import type { Env } from "./env.js";
-import { createPostHogClient } from "./lib/posthog.js";
+import {
+  capturePostHogException,
+  capturePostHogLog,
+  posthogApiObservability,
+} from "./lib/posthogObservability.js";
 import { healthRoute } from "./routes/health.js";
 import { configRoute } from "./routes/config.js";
 import { feedbackRoute } from "./routes/feedback.js";
@@ -22,6 +26,7 @@ app.use(
   }),
 );
 app.use("*", logger());
+app.use("*", posthogApiObservability());
 app.use("*", cors());
 
 app.get("/debug-sentry", () => {
@@ -41,9 +46,18 @@ app.notFound((c) => c.json({ ok: false, error: "Not found" }, 404));
 
 app.onError((err, c) => {
   console.error("Unhandled error:", err);
-  const posthog = createPostHogClient(c.env);
-  posthog.captureException(err);
-  c.executionCtx.waitUntil(posthog.shutdown());
+  capturePostHogException(c, err, {
+    source: "hono_on_error",
+  });
+  capturePostHogLog(c.env, c.executionCtx, {
+    level: "error",
+    body: err instanceof Error ? err.message : String(err),
+    attributes: {
+      source: "hono_on_error",
+      path: new URL(c.req.url).pathname,
+      method: c.req.method,
+    },
+  });
   return c.json({ ok: false, error: "Internal error" }, 500);
 });
 

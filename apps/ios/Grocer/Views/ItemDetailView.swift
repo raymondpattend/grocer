@@ -83,7 +83,10 @@ struct ItemDetailView: View {
         }
         .navigationTitle(item.name)
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(true)
+        .swipeBackEnabled()
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) { HapticBackButton() }
             ToolbarItem(placement: .topBarTrailing) {
                 Button("Edit") {
                     Haptics.selection()

@@ -330,8 +330,14 @@ struct GrocerProPaywallView: View {
     private var footerLinks: some View {
         HStack(spacing: 22) {
             footerLink(String(localized: "Restore"), action: restorePurchases)
-            footerLink(String(localized: "Terms")) { if let termsURL { openURL(termsURL) } }
-            footerLink(String(localized: "Privacy")) { if let privacyURL { openURL(privacyURL) } }
+            footerLink(String(localized: "Terms")) {
+                Haptics.selection()
+                if let termsURL { openURL(termsURL) }
+            }
+            footerLink(String(localized: "Privacy")) {
+                Haptics.selection()
+                if let privacyURL { openURL(privacyURL) }
+            }
             footerLink(String(localized: "Redeem"), action: redeemCode)
         }
         .frame(maxWidth: .infinity)

@@ -16,6 +16,7 @@ struct HomeView: View {
     @State private var editingGroup: Household?
     @State private var collapsedSharers: Set<String> = []
     @State private var didHapticOnLoad = false
+    @State private var pendingRouteHouseholdId: String?
     @Namespace private var zoomNamespace
 
     private static let freeOwnedGroupLimit = 2
@@ -74,15 +75,35 @@ struct HomeView: View {
                 if let firstStale = path.firstIndex(where: { !valid.contains($0) }) {
                     path.removeSubrange(firstStale...)
                 }
+                openPendingRouteIfReady()
             }
             // Tap when the first load lands, so the skeleton handing off to real
             // content has a tactile "ready" beat. Only fires once, and only if
             // we hadn't already finished loading by the time the view appeared.
-            .onAppear { didHapticOnLoad = repo.hasCompletedInitialLoad }
+            .onAppear {
+                didHapticOnLoad = repo.hasCompletedInitialLoad
+                for householdId in GroupNavigationCoordinator.shared.consumePendingHouseholdIds() {
+                    requestOpenHousehold(householdId)
+                }
+            }
             .onChange(of: repo.hasCompletedInitialLoad) { _, loaded in
-                guard loaded, !didHapticOnLoad else { return }
-                didHapticOnLoad = true
-                Haptics.success()
+                if loaded, !didHapticOnLoad {
+                    didHapticOnLoad = true
+                    Haptics.success()
+                }
+                openPendingRouteIfReady()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: GroupNavigationCoordinator.openGroupNotification)) { notification in
+                let pending = GroupNavigationCoordinator.shared.consumePendingHouseholdIds()
+                if !pending.isEmpty {
+                    pending.forEach(requestOpenHousehold)
+                    return
+                }
+
+                guard let householdId = notification.userInfo?[GroupNavigationCoordinator.householdIdUserInfoKey] as? String else {
+                    return
+                }
+                requestOpenHousehold(householdId)
             }
             .sheet(isPresented: $showNewGroup) {
                 NavigationStack {
@@ -456,6 +477,24 @@ struct HomeView: View {
         Haptics.selection()
         repo.selectHousehold(house.id)
         path.append(house.id)
+    }
+
+    private func requestOpenHousehold(_ householdId: String) {
+        pendingRouteHouseholdId = householdId
+        openPendingRouteIfReady()
+    }
+
+    private func openPendingRouteIfReady() {
+        guard let householdId = pendingRouteHouseholdId,
+              repo.households.contains(where: { $0.id == householdId }) else {
+            return
+        }
+
+        pendingRouteHouseholdId = nil
+        repo.selectHousehold(householdId)
+        if path != [householdId] {
+            path = [householdId]
+        }
     }
 
     private func addGroupTapped() {

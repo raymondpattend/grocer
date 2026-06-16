@@ -77,7 +77,7 @@ struct ShoppingSessionView: View {
 
             ForEach(repo.pendingShoppingGroups(session: session), id: \.category) { group in
                 Section {
-                    ForEach(group.items) { item in
+                    ForEach(group.items, id: \.shoppingPendingRowID) { item in
                         shopItemButton(item, canManageTrip: canManageTrip)
                     }
                 } header: {
@@ -88,7 +88,7 @@ struct ShoppingSessionView: View {
             let addedDuringTrip = repo.addedDuringTrip(session: session)
             if !addedDuringTrip.isEmpty {
                 Section {
-                    ForEach(addedDuringTrip) { item in
+                    ForEach(addedDuringTrip, id: \.shoppingAddedRowID) { item in
                         shopItemButton(item, canManageTrip: canManageTrip)
                     }
                 } header: {
@@ -155,14 +155,20 @@ struct ShoppingSessionView: View {
             SessionSummaryView(session: session) { onExit() }
         }
         .alert("Finish shopping?", isPresented: $showFinishConfirm) {
-            Button("Finish Anyway") { showFinish = true }
+            Button("Finish Anyway") {
+                Haptics.selection()
+                showFinish = true
+            }
             Button("Keep Shopping", role: .cancel) {}
         } message: {
             Text("^[\(progress.remaining) item](inflect: true) still on the list. Finish the trip anyway?")
         }
         .alert("Store", isPresented: $editingStore) {
             TextField("Store name", text: $storeText)
-            Button("Save") { repo.setStore(session, to: storeText) }
+            Button("Save") {
+                Haptics.success()
+                repo.setStore(session, to: storeText)
+            }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Where are you shopping for this trip?")
@@ -187,7 +193,10 @@ struct ShoppingSessionView: View {
                 }
                 .tint(.green)
             } else {
-                Button { editingItem = item } label: {
+                Button {
+                    Haptics.selection()
+                    editingItem = item
+                } label: {
                     Label("Edit", systemImage: "pencil")
                 }
                 .tint(tint)
@@ -195,7 +204,10 @@ struct ShoppingSessionView: View {
         }
         .swipeActions(edge: .leading, allowsFullSwipe: false) {
             if canManageTrip {
-                Button { replacingItem = item } label: {
+                Button {
+                    Haptics.selection()
+                    replacingItem = item
+                } label: {
                     Label("Replace", systemImage: "arrow.triangle.2.circlepath")
                 }
                 .tint(.blue)
@@ -334,7 +346,7 @@ struct ShoppingSessionView: View {
                 .buttonStyle(.plain)
 
                 if showCompleted {
-                    ForEach(handled) { item in
+                    ForEach(handled, id: \.shoppingHandledRowID) { item in
                         CompletedItemRow(item: item, canManageTrip: canManageTrip) {
                             markItem(item, as: .needed)
                         } onEdit: {
@@ -370,6 +382,12 @@ struct ShoppingSessionView: View {
         .animation(.easeInOut(duration: 0.25), value: allHandled)
         .padding()
     }
+}
+
+private extension GroceryItem {
+    var shoppingPendingRowID: String { "pending-\(id)" }
+    var shoppingAddedRowID: String { "added-\(id)" }
+    var shoppingHandledRowID: String { "handled-\(id)-\(status.rawValue)" }
 }
 
 // MARK: - Pending item row (swipe-driven)
@@ -455,7 +473,10 @@ private struct CompletedItemRow: View {
                         Label("Put Back on List", systemImage: "arrow.uturn.backward")
                     }
                 }
-                Button { onEdit() } label: {
+                Button {
+                    Haptics.selection()
+                    onEdit()
+                } label: {
                     Label("Edit Item", systemImage: "pencil")
                 }
             } label: {

@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import {
   EndLiveActivityRequestSchema,
+  HeadsUpRequestSchema,
   RegisterTokenRequestSchema,
   RegisterUpdateTokenRequestSchema,
   StartLiveActivityRequestSchema,
@@ -12,6 +13,7 @@ import type { Env } from "../env.js";
 import { parseBody } from "../lib/validate.js";
 import {
   ACTIVITY_ATTRIBUTES_TYPE,
+  sendHeadsUpNotification,
   sendShoppingTripNotification,
   sendEnd,
   sendStart,
@@ -299,6 +301,94 @@ liveActivityRoute.post("/live-activity/register-token", async (c) => {
   c.executionCtx.waitUntil(posthog.shutdown());
 
   return c.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// POST /live-activity/heads-up
+// "I'm about to shop" — fans out a Time Sensitive alert to every other member
+// of the group. No shopping session is involved.
+// ---------------------------------------------------------------------------
+liveActivityRoute.post("/live-activity/heads-up", async (c) => {
+  const parsed = await parseBody(c, HeadsUpRequestSchema);
+  if ("error" in parsed) return parsed.error;
+  const body = parsed.data;
+
+  const devices = await eligibleNotificationTokens(
+    c.env.DB,
+    body.householdId,
+    body.sourceDeviceId,
+  );
+
+  console.log(
+    `[notifications] heads-up household=${body.householdId} ` +
+    `excludeDevice=${body.sourceDeviceId ?? "none"} eligibleDevices=${devices.length}`,
+  );
+
+  let sent = 0;
+  let failed = 0;
+
+  await Promise.all(
+    devices.map(async (device) => {
+      const token = device.push_notification_token!;
+      let result: ApnsResult;
+      try {
+        result = await sendHeadsUpNotification(c.env, token, {
+          householdId: body.householdId,
+          shopperName: body.shopperName,
+          storeName: body.storeName,
+        });
+      } catch (err) {
+        failed++;
+        await logApns(c.env.DB, {
+          deviceId: device.device_id,
+          event: "heads_up_notification",
+          outcome: "failed",
+          detail: String(err),
+        });
+        return;
+      }
+
+      if (result.ok) {
+        sent++;
+        await logApns(c.env.DB, {
+          deviceId: device.device_id,
+          event: "heads_up_notification",
+          outcome: "sent",
+          statusCode: result.statusCode,
+          apnsId: result.apnsId,
+        });
+      } else {
+        failed++;
+        if (result.tokenExpired) {
+          await invalidateNotificationToken(c.env.DB, token);
+        }
+        await logApns(c.env.DB, {
+          deviceId: device.device_id,
+          event: "heads_up_notification",
+          outcome: result.tokenExpired ? "expired" : "failed",
+          statusCode: result.statusCode,
+          apnsId: result.apnsId,
+          detail: result.reason ?? result.detail,
+        });
+      }
+    }),
+  );
+
+  const posthog = createPostHogClient(c.env);
+  posthog.capture({
+    distinctId: body.sourceDeviceId ?? body.householdId,
+    event: "shopping heads up sent",
+    properties: {
+      household_id: body.householdId,
+      store_name: body.storeName ?? null,
+      devices_notified: sent,
+      devices_notification_failed: failed,
+      $groups: { household: body.householdId },
+    },
+  });
+  c.executionCtx.waitUntil(posthog.shutdown());
+
+  return c.json({ ok: true, sent, failed });
 });
 
 // ---------------------------------------------------------------------------

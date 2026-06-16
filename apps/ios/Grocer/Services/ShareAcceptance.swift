@@ -439,6 +439,27 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
 
         completionHandler([.banner, .list, .sound])
     }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
+        let userInfo = response.notification.request.content.userInfo
+        guard let householdId = Self.householdId(from: userInfo) else {
+            completionHandler()
+            return
+        }
+
+        Task { @MainActor in
+            GroupNavigationCoordinator.shared.openGroup(householdId: householdId)
+            completionHandler()
+        }
+    }
+
+    private static func householdId(from userInfo: [AnyHashable: Any]) -> String? {
+        let trimmed = (userInfo["householdId"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
 }
 
 /// Scene delegate whose sole job is to receive CloudKit share acceptance.
@@ -458,12 +479,27 @@ final class ShareSceneDelegate: NSObject, UIWindowSceneDelegate {
                 ShareCoordinator.shared.handle(metadata)
             }
         }
+
+        handle(connectionOptions.urlContexts)
     }
 
     func windowScene(_ windowScene: UIWindowScene,
                      userDidAcceptCloudKitShareWith cloudKitShareMetadata: CKShare.Metadata) {
         Task { @MainActor in
             ShareCoordinator.shared.handle(cloudKitShareMetadata)
+        }
+    }
+
+    func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
+        handle(URLContexts)
+    }
+
+    private func handle(_ urlContexts: Set<UIOpenURLContext>) {
+        for context in urlContexts {
+            guard let householdId = GroupDeepLink.householdId(from: context.url) else { continue }
+            Task { @MainActor in
+                GroupNavigationCoordinator.shared.openGroup(householdId: householdId)
+            }
         }
     }
 }

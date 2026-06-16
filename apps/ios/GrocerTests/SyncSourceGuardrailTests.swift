@@ -193,6 +193,43 @@ final class SyncSourceGuardrailTests: XCTestCase {
         XCTAssertFalse(repair.contains("householdsToPersist"))
     }
 
+    func testFinishShoppingFlushesSessionBeforeTripSnapshots() throws {
+        let repo = try source("Grocer/Services/GroceryRepository.swift")
+        let finish = try excerpt(repo, from: "func finishShopping", to: "func cancelShopping")
+
+        XCTAssertLessThan(
+            try sourceIndex(of: "await flushCriticalSessionWrites(sessionId: session.id)", in: finish),
+            try sourceIndex(of: "captureTripItems(for: session, at: now)", in: finish)
+        )
+    }
+
+    func testOutboxPrioritizesSessionTerminationBeforeTripItems() throws {
+        let repo = try source("Grocer/Services/GroceryRepository.swift")
+        let priority = try excerpt(repo, from: "private static func outboxPriority", to: "/// Flushes the session record")
+
+        XCTAssertTrue(priority.contains("case .session: return 0"))
+        XCTAssertTrue(priority.contains("case .tripItem: return 3"))
+    }
+
+    func testOutboxRetriesOmitUnsupportedTripItemReplacementField() throws {
+        let repo = try source("Grocer/Services/GroceryRepository.swift")
+
+        XCTAssertTrue(repo.contains("isTripItemReplacementNameSchemaError"))
+        XCTAssertTrue(repo.contains("retryTripItemWithoutReplacementName"))
+        XCTAssertTrue(repo.contains("includeReplacementItemName: supportsTripItemReplacementNameField"))
+        XCTAssertTrue(repo.contains("CloudKitSchemaTelemetry.parseMismatch"))
+        XCTAssertTrue(repo.contains("reportSchemaMismatch"))
+    }
+
+    func testCloudKitSchemaTelemetryReportsToSentry() throws {
+        let telemetry = try source("Grocer/Services/CloudKitSchemaTelemetry.swift")
+
+        XCTAssertTrue(telemetry.contains("enum CloudKitSchemaTelemetry"))
+        XCTAssertTrue(telemetry.contains("static func parseMismatch(from error: Error)"))
+        XCTAssertTrue(telemetry.contains("SentrySDK.capture(event:"))
+        XCTAssertTrue(telemetry.contains("cloudkit-schema-mismatch"))
+    }
+
     func testOutboxRetriesHaveDurableBackoffMetadata() throws {
         let repo = try source("Grocer/Services/GroceryRepository.swift")
         let pendingWrite = try excerpt(repo, from: "private struct PendingCloudWrite", to: "struct GroceryItemInput")
@@ -205,6 +242,86 @@ final class SyncSourceGuardrailTests: XCTestCase {
         XCTAssertTrue(retry.contains("CKErrorRetryAfterKey"))
         XCTAssertTrue(repo.contains("eligiblePendingWrites"))
         XCTAssertTrue(repo.contains("scheduleOutboxFlush()"))
+    }
+
+    func testRecoverableCloudKitFailuresDoNotSurfaceSyncIssueChip() throws {
+        let repo = try source("Grocer/Services/GroceryRepository.swift")
+        let recordFailure = try excerpt(repo, from: "private func recordSyncFailure", to: "private func shouldKeepLocalCompletedSession")
+        let suppression = try excerpt(repo, from: "static func shouldSuppressUserVisibleSyncFailure", to: "/// True when the target zone")
+
+        XCTAssertTrue(recordFailure.contains("shouldSuppressUserVisibleSyncFailure"))
+        XCTAssertTrue(recordFailure.contains("syncState = .idle"))
+        for code in [
+            ".requestRateLimited",
+            ".serviceUnavailable",
+            ".zoneBusy",
+            ".serverRecordChanged",
+            ".batchRequestFailed",
+            ".partialFailure",
+        ] {
+            XCTAssertTrue(suppression.contains(code), "Expected sync chip suppression for \(code)")
+        }
+    }
+
+    func testOutOfStockCleanupKeepsCheckedItemsOnListAndRemovesUncheckedItems() throws {
+        let repo = try source("Grocer/Services/GroceryRepository.swift")
+        let cleanup = try excerpt(repo, from: "private func applyCleanup", to: "/// Writes an immutable per-item snapshot")
+        let outOfStock = try excerpt(cleanup, from: "case .outOfStock:", to: "case .skipped:")
+
+        XCTAssertTrue(outOfStock.contains("if keepOutOfStock"))
+        XCTAssertTrue(outOfStock.contains("item.status = .needed"))
+        XCTAssertTrue(outOfStock.contains("item.status = .removed"))
+        XCTAssertLessThan(
+            try sourceIndex(of: "if keepOutOfStock", in: outOfStock),
+            try sourceIndex(of: "item.status = .removed", in: outOfStock)
+        )
+    }
+
+    func testShoppingSessionRowsUseSectionScopedIdentity() throws {
+        let view = try source("Grocer/Views/ShoppingSessionView.swift")
+
+        XCTAssertTrue(view.contains("shoppingPendingRowID"))
+        XCTAssertTrue(view.contains("shoppingAddedRowID"))
+        XCTAssertTrue(view.contains("shoppingHandledRowID"))
+        XCTAssertTrue(view.contains("ForEach(group.items, id: \\.shoppingPendingRowID)"))
+        XCTAssertTrue(view.contains("ForEach(handled, id: \\.shoppingHandledRowID)"))
+    }
+
+    func testTripHistoryNavigationHasHaptics() throws {
+        let history = try source("Grocer/Views/TripHistoryView.swift")
+        let detail = try source("Grocer/Views/TripDetailView.swift")
+
+        XCTAssertTrue(history.contains("Haptics.selection()"))
+        XCTAssertTrue(history.contains("HapticBackButton()"))
+        XCTAssertTrue(detail.contains("HapticBackButton()"))
+    }
+
+    func testItemDetailBackNavigationHasHaptics() throws {
+        let detail = try source("Grocer/Views/ItemDetailView.swift")
+        let itemDetail = try excerpt(detail, from: "struct ItemDetailView", to: "/// Simple editor reused")
+
+        XCTAssertTrue(itemDetail.contains(".navigationBarBackButtonHidden(true)"))
+        XCTAssertTrue(itemDetail.contains(".swipeBackEnabled()"))
+        XCTAssertTrue(itemDetail.contains("ToolbarItem(placement: .topBarLeading) { HapticBackButton() }"))
+    }
+
+    func testCloudIssueSheetPresentationTracksCurrentIssue() throws {
+        let root = try source("Grocer/Views/RootView.swift")
+        let chip = try excerpt(root, from: "struct CloudIssueChip", to: "static func icon")
+
+        XCTAssertTrue(chip.contains("@State private var detailIssue: CloudIssuePresentation?"))
+        XCTAssertTrue(chip.contains(".sheet(item: $detailIssue)"))
+        XCTAssertTrue(chip.contains(".onChange(of: issue)"))
+        XCTAssertTrue(chip.contains("detailIssue = newIssue.map(CloudIssuePresentation.init(issue:))"))
+    }
+
+    func testCloudIssueDismissButtonHasHaptics() throws {
+        let root = try source("Grocer/Views/RootView.swift")
+        let detailSheet = try excerpt(root, from: "private struct CloudIssueDetailSheet", to: "struct CategoryHeader")
+        let closeButton = try excerpt(detailSheet, from: "Button(role: .cancel)", to: "} label:")
+
+        XCTAssertTrue(closeButton.contains("Haptics.tap()"))
+        XCTAssertTrue(closeButton.contains("dismiss()"))
     }
 
     func testHistoryRetentionPrunesOldSnapshotsAndTombstones() throws {

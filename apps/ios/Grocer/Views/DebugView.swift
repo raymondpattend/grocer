@@ -88,10 +88,14 @@ struct DebugView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("Close") { dismiss() }
+                    Button("Close") {
+                        Haptics.tap()
+                        dismiss()
+                    }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
+                        Haptics.selection()
                         exportReport()
                     } label: {
                         Label("Export", systemImage: "square.and.arrow.up")
@@ -114,7 +118,7 @@ struct DebugView: View {
     // MARK: Sections
 
     private var sections: [DebugSection] {
-        [appSection, syncSection, revenueCatSection, dataSection, groupsSection, settingsSection]
+        [appSection, syncSection, revenueCatSection, dataSection, groupsSection, sessionsSection, settingsSection]
     }
 
     private var appSection: DebugSection {
@@ -237,6 +241,23 @@ struct DebugView: View {
         return DebugSection(title: "Lists", rows: rows)
     }
 
+    private var sessionsSection: DebugSection {
+        var rows: [DebugRow] = []
+        if repo.sessions.isEmpty {
+            rows.append(DebugRow(key: "No sessions", value: ""))
+        }
+        for session in repo.sessions.sorted(by: ShoppingSession.recentDisplayOrder) {
+            let groupName = repo.households.first { $0.id == session.householdId }?.name ?? session.householdId
+            rows.append(DebugRow(key: "\(groupName) · \(session.status.rawValue)",
+                                 value: session.id, mono: true))
+            rows.append(DebugRow(key: "  Started by", value: "\(session.startedByDisplayName) / \(session.startedByMemberId)", mono: true))
+            rows.append(DebugRow(key: "  Started", value: Self.date(session.startedAt)))
+            rows.append(DebugRow(key: "  Updated", value: Self.date(session.updatedAt)))
+            rows.append(DebugRow(key: "  Ended", value: Self.date(session.endedAt)))
+        }
+        return DebugSection(title: "Sessions", rows: rows)
+    }
+
     private var settingsSection: DebugSection {
         DebugSection(title: "Settings", rows: [
             DebugRow(key: "Device ID", value: settings.deviceId, mono: true),
@@ -277,6 +298,7 @@ struct DebugView: View {
                 return result.statusText
             }
             Button {
+                Haptics.success()
                 UIPasteboard.general.string = reportText()
                 actionMessage = "Report copied to clipboard"
             } label: {
@@ -289,11 +311,13 @@ struct DebugView: View {
                               _ work: @escaping () async -> String) -> some View {
         Button {
             guard !isWorking else { return }
+            Haptics.selection()
             isWorking = true
             actionMessage = "\(title)…"
             Task {
                 let result = await work()
                 await MainActor.run {
+                    Haptics.success()
                     actionMessage = result
                     isWorking = false
                     refreshLog()
@@ -324,11 +348,13 @@ struct DebugView: View {
             .frame(height: 240)
 
             Button {
+                Haptics.selection()
                 exportReport()
             } label: {
                 Label("Export Logs", systemImage: "square.and.arrow.up")
             }
             Button(role: .destructive) {
+                Haptics.warning()
                 LogStore.shared.clear()
                 refreshLog()
             } label: {

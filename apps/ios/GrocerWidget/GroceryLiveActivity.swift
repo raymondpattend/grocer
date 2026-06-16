@@ -13,6 +13,7 @@ struct GroceryLiveActivity: Widget {
             LockScreenView(state: context.state, startedByMemberId: context.attributes.startedByMemberId)
                 .activityBackgroundTint(Color(.systemBackground))
                 .activitySystemActionForegroundColor(.green)
+                .widgetURL(GroupDeepLink.url(householdId: context.attributes.householdId))
         } dynamicIsland: { context in
             // Keep the `.center` region empty — it renders in the narrow strip
             // beside the camera cutout and clips content. All content lives in
@@ -67,6 +68,7 @@ struct GroceryLiveActivity: Widget {
                 ShopperAvatarIcon(memberId: context.attributes.startedByMemberId, size: 18)
             }
             .keylineTint(.green)
+            .widgetURL(GroupDeepLink.url(householdId: context.attributes.householdId))
         }
     }
 
