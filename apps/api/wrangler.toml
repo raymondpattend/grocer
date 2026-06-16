@@ -57,6 +57,17 @@ POSTHOG_HOST = "https://us.i.posthog.com"
 
 [observability]
 enabled = true
+# Add to your wrangler.toml file
+
+[observability.traces]
+enabled = true
+# Must match the destination name you configured in Cloudflare dashboard
+destinations = [ "grafana-traces" ]
+
+[observability.logs]
+enabled = true
+# Must match the destination name you configured in Cloudflare dashboard
+destinations = [ "grafana-logs" ]
 
 # ---------------------------------------------------------------------------
 # Cron Triggers — hourly retention-nudge sweep. The handler self-gates each
