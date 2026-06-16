@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  imageGenerationCostProperties,
   parseOpenAIImageStreamFrame,
   parseOpenAIImageStreamFrames,
 } from "../src/routes/productImage.js";
@@ -39,6 +40,32 @@ describe("parseOpenAIImageStreamFrame", () => {
         },
       ],
       rest: 'data: {"type":"image_generation.completed","b64_json":"final"}',
+    });
+  });
+});
+
+describe("imageGenerationCostProperties", () => {
+  it("reports explicit PostHog AI cost fields for generated images", () => {
+    expect(
+      imageGenerationCostProperties("gpt-image-1.5", "low", "1024x1024", 1, true),
+    ).toMatchObject({
+      "$ai_request_cost_usd": 0.009,
+      "$ai_total_cost_usd": 0.009,
+      grocer_image_model: "gpt-image-1.5",
+      grocer_image_quality: "low",
+      grocer_image_size: "1024x1024",
+      grocer_image_count: 1,
+      grocer_image_unit_price_usd: 0.009,
+    });
+  });
+
+  it("omits cost totals when no image was generated", () => {
+    expect(
+      imageGenerationCostProperties("gpt-image-1.5", "low", "1024x1024", 1, false),
+    ).toMatchObject({
+      "$ai_request_cost_usd": undefined,
+      "$ai_total_cost_usd": undefined,
+      grocer_image_unit_price_usd: 0.009,
     });
   });
 });

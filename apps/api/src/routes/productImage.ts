@@ -14,6 +14,22 @@ const OPENAI_EMBEDDINGS_URL = "https://api.openai.com/v1/embeddings";
 const OPENAI_IMAGE_GENERATIONS_URL = "https://api.openai.com/v1/images/generations";
 const EMBEDDING_MODEL = "text-embedding-3-small";
 const IMAGE_MODEL = "gpt-image-1.5";
+const IMAGE_SIZE = "1024x1024";
+const IMAGE_QUALITY = "low";
+const IMAGE_COUNT = 1;
+const IMAGE_GENERATION_PRICES_USD: Record<string, Record<string, number>> = {
+  "gpt-image-1.5": {
+    "low:1024x1024": 0.009,
+    "low:1024x1536": 0.013,
+    "low:1536x1024": 0.013,
+    "medium:1024x1024": 0.034,
+    "medium:1024x1536": 0.05,
+    "medium:1536x1024": 0.05,
+    "high:1024x1024": 0.133,
+    "high:1024x1536": 0.2,
+    "high:1536x1024": 0.2,
+  },
+};
 
 /**
  * In-flight generation promises keyed by normalized item name.
@@ -403,6 +419,27 @@ function b64ToBytes(b64: string): Uint8Array {
   return Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0));
 }
 
+export function imageGenerationCostProperties(
+  model: string,
+  quality: string,
+  size: string,
+  count: number,
+  generated: boolean,
+): Record<string, unknown> {
+  const price = IMAGE_GENERATION_PRICES_USD[model]?.[`${quality}:${size}`];
+  const requestCost = generated && price !== undefined ? price * count : undefined;
+
+  return {
+    "$ai_request_cost_usd": requestCost,
+    "$ai_total_cost_usd": requestCost,
+    grocer_image_model: model,
+    grocer_image_quality: quality,
+    grocer_image_size: size,
+    grocer_image_count: count,
+    grocer_image_unit_price_usd: price,
+  };
+}
+
 type OpenAIImageStreamEvent = {
   type?: string;
   b64_json?: string;
@@ -506,9 +543,9 @@ async function generateAndCache(
       body: JSON.stringify({
         model: IMAGE_MODEL,
         prompt,
-        n: 1,
-        size: "1024x1024",
-        quality: "low",
+        n: IMAGE_COUNT,
+        size: IMAGE_SIZE,
+        quality: IMAGE_QUALITY,
         background: "transparent",
       }),
     });
@@ -531,6 +568,13 @@ async function generateAndCache(
         error: text,
         properties: {
           "$ai_request_url": OPENAI_IMAGE_GENERATIONS_URL,
+          ...imageGenerationCostProperties(
+            IMAGE_MODEL,
+            IMAGE_QUALITY,
+            IMAGE_SIZE,
+            IMAGE_COUNT,
+            false,
+          ),
           grocer_item_name: name,
           grocer_image_key: exactKey,
         },
@@ -571,6 +615,13 @@ async function generateAndCache(
       error: b64 ? undefined : "OpenAI returned no image data",
       properties: {
         "$ai_request_url": OPENAI_IMAGE_GENERATIONS_URL,
+        ...imageGenerationCostProperties(
+          IMAGE_MODEL,
+          IMAGE_QUALITY,
+          IMAGE_SIZE,
+          IMAGE_COUNT,
+          Boolean(b64),
+        ),
         grocer_item_name: name,
         grocer_image_key: exactKey,
       },
@@ -600,6 +651,13 @@ async function generateAndCache(
         error: err,
         properties: {
           "$ai_request_url": OPENAI_IMAGE_GENERATIONS_URL,
+          ...imageGenerationCostProperties(
+            IMAGE_MODEL,
+            IMAGE_QUALITY,
+            IMAGE_SIZE,
+            IMAGE_COUNT,
+            false,
+          ),
           grocer_item_name: name,
           grocer_image_key: exactKey,
         },
@@ -656,9 +714,9 @@ function generateAndStream(
           body: JSON.stringify({
             model: IMAGE_MODEL,
             prompt,
-            n: 1,
-            size: "1024x1024",
-            quality: "low",
+            n: IMAGE_COUNT,
+            size: IMAGE_SIZE,
+            quality: IMAGE_QUALITY,
             background: "transparent",
             stream: true,
             partial_images: 2,
@@ -683,6 +741,13 @@ function generateAndStream(
             error: text,
             properties: {
               "$ai_request_url": OPENAI_IMAGE_GENERATIONS_URL,
+              ...imageGenerationCostProperties(
+                IMAGE_MODEL,
+                IMAGE_QUALITY,
+                IMAGE_SIZE,
+                IMAGE_COUNT,
+                false,
+              ),
               grocer_item_name: name,
               grocer_image_key: exactKey,
             },
@@ -754,6 +819,13 @@ function generateAndStream(
           error: finalB64 ? undefined : "OpenAI returned no streamed image data",
           properties: {
             "$ai_request_url": OPENAI_IMAGE_GENERATIONS_URL,
+            ...imageGenerationCostProperties(
+              IMAGE_MODEL,
+              IMAGE_QUALITY,
+              IMAGE_SIZE,
+              IMAGE_COUNT,
+              Boolean(finalB64),
+            ),
             grocer_item_name: name,
             grocer_image_key: exactKey,
             grocer_time_to_first_image_seconds: firstImageMs === undefined
@@ -779,6 +851,13 @@ function generateAndStream(
             error: err,
             properties: {
               "$ai_request_url": OPENAI_IMAGE_GENERATIONS_URL,
+              ...imageGenerationCostProperties(
+                IMAGE_MODEL,
+                IMAGE_QUALITY,
+                IMAGE_SIZE,
+                IMAGE_COUNT,
+                false,
+              ),
               grocer_item_name: name,
               grocer_image_key: exactKey,
             },
