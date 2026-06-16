@@ -4,6 +4,7 @@ import {
   type ParsedItem,
 } from "@grocer/shared";
 import type { Env } from "../env.js";
+import { createOpenAIClient } from "../lib/grafanaOpenAi.js";
 import {
   captureAiGeneration,
   createAiSpanId,
@@ -13,22 +14,7 @@ import {
 import { titleCase } from "./categorize.js";
 
 const DEFAULT_PARSE_MODEL = "gpt-4.1-mini";
-const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
-
-type OpenAIResponse = {
-  output_text?: string;
-  output?: Array<{
-    type?: string;
-    content?: Array<{
-      type?: string;
-      text?: string;
-    }>;
-  }>;
-  usage?: {
-    input_tokens?: number;
-    output_tokens?: number;
-  };
-};
+const OPENAI_CHAT_COMPLETIONS_URL = "https://api.openai.com/v1/chat/completions";
 
 export async function parseListWithAI(
   env: Env,
@@ -69,80 +55,49 @@ export async function parseListWithAI(
   let captured = false;
 
   try {
-    const res = await fetch(OPENAI_RESPONSES_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${env.OPENAI_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model,
-        input: aiInput,
-        text: {
-          format: {
-            type: "json_schema",
-            name: "grocery_list",
-            strict: true,
-            schema: {
-              type: "object",
-              additionalProperties: false,
-              properties: {
+    const openai = createOpenAIClient(env);
+    const completion = await openai.chat.completions.create({
+      model,
+      messages: aiInput.map((message) => ({
+        role: message.role,
+        content: String(message.content),
+      })),
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "grocery_list",
+          strict: true,
+          schema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              items: {
+                type: "array",
                 items: {
-                  type: "array",
-                  items: {
-                    type: "object",
-                    additionalProperties: false,
-                    properties: {
-                      name: { type: "string" },
-                      quantity: { type: "string" },
-                      unit: { type: "string" },
-                      category: {
-                        type: "string",
-                        enum: GROCERY_CATEGORIES,
-                      },
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    name: { type: "string" },
+                    quantity: { type: "string" },
+                    unit: { type: "string" },
+                    category: {
+                      type: "string",
+                      enum: GROCERY_CATEGORIES,
                     },
-                    required: ["name", "quantity", "unit", "category"],
                   },
+                  required: ["name", "quantity", "unit", "category"],
                 },
               },
-              required: ["items"],
             },
+            required: ["items"],
           },
         },
-        max_output_tokens: maxTokens,
-      }),
+      },
+      max_completion_tokens: maxTokens,
     });
-    httpStatus = res.status;
+    httpStatus = 200;
     const latencyMs = performance.now() - started;
-
-    if (!res.ok) {
-      const errorBody = await res.text();
-      captureAiGeneration({
-        env,
-        executionCtx: options.executionCtx,
-        distinctId: options.distinctId,
-        traceId,
-        sessionId: options.sessionId,
-        spanId,
-        spanName: "parse_list",
-        model,
-        input: aiInput,
-        maxTokens,
-        latencyMs,
-        httpStatus,
-        isError: true,
-        error: errorBody,
-        properties: {
-          "$ai_request_url": OPENAI_RESPONSES_URL,
-        },
-      });
-      captured = true;
-      console.warn("OpenAI list parsing failed:", res.status, errorBody);
-      return null;
-    }
-
-    const json = (await res.json()) as OpenAIResponse;
-    const outputText = extractOutputText(json);
+    const outputText = completion.choices[0]?.message.content ?? null;
     const outputChoices = outputText
       ? [{ role: "assistant" as const, content: outputText }]
       : [];
@@ -158,15 +113,15 @@ export async function parseListWithAI(
         model,
         input: aiInput,
         outputChoices,
-        inputTokens: json.usage?.input_tokens,
-        outputTokens: json.usage?.output_tokens,
+        inputTokens: completion.usage?.prompt_tokens,
+        outputTokens: completion.usage?.completion_tokens,
         maxTokens,
         latencyMs,
         httpStatus,
         isError: true,
-        error: "OpenAI returned no output_text",
+        error: "OpenAI returned no message content",
         properties: {
-          "$ai_request_url": OPENAI_RESPONSES_URL,
+          "$ai_request_url": OPENAI_CHAT_COMPLETIONS_URL,
         },
       });
       captured = true;
@@ -188,15 +143,15 @@ export async function parseListWithAI(
         model,
         input: aiInput,
         outputChoices,
-        inputTokens: json.usage?.input_tokens,
-        outputTokens: json.usage?.output_tokens,
+        inputTokens: completion.usage?.prompt_tokens,
+        outputTokens: completion.usage?.completion_tokens,
         maxTokens,
         latencyMs,
         httpStatus,
         isError: true,
         error: err,
         properties: {
-          "$ai_request_url": OPENAI_RESPONSES_URL,
+          "$ai_request_url": OPENAI_CHAT_COMPLETIONS_URL,
           grocer_parse_valid: false,
         },
       });
@@ -215,15 +170,15 @@ export async function parseListWithAI(
       model,
       input: aiInput,
       outputChoices,
-      inputTokens: json.usage?.input_tokens,
-      outputTokens: json.usage?.output_tokens,
+      inputTokens: completion.usage?.prompt_tokens,
+      outputTokens: completion.usage?.completion_tokens,
       maxTokens,
       latencyMs,
       httpStatus,
       isError: !parsed.success,
       error: parsed.success ? undefined : parsed.error,
       properties: {
-        "$ai_request_url": OPENAI_RESPONSES_URL,
+        "$ai_request_url": OPENAI_CHAT_COMPLETIONS_URL,
         grocer_parse_valid: parsed.success,
         grocer_item_count: parsed.success ? parsed.data.items.length : undefined,
       },
@@ -252,26 +207,13 @@ export async function parseListWithAI(
         isError: true,
         error: err,
         properties: {
-          "$ai_request_url": OPENAI_RESPONSES_URL,
+          "$ai_request_url": OPENAI_CHAT_COMPLETIONS_URL,
         },
       });
     }
     console.warn("OpenAI list parsing skipped:", err);
     return null;
   }
-}
-
-function extractOutputText(response: OpenAIResponse): string | null {
-  if (response.output_text?.trim()) return response.output_text;
-
-  for (const item of response.output ?? []) {
-    for (const part of item.content ?? []) {
-      if (part.type === "output_text" && part.text?.trim()) {
-        return part.text;
-      }
-    }
-  }
-  return null;
 }
 
 function sanitizeParsedItems(items: ParsedItem[]): ParsedItem[] {

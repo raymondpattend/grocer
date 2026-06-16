@@ -31,6 +31,14 @@ APNS_HTTP2_BRIDGE_URL="http://127.0.0.1:8791"
 # OpenAI — used for product image generation (gpt-image-1)
 OPENAI_API_KEY="sk-REPLACE_WITH_YOUR_KEY"
 
+# Grafana OpenAI monitoring. Store the real access token with
+# `wrangler secret put GRAFANA_CLOUD_ACCESS_TOKEN` in production.
+GRAFANA_OPENAI_METRICS_URL="https://prometheus-prod-56-prod-us-east-2.grafana.net/api/prom"
+GRAFANA_OPENAI_LOGS_URL="https://logs-prod-036.grafana.net/loki/api/v1/push"
+GRAFANA_OPENAI_METRICS_USERNAME="3311740"
+GRAFANA_OPENAI_LOGS_USERNAME="1651545"
+GRAFANA_CLOUD_ACCESS_TOKEN="glc_REPLACE_WITH_YOUR_TOKEN"
+
 # Shared HMAC key for app-signed /live-activity/* requests. Must match
 # LIVE_ACTIVITY_API_SECRET in apps/ios/Config/Secrets.xcconfig.
 LIVE_ACTIVITY_API_SECRET="generate-with-openssl-rand-hex-32"

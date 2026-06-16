@@ -54,6 +54,10 @@ IOS_LATEST_BUILD = "1"
 IOS_UPDATE_URL = "https://narro.org/grocer"
 IOS_EXTERNAL_PURCHASE_STOREFRONTS = "USA"
 POSTHOG_HOST = "https://us.i.posthog.com"
+GRAFANA_OPENAI_METRICS_URL = "https://prometheus-prod-56-prod-us-east-2.grafana.net/api/prom"
+GRAFANA_OPENAI_LOGS_URL = "https://logs-prod-036.grafana.net/loki/api/v1/push"
+GRAFANA_OPENAI_METRICS_USERNAME = "3311740"
+GRAFANA_OPENAI_LOGS_USERNAME = "1651545"
 
 [observability]
 enabled = true

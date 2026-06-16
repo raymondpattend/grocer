@@ -29,6 +29,13 @@ export interface Env {
   OPENAI_API_KEY: string;
   OPENAI_PARSE_MODEL?: string;
 
+  // Grafana OpenAI monitoring. Access token is a secret.
+  GRAFANA_OPENAI_METRICS_URL?: string;
+  GRAFANA_OPENAI_LOGS_URL?: string;
+  GRAFANA_OPENAI_METRICS_USERNAME?: string;
+  GRAFANA_OPENAI_LOGS_USERNAME?: string;
+  GRAFANA_CLOUD_ACCESS_TOKEN?: string;
+
   // PostHog analytics
   POSTHOG_API_KEY: string;
   POSTHOG_HOST: string;
