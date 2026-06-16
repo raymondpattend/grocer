@@ -123,6 +123,20 @@ actor APIClient {
         await post("/live-activity/heads-up", body: payload)
     }
 
+    // MARK: - Retention
+
+    /// Foreground heartbeat — records that the user opened the app so the
+    /// backend's retention cron knows how long they've been away.
+    func reportActive(_ payload: HeartbeatPayload) async {
+        let _: OkResponse? = await post("/retention/heartbeat", body: payload)
+    }
+
+    /// Records that the local member added items to a shared list, so other
+    /// members can be nudged about them later if they go inactive.
+    func reportListActivity(_ payload: ListActivityPayload) async {
+        let _: OkResponse? = await post("/retention/activity", body: payload)
+    }
+
     // MARK: - Transport
 
     private func get<T: Decodable>(
@@ -154,9 +168,9 @@ actor APIClient {
             print("[APIClient] encode failed for \(path): \(error)")
             return nil
         }
-        if path.hasPrefix("/live-activity"),
+        if path.hasPrefix("/live-activity") || path.hasPrefix("/retention"),
            !signLiveActivityRequest(&req, body: bodyData) {
-            print("[APIClient] Live Activity request skipped: missing API signing secret")
+            print("[APIClient] signed request skipped: missing API signing secret")
             return nil
         }
         return await perform(req)
@@ -321,6 +335,23 @@ struct RegisterTokenPayload: Encodable {
     let notificationsEnabled: Bool?
     let appVersion: String
     let platform = "iOS"
+    /// Minutes east of UTC, so the retention cron can avoid night-time sends.
+    var tzOffsetMinutes: Int = TimeZone.current.secondsFromGMT() / 60
+}
+
+struct HeartbeatPayload: Encodable {
+    let householdId: String
+    let memberId: String
+    let deviceId: String
+    var tzOffsetMinutes: Int = TimeZone.current.secondsFromGMT() / 60
+}
+
+struct ListActivityPayload: Encodable {
+    let householdId: String
+    let actorMemberId: String
+    let actorDisplayName: String?
+    let deviceId: String
+    let itemCount: Int
 }
 
 struct RegisterUpdateTokenPayload: Encodable {

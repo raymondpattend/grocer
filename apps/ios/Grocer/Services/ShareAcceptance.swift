@@ -1,10 +1,13 @@
 import AVFoundation
 import BackgroundTasks
 import CloudKit
+import PostHog
 import UIKit
 import UserNotifications
 
 private let shoppingTripItemAddedNotificationKind = "shoppingTripItemAdded"
+/// Matches the `kind` set on retention pushes by the backend (apns.ts).
+private let retentionNotificationKind = "retention"
 
 /// Bridges UIKit's CloudKit-share acceptance callback into the SwiftUI world.
 ///
@@ -444,6 +447,16 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
                                 didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
         let userInfo = response.notification.request.content.userInfo
+
+        // Close the retention sent → opened funnel before navigating.
+        if userInfo["kind"] as? String == retentionNotificationKind {
+            PostHogSDK.shared.capture("retention_notification_opened", properties: [
+                "new_item_count": userInfo["newItemCount"] as? Int ?? 0,
+                "household_id": (userInfo["householdId"] as? String) ?? "",
+                "notif_id": (userInfo["notifId"] as? String) ?? "",
+            ])
+        }
+
         guard let householdId = Self.householdId(from: userInfo) else {
             completionHandler()
             return

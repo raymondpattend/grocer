@@ -17,6 +17,9 @@ export interface DeviceTokenRow {
   platform: string;
   token_valid: number;
   notification_token_valid: number;
+  last_opened_at: string | null;
+  last_retention_push_at: string | null;
+  tz_offset_minutes: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -46,6 +49,7 @@ export async function upsertDeviceToken(
     notificationsEnabled?: boolean;
     appVersion?: string;
     platform?: string;
+    tzOffsetMinutes?: number;
   },
 ): Promise<void> {
   const ts = now();
@@ -55,11 +59,11 @@ export async function upsertDeviceToken(
         (device_id, household_id, member_id, push_to_start_token,
          push_notification_token, live_activities_enabled, notifications_enabled,
          app_version, platform, token_valid, notification_token_valid,
-         created_at, updated_at)
+         tz_offset_minutes, created_at, updated_at)
        VALUES (?1, ?2, ?3, ?4, ?5, ?6, COALESCE(?7, 0), ?8, ?9,
          CASE WHEN ?4 IS NULL THEN 0 ELSE 1 END,
          CASE WHEN ?5 IS NULL THEN 0 ELSE 1 END,
-         ?10, ?10)
+         ?11, ?10, ?10)
        ON CONFLICT(device_id, household_id) DO UPDATE SET
          member_id = ?3,
          push_to_start_token = COALESCE(?4, device_tokens.push_to_start_token),
@@ -70,6 +74,7 @@ export async function upsertDeviceToken(
          platform = ?9,
          token_valid = CASE WHEN ?4 IS NOT NULL THEN 1 ELSE device_tokens.token_valid END,
          notification_token_valid = CASE WHEN ?5 IS NOT NULL THEN 1 ELSE device_tokens.notification_token_valid END,
+         tz_offset_minutes = COALESCE(?11, device_tokens.tz_offset_minutes),
          updated_at = ?10`,
     )
     .bind(
@@ -87,6 +92,7 @@ export async function upsertDeviceToken(
       input.appVersion ?? null,
       input.platform ?? "iOS",
       ts,
+      input.tzOffsetMinutes ?? null,
     )
     .run();
 }
@@ -268,7 +274,8 @@ export async function logApns(
       | "end"
       | "start_notification"
       | "end_notification"
-      | "heads_up_notification";
+      | "heads_up_notification"
+      | "retention_notification";
     outcome: "sent" | "failed" | "expired";
     statusCode?: number;
     apnsId?: string;
@@ -292,6 +299,119 @@ export async function logApns(
       input.detail ?? null,
       now(),
     )
+    .run();
+}
+
+// ---------------------------------------------------------------------------
+// Retention — re-engagement nudges
+// ---------------------------------------------------------------------------
+
+/** Stamp last_opened_at (and refresh tz) for every registration of this device.
+ *  Called from the foreground heartbeat. */
+export async function markDeviceOpened(
+  db: D1Database,
+  input: { deviceId: string; tzOffsetMinutes?: number },
+): Promise<void> {
+  const ts = now();
+  await db
+    .prepare(
+      `UPDATE device_tokens
+         SET last_opened_at = ?2,
+             tz_offset_minutes = COALESCE(?3, tz_offset_minutes),
+             updated_at = ?2
+       WHERE device_id = ?1`,
+    )
+    .bind(input.deviceId, ts, input.tzOffsetMinutes ?? null)
+    .run();
+}
+
+/** Record that `actor` added `itemCount` items to a shared household's list. */
+export async function insertListActivity(
+  db: D1Database,
+  input: {
+    householdId: string;
+    actorMemberId: string;
+    actorDisplayName?: string;
+    itemCount: number;
+  },
+): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO list_activity
+        (id, household_id, actor_member_id, actor_display_name, item_count, created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
+    )
+    .bind(
+      crypto.randomUUID(),
+      input.householdId,
+      input.actorMemberId,
+      input.actorDisplayName ?? null,
+      input.itemCount,
+      now(),
+    )
+    .run();
+}
+
+/** Devices that could be nudged: opted into notifications, have a valid token,
+ *  and have opened the app at least once (so we know how long they've been away). */
+export async function retentionCandidates(
+  db: D1Database,
+): Promise<DeviceTokenRow[]> {
+  const { results } = await db
+    .prepare(
+      `SELECT * FROM device_tokens
+        WHERE notifications_enabled = 1
+          AND notification_token_valid = 1
+          AND push_notification_token IS NOT NULL
+          AND last_opened_at IS NOT NULL`,
+    )
+    .all<DeviceTokenRow>();
+  return results ?? [];
+}
+
+export interface UnseenActivity {
+  itemCount: number;
+  entries: number;
+  lastActorName: string | null;
+}
+
+/** Sum of items OTHER members added to this household since `sinceISO`. */
+export async function unseenActivityForMember(
+  db: D1Database,
+  input: { householdId: string; memberId: string; sinceISO: string },
+): Promise<UnseenActivity> {
+  const row = await db
+    .prepare(
+      `SELECT COALESCE(SUM(item_count), 0) AS item_count,
+              COUNT(*) AS entries,
+              (SELECT actor_display_name FROM list_activity
+                 WHERE household_id = ?1 AND actor_member_id <> ?2 AND created_at > ?3
+                 ORDER BY created_at DESC LIMIT 1) AS last_actor_name
+         FROM list_activity
+        WHERE household_id = ?1 AND actor_member_id <> ?2 AND created_at > ?3`,
+    )
+    .bind(input.householdId, input.memberId, input.sinceISO)
+    .first<{ item_count: number; entries: number; last_actor_name: string | null }>();
+
+  return {
+    itemCount: row?.item_count ?? 0,
+    entries: row?.entries ?? 0,
+    lastActorName: row?.last_actor_name ?? null,
+  };
+}
+
+/** Records that a retention push was just sent to this (device, household). */
+export async function markRetentionPushSent(
+  db: D1Database,
+  input: { deviceId: string; householdId: string },
+): Promise<void> {
+  const ts = now();
+  await db
+    .prepare(
+      `UPDATE device_tokens SET last_retention_push_at = ?3, updated_at = ?3
+        WHERE device_id = ?1 AND household_id = ?2`,
+    )
+    .bind(input.deviceId, input.householdId, ts)
     .run();
 }
 

@@ -107,8 +107,36 @@ export const RegisterTokenRequestSchema = z.object({
   notificationsEnabled: z.boolean().optional(),
   appVersion: z.string().max(40).optional(),
   platform: z.literal("iOS").default("iOS"),
+  /** Minutes east of UTC (e.g. -480 for PST). Lets the retention cron avoid
+   *  sending nudges in the middle of the recipient's night. */
+  tzOffsetMinutes: z.number().int().optional(),
 });
 export type RegisterTokenRequest = z.infer<typeof RegisterTokenRequestSchema>;
+
+// ---------------------------------------------------------------------------
+// Retention — re-engagement nudges
+// ---------------------------------------------------------------------------
+
+/** Foreground heartbeat: records that the user opened the app, so the
+ *  retention cron can measure how long they've been away. */
+export const HeartbeatRequestSchema = z.object({
+  householdId: z.string().min(1),
+  memberId: z.string().min(1),
+  deviceId: z.string().min(1),
+  tzOffsetMinutes: z.number().int().optional(),
+});
+export type HeartbeatRequest = z.infer<typeof HeartbeatRequestSchema>;
+
+/** Reports that the local member added items to a shared list, so the cron can
+ *  later tell OTHER members "N new items were added while you were away". */
+export const ListActivityRequestSchema = z.object({
+  householdId: z.string().min(1),
+  actorMemberId: z.string().min(1),
+  actorDisplayName: z.string().max(120).optional(),
+  deviceId: z.string().min(1),
+  itemCount: z.number().int().positive(),
+});
+export type ListActivityRequest = z.infer<typeof ListActivityRequestSchema>;
 
 /**
  * Per-activity update token. ActivityKit produces a fresh update token for

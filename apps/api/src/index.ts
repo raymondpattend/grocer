@@ -14,8 +14,10 @@ import { feedbackRoute } from "./routes/feedback.js";
 import { suggestionsRoute } from "./routes/suggestions.js";
 import { parseListRoute } from "./routes/parseList.js";
 import { liveActivityRoute } from "./routes/liveActivity.js";
+import { retentionRoute } from "./routes/retention.js";
 import { productImageRoute } from "./routes/productImage.js";
 import { billingRoute } from "./routes/billing.js";
+import { runRetentionSweep } from "./cron/retention.js";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -39,6 +41,7 @@ app.route("/", feedbackRoute);
 app.route("/", suggestionsRoute);
 app.route("/", parseListRoute);
 app.route("/", liveActivityRoute);
+app.route("/", retentionRoute);
 app.route("/", productImageRoute);
 app.route("/", billingRoute);
 
@@ -61,4 +64,19 @@ app.onError((err, c) => {
   return c.json({ ok: false, error: "Internal error" }, 500);
 });
 
-export default app;
+export default {
+  fetch: app.fetch,
+  /** Cloudflare Cron Trigger — hourly retention-nudge sweep (see wrangler.toml). */
+  async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil(
+      runRetentionSweep(env)
+        .then((r) =>
+          console.log(
+            `[retention] sweep complete: candidates=${r.candidates} ` +
+              `sent=${r.sent} failed=${r.failed} skipped=${r.skipped}`,
+          ),
+        )
+        .catch((err) => console.error("[retention] sweep failed:", err)),
+    );
+  },
+};

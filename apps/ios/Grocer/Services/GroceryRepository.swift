@@ -1712,6 +1712,23 @@ final class GroceryRepository {
         // Prewarm the product image so it's a cache hit by the time it's viewed.
         // Only new items need it — merged ones were already on the list.
         Task { await api.prewarmImages(newItems.map(\.name)) }
+
+        // Retention: record adds to a SHARED list so other members can be nudged
+        // about them if they go inactive. Solo lists have no recipients, so skip.
+        // `actorMemberId` matches the member id registered in device_tokens, so
+        // the cron's "exclude my own additions" filter works.
+        let householdMemberCount = (membersByHouseholdId[household.id] ?? []).count
+        if !newItems.isEmpty, householdMemberCount > 1 {
+            let payload = ListActivityPayload(
+                householdId: household.id,
+                actorMemberId: member?.id ?? settings.deviceId,
+                actorDisplayName: member?.displayName ?? settings.displayName,
+                deviceId: settings.deviceId,
+                itemCount: newItems.count
+            )
+            Task { await api.reportListActivity(payload) }
+        }
+
         if let session, let lastItem = touched.last {
             pushLiveActivityUpdate(for: session, lastItem: lastItem, lastStatus: nil)
         }

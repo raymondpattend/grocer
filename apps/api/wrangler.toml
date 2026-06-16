@@ -57,3 +57,11 @@ POSTHOG_HOST = "https://us.i.posthog.com"
 
 [observability]
 enabled = true
+
+# ---------------------------------------------------------------------------
+# Cron Triggers — hourly retention-nudge sweep. The handler self-gates each
+# device to daytime-local + an inactivity threshold, so running hourly just
+# means every eligible user is checked at a sensible local hour.
+# ---------------------------------------------------------------------------
+[triggers]
+crons = ["0 * * * *"]

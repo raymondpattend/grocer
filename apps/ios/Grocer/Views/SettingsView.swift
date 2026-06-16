@@ -1,4 +1,5 @@
 import PhotosUI
+import PostHog
 import SwiftUI
 import UIKit
 

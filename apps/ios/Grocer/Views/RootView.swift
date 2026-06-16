@@ -56,6 +56,7 @@ struct RootView: View {
                 Task {
                     await appUpdateGate.refresh()
                     await repo.refreshAfterActivation()
+                    await sendRetentionHeartbeat()
                 }
             } else {
                 repo.stopForegroundRefreshLoop()
@@ -92,6 +93,28 @@ struct RootView: View {
 
     private var shouldShowOnboarding: Bool {
         Self.forceShowOnboardingForDebug || (repo.hasCompletedInitialLoad && repo.households.isEmpty)
+    }
+
+    /// Tells the backend the app was opened, so the retention cron can measure
+    /// inactivity. Debounced to ~once/hour and skipped before any group exists.
+    private func sendRetentionHeartbeat() async {
+        let settings = SettingsStore.shared
+        if let last = settings.lastHeartbeatAt, Date().timeIntervalSince(last) < 3600 {
+            return
+        }
+        let householdId = settings.selectedHouseholdId.isEmpty
+            ? repo.households.first?.id
+            : settings.selectedHouseholdId
+        guard let householdId, !householdId.isEmpty else { return }
+
+        settings.lastHeartbeatAt = Date()
+        await APIClient.shared.reportActive(
+            HeartbeatPayload(
+                householdId: householdId,
+                memberId: settings.memberIdOrDevice,
+                deviceId: settings.deviceId
+            )
+        )
     }
 }
 

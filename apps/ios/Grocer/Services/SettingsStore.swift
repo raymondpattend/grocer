@@ -19,6 +19,7 @@ final class SettingsStore {
         static let profileImageData = "grocer.profileImageData"
         static let memberId = "grocer.memberId"
         static let selectedHouseholdId = "grocer.selectedHouseholdId"
+        static let lastHeartbeatAt = "grocer.lastHeartbeatAt"
     }
 
     /// Stable per-install device identifier used for token registration.
@@ -81,6 +82,13 @@ final class SettingsStore {
     var selectedHouseholdId: String {
         get { defaults.string(forKey: Keys.selectedHouseholdId) ?? "" }
         set { defaults.set(newValue, forKey: Keys.selectedHouseholdId) }
+    }
+
+    /// When the retention foreground heartbeat last fired. Used to debounce it
+    /// to roughly once per hour so we don't POST on every quick app switch.
+    var lastHeartbeatAt: Date? {
+        get { defaults.object(forKey: Keys.lastHeartbeatAt) as? Date }
+        set { defaults.set(newValue, forKey: Keys.lastHeartbeatAt) }
     }
 
     var appVersion: String {

@@ -18,4 +18,8 @@ export const TABLES = {
   feedback: "feedback",
   /** Append-only APNs delivery log. */
   apnsLog: "apns_log",
+  /** Append-only log of items added to a shared household, used to compose
+   *  retention nudges ("N new items while you were away"). Counts + adder name
+   *  only — CloudKit remains the source of truth for the items themselves. */
+  listActivity: "list_activity",
 } as const;

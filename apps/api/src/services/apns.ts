@@ -458,5 +458,48 @@ export function sendHeadsUpNotification(
   });
 }
 
+/**
+ * Send a retention re-engagement nudge — "items were added to your shared list
+ * while you were away". A standard (not time-sensitive) alert so it respects
+ * Focus/quiet hours; the cron already gates sends to daytime-local. The custom
+ * keys let the app log `retention_notification_opened` and deep-link to the
+ * household when the user taps it.
+ */
+export function sendRetentionNotification(
+  env: Env,
+  deviceToken: string,
+  args: {
+    householdId: string;
+    newItemCount: number;
+    actorName?: string | null;
+    notifId: string;
+  },
+): Promise<ApnsResult> {
+  const n = args.newItemCount;
+  const itemWord = n === 1 ? "item" : "items";
+  const actor = args.actorName?.trim();
+  const body = actor
+    ? `${actor} added ${n} ${itemWord} to your shared list.`
+    : `${n} new ${itemWord} were added to your shared list.`;
+
+  const payload = {
+    aps: {
+      alert: { title: "New on your list", body },
+      sound: "default",
+      "thread-id": `retention-${args.householdId}`,
+    },
+    kind: "retention",
+    notifId: args.notifId,
+    householdId: args.householdId,
+    newItemCount: n,
+  };
+
+  return postToApns(env, deviceToken, payload, {
+    priority: 10,
+    pushType: "alert",
+    topic: env.APNS_BUNDLE_ID,
+  });
+}
+
 /** Swift ActivityAttributes type name — must match GroceryActivityAttributes. */
 export const ACTIVITY_ATTRIBUTES_TYPE = "GroceryActivityAttributes";
