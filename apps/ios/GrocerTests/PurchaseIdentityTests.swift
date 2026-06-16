@@ -101,7 +101,7 @@ final class BillingPolicyTests: XCTestCase {
 
     func testCheckoutURLIncludesPackageAndPurchaseUID() throws {
         let url = try XCTUnwrap(BillingPolicy.checkoutURL(
-            baseURLString: "https://grocer.narro.org",
+            baseURLString: "https://api.trygrocer.com",
             purchaseUID: uid,
             packageIdentifier: "$rc_monthly"
         ))
@@ -114,7 +114,7 @@ final class BillingPolicyTests: XCTestCase {
 
     func testBillingPortalURLIncludesPurchaseUID() throws {
         let url = try XCTUnwrap(BillingPolicy.billingPortalURL(
-            baseURLString: "https://grocer.narro.org",
+            baseURLString: "https://api.trygrocer.com",
             purchaseUID: uid
         ))
         let components = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false))

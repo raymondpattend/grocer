@@ -13,7 +13,7 @@
 //
 // Safe to re-run: already-cached items return immediately and cost nothing.
 
-const DEFAULT_BASE = "https://grocer.narro.org";
+const DEFAULT_BASE = "https://api.trygrocer.com";
 
 // Curated staples — broad coverage of a typical grocery list. The Worker's
 // vector similarity collapses plurals/variants ("tomato" ↔ "tomatoes"), so we

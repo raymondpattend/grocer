@@ -64,7 +64,7 @@ enum GrocerWidgetAPI {
     #if DEBUG
     static let baseURLString = "https://grocer-75.localcan.dev"
     #else
-    static let baseURLString = "https://grocer.narro.org"
+    static let baseURLString = "https://api.trygrocer.com"
     #endif
 }
 

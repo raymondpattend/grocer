@@ -97,7 +97,7 @@ paywall copy metadata still come from the current RevenueCat offering.
 The iOS app builds web checkout URLs like:
 
 ```text
-https://grocer.narro.org/checkout?packageId=$rc_monthly&uid=<purchase_uid>
+https://api.trygrocer.com/checkout?packageId=$rc_monthly&uid=<purchase_uid>
 ```
 
 The Worker creates or reuses a Stripe customer, then redirects to hosted Stripe

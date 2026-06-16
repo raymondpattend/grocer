@@ -27,8 +27,8 @@ struct GrocerProPaywallView: View {
     /// present, hanging the spinner forever.
     @State private var purchaseAfterDismiss = false
 
-    private let termsURL = URL(string: "https://grocer.narro.org/terms")
-    private let privacyURL = URL(string: "https://grocer.narro.org/privacy")
+    private let termsURL = URL(string: "https://api.trygrocer.com/terms")
+    private let privacyURL = URL(string: "https://api.trygrocer.com/privacy")
 
     private var copy: GrocerProPaywallCopy {
         subscriptions.paywallCopy(for: context)
