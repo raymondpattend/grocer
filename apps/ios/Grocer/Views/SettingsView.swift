@@ -950,9 +950,11 @@ struct HeadsUpSheet: View {
             .padding(.horizontal, 20)
             .padding(.top, 16)
 
+            headsUpBell
+
             VStack(spacing: 12) {
                 Text("Heading out soon?")
-                    .font(.system(size: 40, weight: .bold, design: .rounded))
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 24)
@@ -961,11 +963,9 @@ struct HeadsUpSheet: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 36)
             }
-
-            headsUpCard
-                .padding(.horizontal, 48)
         }
         .safeAreaInset(edge: .bottom) {
             Button(action: send) {
@@ -993,7 +993,7 @@ struct HeadsUpSheet: View {
             .padding(.top, 32)
             .padding(.bottom, 8)
         }
-        .presentationDetents([.height(496)])
+        .presentationDetents([.height(440)])
         .presentationDragIndicator(.visible)
         .alert("Couldn\u{2019}t send heads-up", isPresented: Binding(
             get: { sendError != nil }, set: { if !$0 { sendError = nil } }
@@ -1002,67 +1002,14 @@ struct HeadsUpSheet: View {
         } message: { Text(sendError ?? "") }
     }
 
-    /// Tilted preview card — same silhouette as the invite sheet's share card,
-    /// re-skinned for the heads-up message.
-    private var headsUpCard: some View {
-        ZStack(alignment: .topLeading) {
-            Image(systemName: "bell.and.waves.left.and.right.fill")
-                .font(.system(size: 130))
-                .foregroundStyle(.white.opacity(0.08))
-                .rotationEffect(.degrees(-12))
-                .offset(x: 120, y: 70)
-
-            VStack(alignment: .leading, spacing: 0) {
-                Text("Heads Up")
-                    .font(.caption.weight(.bold))
-                    .tracking(1.5)
-                    .textCase(.uppercase)
-                    .foregroundStyle(.white.opacity(0.85))
-
-                HStack(spacing: 10) {
-                    Image(systemName: repo.currentHousehold?.icon ?? "cart.fill")
-                        .font(.title3.weight(.semibold))
-                    Text(groupName)
-                        .font(.title2.bold())
-                        .lineLimit(1)
-                }
-                .foregroundStyle(.white)
-                .padding(.top, 8)
-
-                Spacer(minLength: 12)
-
-                HStack {
-                    memberAvatars
-                    Spacer()
-                    Label("Time Sensitive", systemImage: "clock.badge.exclamationmark")
-                        .labelStyle(.titleAndIcon)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.white.opacity(0.85))
-                }
-            }
-            .padding(20)
-        }
-        .frame(height: 190)
-        .background(tint.gradient)
-        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-        .rotationEffect(.degrees(-4))
-        .shadow(color: tint.opacity(0.35), radius: 24, x: 0, y: 14)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(Text("Heads-up to \(groupName)"))
-    }
-
-    @ViewBuilder
-    private var memberAvatars: some View {
-        let members = repo.currentMembers.prefix(4)
-        HStack(spacing: -10) {
-            ForEach(Array(members.enumerated()), id: \.element.id) { _, member in
-                ProfilePicture(
-                    imageData: repo.isCurrentUser(member) ? repo.profileImageData : member.profileImageData,
-                    size: 30
-                )
-                .overlay(Circle().stroke(.white.opacity(0.6), lineWidth: 1.5))
-            }
-        }
+    /// Bell glyph in the group's tint, ringing to signal the time-sensitive alert.
+    private var headsUpBell: some View {
+        Image(systemName: "bell.and.waves.left.and.right.fill")
+            .font(.system(size: 64, weight: .semibold))
+            .foregroundStyle(tint.gradient)
+            .frame(width: 120, height: 120)
+            .background(Circle().fill(tint.opacity(0.12)))
+            .accessibilityHidden(true)
     }
 
     private var primaryButtonForeground: Color {
