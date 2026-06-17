@@ -41,6 +41,20 @@ import {
 
 export const liveActivityRoute = new Hono<{ Bindings: Env }>();
 
+/** Live Activity callers authenticate with the `x-grocer-signature` HMAC header. */
+async function authenticateLiveActivityRequest(c: Context<{ Bindings: Env }>) {
+  return authenticateSignedRequest(c);
+}
+
+async function consumeRateLimit(
+  c: Context<{ Bindings: Env }>,
+  scope: string,
+  limit: number,
+  windowSeconds: number,
+) {
+  return enforceRateLimit(c, scope, limit, windowSeconds);
+}
+
 function rateLimitConfig(pathname: string): { scope: string; limit: number; windowSeconds: number } {
   if (pathname.includes("/debug/")) return { scope: "debug", limit: 10, windowSeconds: 60 };
   if (pathname.endsWith("/start") || pathname.endsWith("/update") || pathname.endsWith("/end")) {
@@ -50,10 +64,10 @@ function rateLimitConfig(pathname: string): { scope: string; limit: number; wind
 }
 
 liveActivityRoute.use("/live-activity/*", async (c, next) => {
-  const authError = await authenticateSignedRequest(c);
+  const authError = await authenticateLiveActivityRequest(c);
   if (authError) return authError;
   const { scope, limit, windowSeconds } = rateLimitConfig(new URL(c.req.url).pathname);
-  const rateLimitError = await enforceRateLimit(c, scope, limit, windowSeconds);
+  const rateLimitError = await consumeRateLimit(c, scope, limit, windowSeconds);
   if (rateLimitError) return rateLimitError;
   await next();
 });

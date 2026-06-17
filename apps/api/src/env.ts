@@ -21,6 +21,7 @@ export interface Env {
 
   // Billing / web checkout
   STRIPE_SECRET_KEY: string;
+  STRIPE_PUBLISHABLE_KEY: string; // pk_… — used by the custom Stripe Elements checkout page
   STRIPE_PRICE_ANNUAL: string;
   STRIPE_PRICE_QUARTERLY: string;
   STRIPE_PRICE_MONTHLY: string;

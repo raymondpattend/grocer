@@ -40,6 +40,9 @@ struct HomeView: View {
             }
             .background(Color(.systemGroupedBackground))
             .refreshable { await repo.manualRefresh() }
+            .safeAreaInset(edge: .top, spacing: 0) {
+                SyncStatusBar(state: repo.syncState, pendingCount: repo.pendingCloudWriteCount)
+            }
             .navigationTitle("My Lists")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
@@ -132,11 +135,11 @@ struct HomeView: View {
                 skeleton
             }
         } else if separateShared {
-            // Filled state: always show both section headers, even when a
-            // section is empty, so the layout reads consistently.
             VStack(alignment: .leading, spacing: 24) {
-                groupSection(title: String(localized: "My Lists"), households: ownedHouseholds, includesProUpsell: true)
-                sharedBySharerSection
+                groupSection(households: ownedHouseholds, includesProUpsell: true)
+                if !sharedHouseholds.isEmpty {
+                    sharedBySharerSection
+                }
             }
         } else if isAtFreeOwnedGroupLimit {
             VStack(spacing: 14) {
@@ -151,11 +154,13 @@ struct HomeView: View {
         }
     }
 
-    private func groupSection(title: String,
+    private func groupSection(title: String? = nil,
                               households: [Household],
                               includesProUpsell: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            sectionHeader(title)
+            if let title {
+                sectionHeader(title)
+            }
             if households.isEmpty {
                 emptySectionPlaceholder(String(localized: "No lists here yet."))
             } else {

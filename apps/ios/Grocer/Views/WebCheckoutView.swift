@@ -9,6 +9,15 @@ struct WebCheckoutView: View {
     let url: URL
     var onClose: (Bool) -> Void = { _ in }
 
+    /// Matches the checkout page's `--page` background in both light and dark
+    /// so the safe areas and the load-time placeholder blend into the web
+    /// content. Adapts with the system appearance.
+    private static let pageBackground = UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0x0b / 255.0, green: 0x0b / 255.0, blue: 0x0c / 255.0, alpha: 1)
+            : UIColor(red: 0xf6 / 255.0, green: 0xf6 / 255.0, blue: 0xf7 / 255.0, alpha: 1)
+    }
+
     @Environment(SubscriptionStore.self) private var subscriptions
     @Environment(\.dismiss) private var dismiss
     @State private var didCompleteCheckout = false
@@ -17,12 +26,13 @@ struct WebCheckoutView: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            Color(.systemBackground).ignoresSafeArea()
+            Color(uiColor: Self.pageBackground).ignoresSafeArea()
 
             // Render the web content edge-to-edge, including under the top
             // safe area, so the page fills the whole screen.
             WebView(
                 url: url,
+                backgroundColor: Self.pageBackground,
                 onLoadingChange: { loading in
                     isLoading = loading
                 },
@@ -43,25 +53,28 @@ struct WebCheckoutView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
-//            Button {
-//                close()
-//            } label: {
-//                Image(systemName: "xmark")
-//                    .font(.system(size: 14, weight: .bold))
-//                    .foregroundStyle(Color.secondary)
-//                    .frame(width: 34, height: 34)
-//                    .background(Color.primary.opacity(0.06), in: Circle())
-//            }
-//            .accessibilityLabel("Close")
-//            .padding(.leading, 16)
-//            .padding(.top, 8)
+            // Always-on liquid-glass close button in the top-left corner so the
+            // user can dismiss the sheet at any point during checkout.
+            closeButton
+                .padding(.leading, 16)
+                .padding(.top, 8)
         }
-        // Checkout always renders in light theme regardless of the device's
-        // appearance, so the Stripe page styling stays consistent. Use the
-        // environment value (not `preferredColorScheme`, which is a
-        // window-level preference that would flip the whole app) so only this
-        // view's subtree is forced light.
-        .environment(\.colorScheme, .light)
+    }
+
+    private var closeButton: some View {
+        Button {
+            close()
+        } label: {
+            Image(systemName: "xmark")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 44, height: 44)
+                .contentShape(Circle())
+                .modifier(GlassCircleBackground())
+        }
+        .buttonStyle(.plain)
+        .tint(.primary)
+        .accessibilityLabel("Close")
     }
 
     private func checkoutDidComplete() {
@@ -90,21 +103,23 @@ struct WebCheckoutView: View {
 /// controls — the hosting view owns dismissal.
 private struct WebView: UIViewRepresentable {
     let url: URL
+    var backgroundColor: UIColor = .white
     var onLoadingChange: (Bool) -> Void = { _ in }
     let onCheckoutSuccess: () -> Void
     let onCheckoutCancel: () -> Void
 
     func makeUIView(context: Context) -> WKWebView {
+        // A plain configuration with no script message handlers keeps Apple Pay
+        // (the page's Express Checkout Element) available inside WKWebView.
         let configuration = WKWebViewConfiguration()
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
         webView.isOpaque = false
-        // Force light appearance so the page's `prefers-color-scheme` resolves
-        // light to match the rest of the forced-light checkout flow.
-        webView.overrideUserInterfaceStyle = .light
-        webView.backgroundColor = .white
-        webView.scrollView.backgroundColor = .white
+        // No forced appearance — the page's `prefers-color-scheme` follows the
+        // system so the checkout themes light/dark alongside the rest of the app.
+        webView.backgroundColor = backgroundColor
+        webView.scrollView.backgroundColor = backgroundColor
         webView.load(URLRequest(url: url))
         return webView
     }
@@ -181,6 +196,17 @@ private struct WebView: UIViewRepresentable {
         private static func isCheckoutCancel(_ url: URL?) -> Bool {
             guard let url else { return false }
             return url.path.contains("/checkout/cancelled")
+        }
+    }
+}
+
+/// Liquid glass circular background on iOS 26+, with a material fallback.
+private struct GlassCircleBackground: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.glassEffect(.regular.interactive(), in: .circle)
+        } else {
+            content.background(.ultraThinMaterial, in: Circle())
         }
     }
 }

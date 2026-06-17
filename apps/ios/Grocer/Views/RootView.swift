@@ -30,7 +30,10 @@ struct RootView: View {
         }
         .background(KeyboardWarmer())
         .safeAreaInset(edge: .top, spacing: 0) {
-            CloudIssueChip(issue: repo.cloudIssue)
+            VStack(spacing: 4) {
+                SyncStatusBar(state: repo.syncState, pendingCount: repo.pendingCloudWriteCount)
+                CloudIssueChip(issue: repo.cloudIssue)
+            }
         }
         .animation(.snappy(duration: 0.3), value: repo.cloudIssue)
         .onShake { showDebug = true }
@@ -733,6 +736,64 @@ private extension UIImage {
 }
 
 // MARK: - Shared small components
+
+struct SyncStatusBar: View {
+    let state: GroceryRepository.SyncState
+    let pendingCount: Int
+
+    var body: some View {
+        if let status {
+            HStack(spacing: 7) {
+                Image(systemName: status.icon)
+                    .symbolRenderingMode(.hierarchical)
+                Text(status.title)
+                    .fontWeight(.semibold)
+            }
+            .font(.footnote)
+            .foregroundStyle(status.tint)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(.ultraThinMaterial, in: Capsule())
+            .overlay {
+                Capsule().strokeBorder(status.tint.opacity(0.28), lineWidth: 1)
+            }
+            .padding(.top, 4)
+            .accessibilityLabel(Text(status.title))
+            .transition(.move(edge: .top).combined(with: .opacity))
+        }
+    }
+
+    private var status: Status? {
+        switch state {
+        case .syncing:
+            return Status(
+                icon: "arrow.triangle.2.circlepath.icloud",
+                title: pendingCount > 0
+                    ? String(localized: "Syncing \(pendingCount)")
+                    : String(localized: "Syncing"),
+                tint: .secondary
+            )
+        case .offline:
+            return Status(icon: "icloud.slash", title: String(localized: "Offline"), tint: .secondary)
+        case .error(let message):
+            let title = message.isEmpty ? String(localized: "Sync issue") : message
+            return Status(icon: "exclamationmark.icloud", title: title, tint: .red)
+        case .idle:
+            guard pendingCount > 0 else { return nil }
+            return Status(
+                icon: "icloud.and.arrow.up",
+                title: String(localized: "^[\(pendingCount) change](inflect: true) queued"),
+                tint: .secondary
+            )
+        }
+    }
+
+    private struct Status {
+        let icon: String
+        let title: String
+        let tint: Color
+    }
+}
 
 /// Compact status chip floated at the very top of the app, shown *only* for
 /// severe problems (iCloud signed out, offline, or a sync error). Minor states

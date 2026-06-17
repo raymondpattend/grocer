@@ -142,9 +142,9 @@ struct GrocerProPaywallView: View {
         }
         .padding(.horizontal, 20)
         .frame(maxWidth: .infinity)
-        .background(Palette.background)
         .presentationDetents([.height(208)])
-        .presentationDragIndicator(.visible)
+        .presentationDragIndicator(.hidden)
+        .presentationBackground(.clear)
     }
 
     // MARK: - Scroll content

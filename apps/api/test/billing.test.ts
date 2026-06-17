@@ -8,6 +8,7 @@ const UID = "123e4567-e89b-42d3-a456-426614174000";
 
 const env = {
   STRIPE_SECRET_KEY: "sk_test_123",
+  STRIPE_PUBLISHABLE_KEY: "pk_test_123",
   STRIPE_PRICE_ANNUAL: "price_annual",
   STRIPE_PRICE_QUARTERLY: "price_quarterly",
   STRIPE_PRICE_MONTHLY: "price_monthly",
@@ -19,28 +20,34 @@ function setupStripe(overrides: Record<string, unknown> = {}) {
       search: vi.fn(async () => ({ data: [] })),
       create: vi.fn(async () => ({ id: "cus_new" })),
     },
-    checkout: {
-      sessions: {
-        create: vi.fn(async () => ({
-          id: "cs_new",
-          url: "https://checkout.stripe.test/session",
-        })),
-        retrieve: vi.fn(async () => ({
-          id: "cs_done",
-          status: "complete",
-          mode: "subscription",
-          client_reference_id: UID,
-          subscription: "sub_new",
-          metadata: {
-            user_id: UID,
-            app_user_id: UID,
-            package_id: "$rc_monthly",
-          },
-        })),
-      },
+    prices: {
+      retrieve: vi.fn(async () => ({
+        id: "price_monthly",
+        unit_amount: 499,
+        currency: "usd",
+        recurring: { interval: "month", interval_count: 1 },
+      })),
+    },
+    setupIntents: {
+      create: vi.fn(async () => ({
+        id: "seti_new",
+        client_secret: "seti_new_secret",
+      })),
+      retrieve: vi.fn(async () => ({
+        id: "seti_done",
+        status: "succeeded",
+        customer: "cus_new",
+        payment_method: "pm_card",
+        metadata: {
+          user_id: UID,
+          app_user_id: UID,
+          package_id: "$rc_monthly",
+        },
+      })),
     },
     subscriptions: {
       list: vi.fn(async () => ({ data: [] })),
+      create: vi.fn(async () => ({ id: "sub_new", status: "active" })),
     },
     billingPortal: {
       sessions: {
@@ -68,20 +75,39 @@ describe("billing checkout", () => {
     );
 
     expect(response.status).toBe(400);
-    expect(stripe.checkout.sessions.create).not.toHaveBeenCalled();
+    expect(stripe.setupIntents.create).not.toHaveBeenCalled();
   });
 
-  it("maps every Grocer plan to its Stripe price", async () => {
+  it("renders a custom Elements checkout page seeded with a SetupIntent secret", async () => {
+    const stripe = setupStripe();
+    const response = await routeFor(stripe).request(
+      `/checkout?packageId=%24rc_monthly&uid=${UID}`,
+      {},
+      env,
+    );
+    const html = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(html).toContain("Subscribe to Grocer Pro");
+    expect(html).toContain("seti_new_secret");
+    expect(html).toContain("pk_test_123");
+    expect(html).toContain("js.stripe.com/v3");
+    expect(html).toContain("$4.99");
+    expect(html).toContain("availablepaymentmethodschange");
+    expect(html).toContain("paymentFailed");
+  });
+
+  it("seeds the SetupIntent with the RevenueCat identity and plan metadata", async () => {
     const cases = [
-      ["$rc_annual", "price_annual", "$rc_annual"],
-      ["$rc_three_month", "price_quarterly", "$rc_three_month"],
-      ["$rc_monthly", "price_monthly", "$rc_monthly"],
-      ["grocer_pro_subscription_annual_1", "price_annual", "$rc_annual"],
-      ["grocer_pro_subscription_quarterly_1", "price_quarterly", "$rc_three_month"],
-      ["grocer_pro_subscription_monthly_1", "price_monthly", "$rc_monthly"],
+      ["$rc_annual", "$rc_annual"],
+      ["$rc_three_month", "$rc_three_month"],
+      ["$rc_monthly", "$rc_monthly"],
+      ["grocer_pro_subscription_annual_1", "$rc_annual"],
+      ["grocer_pro_subscription_quarterly_1", "$rc_three_month"],
+      ["grocer_pro_subscription_monthly_1", "$rc_monthly"],
     ];
 
-    for (const [packageId, priceId, canonicalPackageId] of cases) {
+    for (const [packageId, canonicalPackageId] of cases) {
       const stripe = setupStripe();
       const response = await routeFor(stripe).request(
         `/checkout?packageId=${encodeURIComponent(packageId)}&uid=${UID}`,
@@ -89,35 +115,35 @@ describe("billing checkout", () => {
         env,
       );
 
-      expect(response.status).toBe(303);
-      expect(response.headers.get("location")).toBe("https://checkout.stripe.test/session");
-      expect(stripe.checkout.sessions.create).toHaveBeenCalledWith(
+      expect(response.status).toBe(200);
+      expect(stripe.setupIntents.create).toHaveBeenCalledWith(
         expect.objectContaining({
-          mode: "subscription",
           customer: "cus_new",
-          client_reference_id: UID,
-          line_items: [{ price: priceId, quantity: 1 }],
+          usage: "off_session",
           payment_method_types: ["card"],
           metadata: {
             user_id: UID,
             app_user_id: UID,
             package_id: canonicalPackageId,
           },
-          subscription_data: {
-            metadata: {
-              user_id: UID,
-              app_user_id: UID,
-              package_id: canonicalPackageId,
-            },
-          },
-          success_url: expect.stringContaining("/checkout/success?session_id={CHECKOUT_SESSION_ID}"),
-          cancel_url: expect.stringContaining("/checkout/cancelled"),
         }),
       );
     }
   });
 
-  it("reuses an existing customer and stores RevenueCat identity on the Checkout Session", async () => {
+  it("returns 500 when the publishable key is missing", async () => {
+    const stripe = setupStripe();
+    const response = await routeFor(stripe).request(
+      `/checkout?packageId=%24rc_monthly&uid=${UID}`,
+      {},
+      { ...env, STRIPE_PUBLISHABLE_KEY: "" },
+    );
+
+    expect(response.status).toBe(500);
+    expect(stripe.setupIntents.create).not.toHaveBeenCalled();
+  });
+
+  it("reuses an existing customer", async () => {
     const stripe = setupStripe({
       customers: {
         search: vi.fn(async () => ({ data: [{ id: "cus_existing" }] })),
@@ -132,15 +158,8 @@ describe("billing checkout", () => {
     );
 
     expect(stripe.customers.create).not.toHaveBeenCalled();
-    expect(stripe.checkout.sessions.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        customer: "cus_existing",
-        metadata: {
-          user_id: UID,
-          app_user_id: UID,
-          package_id: "$rc_monthly",
-        },
-      }),
+    expect(stripe.setupIntents.create).toHaveBeenCalledWith(
+      expect.objectContaining({ customer: "cus_existing" }),
     );
   });
 
@@ -161,7 +180,7 @@ describe("billing checkout", () => {
     });
   });
 
-  it("redirects existing active subscribers without creating another Checkout Session", async () => {
+  it("redirects existing active subscribers without creating a SetupIntent", async () => {
     const stripe = setupStripe({
       customers: {
         search: vi.fn(async () => ({ data: [{ id: "cus_existing" }] })),
@@ -169,12 +188,7 @@ describe("billing checkout", () => {
       },
       subscriptions: {
         list: vi.fn(async () => ({ data: [{ id: "sub_existing", status: "active" }] })),
-      },
-      checkout: {
-        sessions: {
-          create: vi.fn(),
-          retrieve: vi.fn(),
-        },
+        create: vi.fn(),
       },
     });
 
@@ -186,7 +200,7 @@ describe("billing checkout", () => {
 
     expect(response.status).toBe(303);
     expect(response.headers.get("location")).toContain("/checkout/success?already_active=1");
-    expect(stripe.checkout.sessions.create).not.toHaveBeenCalled();
+    expect(stripe.setupIntents.create).not.toHaveBeenCalled();
   });
 });
 
@@ -199,6 +213,7 @@ describe("billing success", () => {
       },
       subscriptions: {
         list: vi.fn(async () => ({ data: [{ id: "sub_existing", status: "active" }] })),
+        create: vi.fn(),
       },
     });
 
@@ -213,39 +228,48 @@ describe("billing success", () => {
     expect(html).toContain("already active");
   });
 
-  it("rejects incomplete Checkout Sessions", async () => {
+  it("rejects a SetupIntent that has not succeeded", async () => {
     const stripe = setupStripe({
-      checkout: {
-        sessions: {
-          create: vi.fn(),
-          retrieve: vi.fn(async () => ({
-            id: "cs_open",
-            status: "open",
-            mode: "subscription",
-            metadata: {
-              user_id: UID,
-              app_user_id: UID,
-              package_id: "$rc_monthly",
-            },
-          })),
-        },
+      setupIntents: {
+        create: vi.fn(),
+        retrieve: vi.fn(async () => ({
+          id: "seti_open",
+          status: "requires_payment_method",
+          customer: "cus_new",
+          payment_method: null,
+          metadata: { user_id: UID, app_user_id: UID, package_id: "$rc_monthly" },
+        })),
       },
     });
 
     const response = await routeFor(stripe).request(
-      "/checkout/success?session_id=cs_open",
+      "/checkout/success?setup_intent=seti_open&redirect_status=succeeded",
       {},
       env,
     );
 
     expect(response.status).toBe(400);
+    expect(stripe.subscriptions.create).not.toHaveBeenCalled();
   });
 
-  it("accepts a completed Checkout Session with RevenueCat user_id and package metadata", async () => {
+  it("rejects a failed redirect status without touching Stripe", async () => {
     const stripe = setupStripe();
 
     const response = await routeFor(stripe).request(
-      "/checkout/success?session_id=cs_done",
+      "/checkout/success?setup_intent=seti_done&redirect_status=failed",
+      {},
+      env,
+    );
+
+    expect(response.status).toBe(400);
+    expect(stripe.setupIntents.retrieve).not.toHaveBeenCalled();
+  });
+
+  it("creates the subscription from a succeeded SetupIntent and confirms success", async () => {
+    const stripe = setupStripe();
+
+    const response = await routeFor(stripe).request(
+      "/checkout/success?setup_intent=seti_done&redirect_status=succeeded",
       {},
       env,
     );
@@ -253,7 +277,36 @@ describe("billing success", () => {
 
     expect(response.status).toBe(200);
     expect(html).toContain("You're all set.");
-    expect(stripe.checkout.sessions.retrieve).toHaveBeenCalledWith("cs_done");
+    expect(stripe.subscriptions.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        customer: "cus_new",
+        items: [{ price: "price_monthly" }],
+        default_payment_method: "pm_card",
+        metadata: {
+          user_id: UID,
+          app_user_id: UID,
+          package_id: "$rc_monthly",
+        },
+      }),
+    );
+  });
+
+  it("is idempotent when an active subscription already exists", async () => {
+    const stripe = setupStripe({
+      subscriptions: {
+        list: vi.fn(async () => ({ data: [{ id: "sub_existing", status: "active" }] })),
+        create: vi.fn(),
+      },
+    });
+
+    const response = await routeFor(stripe).request(
+      "/checkout/success?setup_intent=seti_done&redirect_status=succeeded",
+      {},
+      env,
+    );
+
+    expect(response.status).toBe(200);
+    expect(stripe.subscriptions.create).not.toHaveBeenCalled();
   });
 });
 
