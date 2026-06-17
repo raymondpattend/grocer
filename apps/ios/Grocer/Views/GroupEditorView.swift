@@ -2,7 +2,8 @@ import PostHog
 import SwiftUI
 
 /// Create or edit a group. A group *is* the grocery list, so this is where the
-/// name, store, icon, and color theme are set.
+/// name, icon, and color theme are set. Physical store linking lives in the
+/// store reminder flow.
 struct GroupEditorView: View {
     @Environment(GroceryRepository.self) private var repo
     @Environment(\.dismiss) private var dismiss
@@ -15,7 +16,6 @@ struct GroupEditorView: View {
     var onCreate: ((Household) -> Void)? = nil
 
     @State private var name = ""
-    @State private var storeName = ""
     @State private var icon = GROUP_ICON_CHOICES[0]
     @State private var theme: ListColorTheme = .default
     @State private var isSaving = false
@@ -34,10 +34,6 @@ struct GroupEditorView: View {
                         .background(Circle().fill(theme.color))
                     TextField("List name", text: $name).font(.headline)
                 }
-            }
-
-            Section("Store") {
-                TextField("Store name (optional)", text: $storeName)
             }
 
             Section("Color") {
@@ -105,21 +101,19 @@ struct GroupEditorView: View {
     private func load() {
         guard let group else { return }
         name = group.name
-        storeName = group.storeName ?? ""
         icon = group.icon
         theme = group.colorTheme
     }
 
     private func save() {
         let trimmedName = name.trimmingCharacters(in: .whitespaces)
-        let store = storeName.trimmingCharacters(in: .whitespaces)
         if isEditing {
             guard repo.isOwnerOfCurrentGroup else {
                 Haptics.error()
                 saveError = String(localized: "Only the list owner can edit list details.")
                 return
             }
-            repo.updateGroup(name: trimmedName, store: store, icon: icon, theme: theme)
+            repo.updateGroup(name: trimmedName, store: group?.storeName, icon: icon, theme: theme)
             Haptics.success()
             dismiss()
             return
@@ -127,7 +121,7 @@ struct GroupEditorView: View {
 
         isSaving = true
         Task {
-            let created = await repo.createGroup(name: trimmedName, store: store, icon: icon, theme: theme)
+            let created = await repo.createGroup(name: trimmedName, store: nil, icon: icon, theme: theme)
             await MainActor.run {
                 isSaving = false
                 if let created {

@@ -31,8 +31,8 @@ final class LiveActivityManager {
     private var memberIdsByHouseholdId: [String: String] = [:]
 
     /// The local activity the shopper started (if any). This in-memory
-    /// reference is lost if iOS kills the app during a trip — `findRunningActivity`
-    /// recovers it from `Activity.activities`.
+    /// reference is lost if iOS kills the app during a trip — later calls recover
+    /// the matching session from `Activity.activities`.
     private var currentActivity: Activity<GroceryActivityAttributes>?
     private var currentSessionId: String?
 
@@ -209,60 +209,84 @@ final class LiveActivityManager {
         }
     }
 
-    func updateLocalActivity(content: GroceryActivityAttributes.ContentState) {
-        let activity = currentActivity ?? findRunningActivity()
+    func updateLocalActivity(session: ShoppingSession, content: GroceryActivityAttributes.ContentState) {
+        let activity = findRunningActivity(sessionId: session.id)
         guard let activity else { return }
         Task {
             await activity.update(.init(state: content, staleDate: nil))
         }
     }
 
-    func endLocalActivity(content: GroceryActivityAttributes.ContentState) {
-        let activity = currentActivity ?? findRunningActivity()
-        guard let activity else {
-            print("[LiveActivity] endLocalActivity — no running activity found, ending all stale activities")
-            endAllActivities(content: content)
+    func endLocalActivity(session: ShoppingSession,
+                          content: GroceryActivityAttributes.ContentState,
+                          includeHouseholdFallback: Bool = false) {
+        var activities = runningActivities(sessionId: session.id)
+        if activities.isEmpty, includeHouseholdFallback {
+            activities = runningActivities(householdId: session.householdId)
+        }
+        guard !activities.isEmpty else {
+            print("[LiveActivity] endLocalActivity — no running activity found for session \(session.id)")
             return
         }
-        print("[LiveActivity] ending activity for session \(activity.attributes.sessionId)")
-        Task {
-            await activity.end(.init(state: content, staleDate: nil), dismissalPolicy: .after(.now + 60 * 5))
-            currentActivity = nil
-            currentSessionId = nil
+        print("[LiveActivity] ending \(activities.count) activity(s) for session \(session.id)")
+        end(activities, content: content)
+    }
+
+    func reconcileEndedActivities(_ sessions: [ShoppingSession],
+                                  content: (ShoppingSession) -> GroceryActivityAttributes.ContentState) {
+        var endedSessionsById: [String: ShoppingSession] = [:]
+        for session in sessions where session.status != .active {
+            endedSessionsById[session.id] = session
+        }
+        guard !endedSessionsById.isEmpty else { return }
+
+        let staleActivities = Activity<GroceryActivityAttributes>.activities.filter {
+            ($0.activityState == .active || $0.activityState == .stale)
+                && endedSessionsById[$0.attributes.sessionId] != nil
+        }
+        guard !staleActivities.isEmpty else { return }
+
+        print("[LiveActivity] reconciling \(staleActivities.count) ended activity(s)")
+        for activity in staleActivities {
+            guard let session = endedSessionsById[activity.attributes.sessionId] else { continue }
+            end([activity], content: content(session))
         }
     }
 
-    /// Find a running activity that matches the current session, or any running
-    /// activity if we've lost the session reference (app was killed mid-trip).
-    private func findRunningActivity() -> Activity<GroceryActivityAttributes>? {
-        let running = Activity<GroceryActivityAttributes>.activities.filter {
-            $0.activityState == .active || $0.activityState == .stale
-        }
-        if let sessionId = currentSessionId,
-           let match = running.first(where: { $0.attributes.sessionId == sessionId }) {
-            return match
-        }
-        return running.first
+    /// Find a running activity that matches the given session. We avoid falling
+    /// back to an arbitrary activity here because stale ActivityKit instances
+    /// can survive app relaunches and must not receive another trip's updates.
+    private func findRunningActivity(sessionId: String) -> Activity<GroceryActivityAttributes>? {
+        runningActivities(sessionId: sessionId).first
     }
 
-    /// End ALL running activities — used as a fallback when the specific
-    /// activity reference is lost (e.g. app was killed during a trip).
-    private func endAllActivities(content: GroceryActivityAttributes.ContentState) {
-        let running = Activity<GroceryActivityAttributes>.activities.filter {
+    private func runningActivities(sessionId: String) -> [Activity<GroceryActivityAttributes>] {
+        Activity<GroceryActivityAttributes>.activities.filter {
             $0.activityState == .active || $0.activityState == .stale
+        }.filter {
+            $0.attributes.sessionId == sessionId
         }
-        guard !running.isEmpty else {
-            print("[LiveActivity] no running activities to end")
-            return
+    }
+
+    private func runningActivities(householdId: String) -> [Activity<GroceryActivityAttributes>] {
+        Activity<GroceryActivityAttributes>.activities.filter {
+            $0.activityState == .active || $0.activityState == .stale
+        }.filter {
+            $0.attributes.householdId == householdId
         }
-        print("[LiveActivity] ending \(running.count) stale activities")
-        for activity in running {
+    }
+
+    private func end(_ activities: [Activity<GroceryActivityAttributes>],
+                     content: GroceryActivityAttributes.ContentState) {
+        for activity in activities {
             Task {
                 await activity.end(.init(state: content, staleDate: nil), dismissalPolicy: .after(.now + 60 * 5))
+                if currentActivity?.id == activity.id {
+                    currentActivity = nil
+                    currentSessionId = nil
+                }
             }
         }
-        currentActivity = nil
-        currentSessionId = nil
     }
 }
 

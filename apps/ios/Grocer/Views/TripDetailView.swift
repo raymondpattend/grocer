@@ -7,8 +7,17 @@ struct TripDetailView: View {
 
     let session: ShoppingSession
 
+    @State private var addedTripItemIds: Set<String> = []
+
     private var items: [ShoppingTripItem] { repo.tripItems(for: session) }
     private var progress: SessionProgress { repo.tripProgress(for: session) }
+    private var tint: Color { repo.households.first { $0.id == session.householdId }?.tint ?? .green }
+    private var addableItems: [ShoppingTripItem] {
+        items.filter {
+            !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && $0.outcome != .removed
+        }
+    }
 
     var body: some View {
         List {
@@ -26,6 +35,20 @@ struct TripDetailView: View {
                     summaryRow(String(localized: "Out of stock"), progress.outOfStock, systemImage: "xmark.circle.fill", tint: .red)
                     summaryRow(String(localized: "Skipped"), progress.skipped, systemImage: "arrow.uturn.forward.circle.fill", tint: .orange)
                     summaryRow(String(localized: "Not found"), progress.remaining, systemImage: "circle.dashed", tint: .secondary)
+                }
+
+                if !addableItems.isEmpty {
+                    Section {
+                        Button {
+                            addAllToList()
+                        } label: {
+                            Label("Add All to List", systemImage: "plus.circle.fill")
+                                .font(.headline)
+                                .frame(maxWidth: .infinity)
+                        }
+                        .tint(tint)
+                        .disabled(addableItems.allSatisfy { addedTripItemIds.contains($0.id) })
+                    }
                 }
 
                 ForEach(Self.outcomeGroups) { group in
@@ -88,7 +111,23 @@ struct TripDetailView: View {
                 }
             }
             Spacer()
+
+            if item.outcome != .removed {
+                Button {
+                    addToList(item)
+                } label: {
+                    Label(addedTripItemIds.contains(item.id) ? "Added" : "Add",
+                          systemImage: addedTripItemIds.contains(item.id) ? "checkmark" : "plus")
+                        .labelStyle(.titleAndIcon)
+                        .font(.caption.weight(.semibold))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .tint(addedTripItemIds.contains(item.id) ? .secondary : tint)
+                .disabled(addedTripItemIds.contains(item.id))
+            }
         }
+        .contentShape(Rectangle())
     }
 
     private func detailText(for item: ShoppingTripItem) -> String? {
@@ -98,6 +137,34 @@ struct TripDetailView: View {
             parts.append("→ \(replacement)")
         }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    private func addAllToList() {
+        let remaining = addableItems.filter { !addedTripItemIds.contains($0.id) }
+        guard !remaining.isEmpty else { return }
+        let added = repo.addItems(remaining.map { groceryInput(for: $0) })
+        guard !added.isEmpty else { return }
+        addedTripItemIds.formUnion(remaining.map(\.id))
+        Haptics.success()
+    }
+
+    private func addToList(_ item: ShoppingTripItem) {
+        guard !addedTripItemIds.contains(item.id) else { return }
+        let added = repo.addItems([groceryInput(for: item)])
+        guard !added.isEmpty else { return }
+        addedTripItemIds.insert(item.id)
+        Haptics.success()
+    }
+
+    private func groceryInput(for item: ShoppingTripItem) -> GroceryItemInput {
+        GroceryItemInput(
+            name: item.name,
+            quantity: item.quantity,
+            category: item.category,
+            notes: nil,
+            priority: .normal,
+            replacementPreference: nil
+        )
     }
 
     // MARK: - Outcome grouping

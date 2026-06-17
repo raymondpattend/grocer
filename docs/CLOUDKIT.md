@@ -61,6 +61,9 @@ A group *is* the grocery list — it carries the store, icon, and color theme.
 | `name` | String |
 | `ownerMemberId` | String |
 | `storeName` | String |
+| `storeLatitude` | Double (optional; linked-store geofence) |
+| `storeLongitude` | Double (optional; linked-store geofence) |
+| `storeRadius` | Double (optional; meters, geofence radius) |
 | `icon` | String (SF Symbol name) |
 | `colorTheme` | String (e.g. `green`, `blue`, `teal`) |
 | `createdAt` | Date/Time |

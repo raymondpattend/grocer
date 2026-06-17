@@ -296,6 +296,30 @@ final class SyncSourceGuardrailTests: XCTestCase {
         XCTAssertTrue(detail.contains("HapticBackButton()"))
     }
 
+    func testTripHistoryRowsAreFullyTappableAndCanReaddItems() throws {
+        let history = try source("Grocer/Views/TripHistoryView.swift")
+        let detail = try source("Grocer/Views/TripDetailView.swift")
+
+        XCTAssertTrue(history.contains("@State private var selectedTrip: ShoppingSession?"))
+        XCTAssertTrue(history.contains("selectedTrip = trip"))
+        XCTAssertTrue(history.contains(".navigationDestination(item: $selectedTrip)"))
+        XCTAssertTrue(history.contains(".contentShape(Rectangle())"))
+        XCTAssertTrue(detail.contains("Add All to List"))
+        XCTAssertTrue(detail.contains("repo.addItems"))
+    }
+
+    func testItemHistorySupportsSwipeRemoval() throws {
+        let add = try source("Grocer/Views/AddItemView.swift")
+        let repo = try source("Grocer/Services/GroceryRepository.swift")
+
+        XCTAssertTrue(add.contains("HistorySwipeToRemoveRow"))
+        XCTAssertTrue(add.contains("onDeleteHistory"))
+        XCTAssertTrue(add.contains("deleteFromHistory(name:"))
+        XCTAssertTrue(add.contains("Remove from history"))
+        XCTAssertTrue(repo.contains("func removeCurrentItemSuggestion(named name: String)"))
+        XCTAssertTrue(repo.contains("$0.name.itemSuggestionKey == key && $0.status != .needed"))
+    }
+
     func testItemDetailBackNavigationHasHaptics() throws {
         let detail = try source("Grocer/Views/ItemDetailView.swift")
         let itemDetail = try excerpt(detail, from: "struct ItemDetailView", to: "/// Simple editor reused")

@@ -20,6 +20,8 @@ final class SettingsStore {
         static let memberId = "grocer.memberId"
         static let selectedHouseholdId = "grocer.selectedHouseholdId"
         static let lastHeartbeatAt = "grocer.lastHeartbeatAt"
+        static let storeRemindersPrefix = "grocer.storeReminders."
+        static let storeBannerDismissedPrefix = "grocer.storeBannerDismissed."
     }
 
     /// Stable per-install device identifier used for token registration.
@@ -93,5 +95,35 @@ final class SettingsStore {
 
     var appVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
+    }
+
+    // MARK: - Per-list store reminders
+    //
+    // Whether *this member, on this device* wants an arrival reminder for a
+    // given list. The linked store itself is shared on the group (CloudKit);
+    // the opt-in is personal, so it lives here, keyed by householdId. Members
+    // default opted-out — the person who links the store is opted in explicitly
+    // (see GroceryRepository.linkStore).
+
+    func storeRemindersEnabled(forHousehold householdId: String) -> Bool {
+        guard !householdId.isEmpty else { return false }
+        return defaults.bool(forKey: Keys.storeRemindersPrefix + householdId)
+    }
+
+    func setStoreRemindersEnabled(_ enabled: Bool, forHousehold householdId: String) {
+        guard !householdId.isEmpty else { return }
+        defaults.set(enabled, forKey: Keys.storeRemindersPrefix + householdId)
+    }
+
+    /// Whether the "link this list to a store" banner has been dismissed for a
+    /// list. Per device so a dismissal doesn't follow you to other members.
+    func storeBannerDismissed(forHousehold householdId: String) -> Bool {
+        guard !householdId.isEmpty else { return false }
+        return defaults.bool(forKey: Keys.storeBannerDismissedPrefix + householdId)
+    }
+
+    func setStoreBannerDismissed(_ dismissed: Bool, forHousehold householdId: String) {
+        guard !householdId.isEmpty else { return }
+        defaults.set(dismissed, forKey: Keys.storeBannerDismissedPrefix + householdId)
     }
 }

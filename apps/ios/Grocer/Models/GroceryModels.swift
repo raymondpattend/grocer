@@ -109,12 +109,26 @@ struct Household: Identifiable, Codable, Hashable {
     var name: String
     var ownerMemberId: String
     var storeName: String?
+    /// Optional physical store location the list is linked to. When all three
+    /// are present the list can drive an arrival reminder (geofence). Shared on
+    /// the group; each member opts in/out of reminders locally.
+    var storeLatitude: Double? = nil
+    var storeLongitude: Double? = nil
+    var storeRadius: Double? = nil
     var icon: String
     var colorTheme: ListColorTheme
     var createdAt: Date
     var updatedAt: Date
     var recordZoneName: String?
     var recordOwnerName: String?
+
+    /// Default geofence radius (meters) when one isn't explicitly set.
+    static let defaultStoreRadius: Double = 150
+
+    /// True when the list has a usable store location to remind against.
+    var hasLinkedStore: Bool {
+        storeLatitude != nil && storeLongitude != nil
+    }
 }
 
 struct HouseholdMember: Identifiable, Codable, Hashable {

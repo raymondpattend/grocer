@@ -9,6 +9,7 @@ protocol CloudKitApplicable {
 
 private func string(_ r: CKRecord, _ key: String) -> String? { r[key] as? String }
 private func date(_ r: CKRecord, _ key: String) -> Date? { r[key] as? Date }
+private func double(_ r: CKRecord, _ key: String) -> Double? { r[key] as? Double }
 private func bool(_ r: CKRecord, _ key: String) -> Bool { (r[key] as? Int64).map { $0 != 0 } ?? false }
 private func assetData(_ r: CKRecord, _ key: String) -> Data? {
     guard let url = (r[key] as? CKAsset)?.fileURL else { return nil }
@@ -39,6 +40,9 @@ extension Household: CloudKitApplicable {
             name: name,
             ownerMemberId: owner,
             storeName: string(r, CK.Field.storeName),
+            storeLatitude: double(r, CK.Field.storeLatitude),
+            storeLongitude: double(r, CK.Field.storeLongitude),
+            storeRadius: double(r, CK.Field.storeRadius),
             icon: string(r, CK.Field.icon) ?? GROUP_ICON_CHOICES[0],
             colorTheme: string(r, CK.Field.colorTheme)
                 .flatMap(ListColorTheme.init(rawValue:)) ?? .default,
@@ -53,6 +57,9 @@ extension Household: CloudKitApplicable {
         r[CK.Field.name] = name as CKRecordValue
         r[CK.Field.ownerMemberId] = ownerMemberId as CKRecordValue
         r[CK.Field.storeName] = storeName as CKRecordValue?
+        r[CK.Field.storeLatitude] = storeLatitude as CKRecordValue?
+        r[CK.Field.storeLongitude] = storeLongitude as CKRecordValue?
+        r[CK.Field.storeRadius] = storeRadius as CKRecordValue?
         r[CK.Field.icon] = icon as CKRecordValue
         r[CK.Field.colorTheme] = colorTheme.rawValue as CKRecordValue
         r[CK.Field.createdAt] = createdAt as CKRecordValue

@@ -21,6 +21,7 @@ struct SettingsView: View {
     @State private var showInviteIntro = false
     @State private var editingGroup: Household?
     @State private var openMemberRowId: String?
+    @State private var showStoreLink = false
 
     private static let proAccent = Color(red: 0.06, green: 0.72, blue: 0.51)
 
@@ -32,6 +33,7 @@ struct SettingsView: View {
                 generalSection
                 membersSection
                 preferencesSection
+                storeReminderSection
                 moreSection
             }
             .padding(.horizontal, 16)
@@ -95,6 +97,9 @@ struct SettingsView: View {
         }
         .sheet(item: $editingGroup) { group in
             NavigationStack { GroupEditorView(group: group) }
+        }
+        .sheet(isPresented: $showStoreLink) {
+            StoreLinkSheet()
         }
         .fullScreenCover(isPresented: $showProPaywall) {
             GrocerProPaywallView()
@@ -483,6 +488,90 @@ struct SettingsView: View {
             set: { newValue in
                 settings.notificationsEnabled = newValue
                 PushNotificationCoordinator.shared.notificationPreferenceChanged()
+            }
+        )
+    }
+
+    // MARK: - Store reminders
+
+    /// Per-list arrival reminder controls. The store itself is shared on the
+    /// group; this opt-in is personal, so each member chooses independently.
+    @ViewBuilder
+    private var storeReminderSection: some View {
+        if let house = repo.currentHousehold {
+            VStack(alignment: .leading, spacing: 10) {
+                card {
+                    if house.hasLinkedStore {
+                        Toggle(isOn: storeRemindersBinding(for: house.id)) {
+                            Label {
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text("Remind me at the store")
+                                    if let store = house.storeName,
+                                       !store.trimmingCharacters(in: .whitespaces).isEmpty {
+                                        Text(store).font(.caption).foregroundStyle(.secondary)
+                                    }
+                                }
+                            } icon: {
+                                Image(systemName: "bell.and.waves.left.and.right")
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+
+                        rowDivider
+
+                        Button {
+                            Haptics.tap()
+                            showStoreLink = true
+                        } label: {
+                            rowLabel(String(localized: "Change store"),
+                                     systemImage: "mappin.and.ellipse", chevron: true)
+                        }
+                        .buttonStyle(.plain)
+
+                        rowDivider
+
+                        Button(role: .destructive) {
+                            Haptics.warning()
+                            repo.unlinkStore()
+                        } label: {
+                            rowLabel(String(localized: "Remove store"),
+                                     systemImage: "mappin.slash", destructive: true)
+                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        Button {
+                            Haptics.tap()
+                            showStoreLink = true
+                        } label: {
+                            rowLabel(String(localized: "Link a store"),
+                                     systemImage: "mappin.and.ellipse", chevron: true)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+
+                Text(storeReminderFooter(house))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 4)
+            }
+        }
+    }
+
+    private func storeReminderFooter(_ house: Household) -> String {
+        house.hasLinkedStore
+            ? String(localized: "You'll get a reminder to start a trip when you arrive. Each member chooses this for themselves.")
+            : String(localized: "Link this list to a store to be reminded to start a trip when you arrive.")
+    }
+
+    private func storeRemindersBinding(for householdId: String) -> Binding<Bool> {
+        Binding(
+            get: { settings.storeRemindersEnabled(forHousehold: householdId) },
+            set: { newValue in
+                settings.setStoreRemindersEnabled(newValue, forHousehold: householdId)
+                if newValue { StoreReminderManager.shared.requestAlwaysAuthorization() }
+                StoreReminderManager.shared.syncMonitoredRegions(households: repo.households)
             }
         )
     }

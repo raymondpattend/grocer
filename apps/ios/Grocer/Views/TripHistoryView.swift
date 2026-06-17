@@ -4,6 +4,7 @@ import SwiftUI
 /// pushes a `TripDetailView` showing the items captured during that trip.
 struct TripHistoryView: View {
     @Environment(GroceryRepository.self) private var repo
+    @State private var selectedTrip: ShoppingSession?
 
     private var trips: [ShoppingSession] { repo.currentCompletedTrips }
     private var tint: Color { repo.currentHousehold?.tint ?? .green }
@@ -19,14 +20,14 @@ struct TripHistoryView: View {
             } else {
                 List {
                     ForEach(trips) { trip in
-                        NavigationLink {
-                            TripDetailView(session: trip)
+                        Button {
+                            Haptics.selection()
+                            selectedTrip = trip
                         } label: {
                             tripRow(trip)
                         }
-                        .simultaneousGesture(TapGesture().onEnded {
-                            Haptics.selection()
-                        })
+                        .buttonStyle(.plain)
+                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                     }
                 }
             }
@@ -35,6 +36,9 @@ struct TripHistoryView: View {
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(true)
         .swipeBackEnabled()
+        .navigationDestination(item: $selectedTrip) { trip in
+            TripDetailView(session: trip)
+        }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) { HapticBackButton() }
             ToolbarItem(placement: .principal) {
@@ -46,35 +50,51 @@ struct TripHistoryView: View {
     @ViewBuilder
     private func tripRow(_ trip: ShoppingSession) -> some View {
         let progress = repo.tripProgress(for: trip)
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(trip.startedAt.formatted(date: .abbreviated, time: .shortened))
-                    .font(.headline)
-                Spacer()
-                if trip.status == .cancelled {
-                    Text("Cancelled")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
+        let itemPreview = repo.tripItems(for: trip).prefix(3).map(\.name).joined(separator: ", ")
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 7) {
+                HStack {
+                    Text(trip.startedAt.formatted(date: .abbreviated, time: .shortened))
+                        .font(.headline)
+                    Spacer()
+                    if trip.status == .cancelled {
+                        Text("Cancelled")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
                 }
-            }
-            HStack(spacing: 6) {
-                if let store = trip.storeName, !store.isEmpty {
-                    Label(store, systemImage: "storefront")
-                        .labelStyle(.titleAndIcon)
+                HStack(spacing: 6) {
+                    if let store = trip.storeName, !store.isEmpty {
+                        Label(store, systemImage: "storefront")
+                            .labelStyle(.titleAndIcon)
+                    }
+                    if !trip.startedByDisplayName.isEmpty {
+                        if trip.storeName?.isEmpty == false { Text("·") }
+                        Text(trip.startedByDisplayName)
+                    }
                 }
-                if !trip.startedByDisplayName.isEmpty {
-                    if trip.storeName?.isEmpty == false { Text("·") }
-                    Text(trip.startedByDisplayName)
-                }
-            }
-            .font(.subheadline)
-            .foregroundStyle(.secondary)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
 
-            Text("\(progress.found + progress.replaced) of \(progress.total) found")
-                .font(.caption)
-                .foregroundStyle(tint)
+                if !itemPreview.isEmpty {
+                    Text(itemPreview)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                Text("\(progress.found + progress.replaced) of \(progress.total) found")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(tint)
+            }
+
+            Image(systemName: "chevron.right")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.tertiary)
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
     }
 }
 

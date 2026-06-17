@@ -89,6 +89,13 @@
 	     who to send a list invite to. Contacts never leave your device. -->
 	<key>NSContactsUsageDescription</key>
 	<string>Grocer uses your contacts so you can pick family and friends to invite to a list. Your contacts stay on your device.</string>
+	<!-- Shown when linking a list to a store. Location is used on-device to
+	     remind you to start a trip when you arrive — it is never sent to a
+	     server. "Always" lets the reminder fire while Grocer is backgrounded. -->
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Grocer uses your location to remind you to start a shopping trip when you arrive at a list's store. Your location stays on your device.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Grocer uses your location in the background to remind you to start a shopping trip when you arrive at a list's store. Your location stays on your device.</string>
 	<!-- App Store export compliance: only exempt encryption (HTTPS, etc.). -->
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>

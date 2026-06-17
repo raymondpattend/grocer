@@ -16,6 +16,8 @@ struct GroceryListView: View {
     @State private var selectedItem: GroceryItem?
     @State private var showStartTrip = false
     @State private var showHeadsUp = false
+    @State private var showStoreLink = false
+    @State private var storeBannerHidden = false
 
     private var tint: Color { repo.currentHousehold?.tint ?? .green }
 
@@ -27,8 +29,33 @@ struct GroceryListView: View {
             && repo.currentMembers.count > 1
     }
 
+    /// Show the "link this list to a store" prompt until a store is linked or the
+    /// member dismisses it (persisted per list, per device).
+    private var showStoreBanner: Bool {
+        guard let house = repo.currentHousehold, !house.hasLinkedStore, !storeBannerHidden else {
+            return false
+        }
+        return !SettingsStore.shared.storeBannerDismissed(forHousehold: house.id)
+    }
+
     var body: some View {
         List {
+            if showStoreBanner {
+                StoreLinkBanner(tint: tint) {
+                    Haptics.selection()
+                    showStoreLink = true
+                } onClose: {
+                    Haptics.tap()
+                    if let id = repo.currentHousehold?.id {
+                        SettingsStore.shared.setStoreBannerDismissed(true, forHousehold: id)
+                    }
+                    withAnimation { storeBannerHidden = true }
+                }
+                .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 12, trailing: 0))
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+            }
+
             if let session = repo.activeSession {
                 ActiveSessionBanner(
                     session: session,
@@ -153,6 +180,10 @@ struct GroceryListView: View {
         .sheet(isPresented: $showHeadsUp) {
             HeadsUpSheet()
         }
+        .sheet(isPresented: $showStoreLink) {
+            StoreLinkSheet()
+        }
+        .onChange(of: repo.currentHousehold?.id) { _, _ in storeBannerHidden = false }
         .sheet(isPresented: $showStartTrip) {
             StartTripSheet(
                 groupName: repo.currentHousehold?.name ?? String(localized: "this list"),

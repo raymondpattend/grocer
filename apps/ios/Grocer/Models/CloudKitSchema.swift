@@ -49,6 +49,10 @@ enum CK {
         static let icon = "icon"
         static let colorTheme = "colorTheme"
         // (group store reuses the `storeName` key below)
+        // Linked store geofence (shared on the group; members opt in/out locally).
+        static let storeLatitude = "storeLatitude"
+        static let storeLongitude = "storeLongitude"
+        static let storeRadius = "storeRadius"
 
         // List
         static let listName = "name"

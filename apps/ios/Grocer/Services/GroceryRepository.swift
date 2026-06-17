@@ -453,6 +453,9 @@ final class GroceryRepository {
     private func rebuildHouseholdCaches() {
         householdById = Dictionary(uniqueKeysWithValues: households.map { ($0.id, $0) })
         markDerivedStateChanged()
+        // Keep arrival-reminder geofences aligned with the latest linked-store
+        // locations (e.g. after a CloudKit sync changes a store on another device).
+        StoreReminderManager.shared.syncMonitoredRegions(households: households)
     }
 
     private func rebuildListCaches() {
@@ -495,6 +498,7 @@ final class GroceryRepository {
         }
         rebuildShoppingSessionItemCaches()
         rebuildSessionProgressCaches()
+        reconcileEndedLocalActivities()
         markDerivedStateChanged()
     }
 
@@ -828,6 +832,27 @@ final class GroceryRepository {
         trackDerivedState()
         guard let listId = currentList?.id else { return nil }
         return itemSuggestionLookupByListId[listId]?[name.itemSuggestionKey]
+    }
+
+    /// Removes completed/removed history records for a suggestion while leaving
+    /// any currently-needed item with the same name on the list.
+    func removeCurrentItemSuggestion(named name: String) {
+        guard let listId = currentList?.id else { return }
+        let key = name.itemSuggestionKey
+        guard !key.isEmpty else { return }
+
+        let historicalItems = (itemsByListId[listId] ?? []).filter {
+            $0.name.itemSuggestionKey == key && $0.status != .needed
+        }
+        guard !historicalItems.isEmpty else { return }
+
+        let historicalIds = Set(historicalItems.map(\.id))
+        performLocalPersistenceBatch {
+            items.removeAll { historicalIds.contains($0.id) }
+            for item in historicalItems {
+                enqueueDelete(.item(item))
+            }
+        }
     }
 
     private static func itemSuggestionDate(for item: GroceryItem) -> Date {
@@ -1473,6 +1498,37 @@ final class GroceryRepository {
         persistHousehold(house)
     }
 
+    /// Link the current list to a physical store so members can be reminded on
+    /// arrival. The store geofence is shared on the group (any member may set
+    /// it); the per-member opt-in is local. The member who links the store is
+    /// opted in here — others opt in individually from Settings.
+    func linkStore(latitude: Double, longitude: Double, radius: Double, name: String?) {
+        guard var house = currentHousehold else { return }
+        house.storeLatitude = latitude
+        house.storeLongitude = longitude
+        house.storeRadius = radius
+        house.storeName = name?.nilIfBlank
+        house.updatedAt = Date()
+        if let idx = households.firstIndex(where: { $0.id == house.id }) { households[idx] = house }
+        persistHousehold(house)
+        SettingsStore.shared.setStoreRemindersEnabled(true, forHousehold: house.id)
+        StoreReminderManager.shared.syncMonitoredRegions(households: households)
+    }
+
+    /// Remove the linked store from the current list (clears the shared geofence
+    /// for everyone). Reminder opt-ins are left as-is but become inert.
+    func unlinkStore() {
+        guard var house = currentHousehold else { return }
+        house.storeLatitude = nil
+        house.storeLongitude = nil
+        house.storeRadius = nil
+        house.storeName = nil
+        house.updatedAt = Date()
+        if let idx = households.firstIndex(where: { $0.id == house.id }) { households[idx] = house }
+        persistHousehold(house)
+        StoreReminderManager.shared.syncMonitoredRegions(households: households)
+    }
+
     func renameGroup(_ name: String) {
         guard isOwnerOfCurrentGroup else {
             syncState = .error(String(localized: "Only the list owner can rename this list."))
@@ -1922,7 +1978,7 @@ final class GroceryRepository {
             householdId: household.id,
             sourceDeviceId: settings.deviceId,
             shopperName: member?.displayName ?? settings.displayName,
-            storeName: household.storeName?.nilIfBlank,
+            storeName: notificationStoreName(householdId: household.id, preferred: household.storeName),
             sentAt: ISO8601DateFormatter().string(from: Date())
         )
         let result = await api.sendHeadsUp(payload)
@@ -1955,7 +2011,11 @@ final class GroceryRepository {
 
         let progress = progress(for: session)
         let payload = endPayload(session: ended, status: "completed", progress: progress)
-        liveActivity.endLocalActivity(content: contentState(for: ended, overrideStatus: .completed))
+        liveActivity.endLocalActivity(
+            session: ended,
+            content: contentState(for: ended, overrideStatus: .completed),
+            includeHouseholdFallback: true
+        )
         await flushCriticalSessionWrites(sessionId: session.id)
         // Snapshot the trip's items *before* cleanup wipes their activeSessionId.
         captureTripItems(for: session, at: now)
@@ -1979,7 +2039,11 @@ final class GroceryRepository {
         logEvent(.sessionCancelled, householdId: session.householdId, sessionId: session.id)
         let progress = progress(for: session)
         let payload = endPayload(session: cancelled, status: "cancelled", progress: progress)
-        liveActivity.endLocalActivity(content: contentState(for: cancelled, overrideStatus: .cancelled))
+        liveActivity.endLocalActivity(
+            session: cancelled,
+            content: contentState(for: cancelled, overrideStatus: .cancelled),
+            includeHouseholdFallback: true
+        )
         await flushCriticalSessionWrites(sessionId: session.id)
         // A cancelled/auto-expired trip is still history; capture whatever was handled.
         captureTripItems(for: session, at: now)
@@ -2105,9 +2169,31 @@ final class GroceryRepository {
 
     private func pushLiveActivityUpdate(for session: ShoppingSession, lastItem: GroceryItem?, lastStatus: ItemStatus?) {
         let content = contentState(for: session, lastItem: lastItem, lastStatus: lastStatus)
-        liveActivity.updateLocalActivity(content: content)
+        liveActivity.updateLocalActivity(session: session, content: content)
         let payload = updatePayload(session: session, content: content)
         Task { await api.updateLiveActivity(payload) }
+    }
+
+    private func notificationStoreName(householdId: String, preferred: String?) -> String? {
+        preferred?.nilIfBlank ?? householdById[householdId]?.name.nilIfBlank
+    }
+
+    private func reconcileEndedLocalActivities() {
+        liveActivity.reconcileEndedActivities(sessions) { [weak self] session in
+            self?.contentState(for: session, overrideStatus: session.status)
+                ?? GroceryActivityAttributes.ContentState(
+                    storeName: session.storeName,
+                    shopperName: session.startedByDisplayName,
+                    status: session.status.rawValue,
+                    itemsFound: 0,
+                    itemsRemaining: 0,
+                    totalItems: 0,
+                    outOfStockCount: 0,
+                    replacedCount: 0,
+                    lastHandledItemName: nil,
+                    lastHandledItemStatus: nil
+                )
+        }
     }
 
     private func startPayload(session: ShoppingSession, content: GroceryActivityAttributes.ContentState) -> StartLiveActivityPayload {
@@ -2115,7 +2201,8 @@ final class GroceryRepository {
             householdId: session.householdId, sessionId: session.id,
             startedByMemberId: session.startedByMemberId,
             sourceDeviceId: settings.deviceId,
-            storeName: content.storeName, shopperName: content.shopperName, status: content.status,
+            storeName: notificationStoreName(householdId: session.householdId, preferred: content.storeName),
+            shopperName: content.shopperName, status: content.status,
             itemsFound: content.itemsFound, itemsRemaining: content.itemsRemaining, totalItems: content.totalItems,
             outOfStockCount: content.outOfStockCount, replacedCount: content.replacedCount,
             lastHandledItemName: content.lastHandledItemName, lastHandledItemStatus: content.lastHandledItemStatus,
@@ -2126,7 +2213,8 @@ final class GroceryRepository {
     private func updatePayload(session: ShoppingSession, content: GroceryActivityAttributes.ContentState) -> UpdateLiveActivityPayload {
         UpdateLiveActivityPayload(
             householdId: session.householdId, sessionId: session.id,
-            storeName: content.storeName, shopperName: content.shopperName, status: content.status,
+            storeName: notificationStoreName(householdId: session.householdId, preferred: content.storeName),
+            shopperName: content.shopperName, status: content.status,
             itemsFound: content.itemsFound, itemsRemaining: content.itemsRemaining, totalItems: content.totalItems,
             outOfStockCount: content.outOfStockCount, replacedCount: content.replacedCount,
             lastHandledItemName: content.lastHandledItemName, lastHandledItemStatus: content.lastHandledItemStatus,
@@ -2138,7 +2226,7 @@ final class GroceryRepository {
         EndLiveActivityPayload(
             householdId: session.householdId, sessionId: session.id,
             sourceDeviceId: settings.deviceId,
-            storeName: session.storeName,
+            storeName: notificationStoreName(householdId: session.householdId, preferred: session.storeName),
             shopperName: session.startedByDisplayName,
             status: status,
             itemsFound: p.found, itemsRemaining: p.remaining, totalItems: p.total,

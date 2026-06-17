@@ -764,27 +764,18 @@ struct SyncStatusBar: View {
     }
 
     private var status: Status? {
+        // Only surface hard problems: sync errors and offline. Routine states
+        // (syncing and queued pending writes) are intentionally silent — the bar
+        // would otherwise flicker on every change and the queued state leaked
+        // raw `^[…](inflect: true)` markup through `String(localized:)`.
         switch state {
-        case .syncing:
-            return Status(
-                icon: "arrow.triangle.2.circlepath.icloud",
-                title: pendingCount > 0
-                    ? String(localized: "Syncing \(pendingCount)")
-                    : String(localized: "Syncing"),
-                tint: .secondary
-            )
         case .offline:
             return Status(icon: "icloud.slash", title: String(localized: "Offline"), tint: .secondary)
         case .error(let message):
             let title = message.isEmpty ? String(localized: "Sync issue") : message
             return Status(icon: "exclamationmark.icloud", title: title, tint: .red)
-        case .idle:
-            guard pendingCount > 0 else { return nil }
-            return Status(
-                icon: "icloud.and.arrow.up",
-                title: String(localized: "^[\(pendingCount) change](inflect: true) queued"),
-                tint: .secondary
-            )
+        case .syncing, .idle:
+            return nil
         }
     }
 
