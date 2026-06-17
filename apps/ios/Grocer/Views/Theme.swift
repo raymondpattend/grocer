@@ -137,6 +137,25 @@ private struct SwipeBackEnabler: UIViewControllerRepresentable {
     }
 }
 
+extension AppAppearance {
+    /// SwiftUI color scheme to force, or `nil` to follow the system.
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
+        }
+    }
+
+    var localizedName: String {
+        switch self {
+        case .system: return String(localized: "System")
+        case .light: return String(localized: "Light")
+        case .dark: return String(localized: "Dark")
+        }
+    }
+}
+
 extension Color {
     /// Toned-down accent palette. The stock system hues read as neon against the
     /// app's glass surfaces, so green / teal / red are softened, and the flat gray

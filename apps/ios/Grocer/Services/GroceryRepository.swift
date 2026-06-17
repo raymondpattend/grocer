@@ -1367,13 +1367,39 @@ final class GroceryRepository {
         let memberships = householdMembershipsForPushRegistration()
         liveActivity.configure(householdMemberships: memberships)
         notifications.configure(householdMemberships: memberships)
+
+        // Reconcile the backend against our *current* membership so any rows for
+        // groups this device has left — including ones abandoned while the app
+        // was closed — stop matching the household-scoped push fan-out.
+        //
+        // Only once we have a trustworthy roster: before the initial load (or
+        // when it errored out to an empty set) `memberships` can be transiently
+        // empty, and reconciling against that would wrongly disable every valid
+        // registration. The empty-membership case (user genuinely left all
+        // groups) is already covered by the per-removal diff in the managers'
+        // `configure`, so skipping it here is safe.
+        if hasCompletedInitialLoad && !memberships.isEmpty {
+            await api.syncRegistrations(
+                SyncRegistrationsPayload(
+                    deviceId: settings.deviceId,
+                    householdIds: Array(memberships.keys)
+                )
+            )
+        }
     }
 
     private func householdMembershipsForPushRegistration() -> [String: String] {
         var memberships: [String: String] = [:]
         for household in households {
-            if let member = member(for: household) {
-                memberships[household.id] = member.id
+            // Only register for groups this account is genuinely a member of.
+            // Unlike `member(for:)`, we deliberately do NOT fall back to the
+            // owner / first member here: registering a group you can merely see
+            // makes this device a push-fan-out target for that group's trips,
+            // which is how non-members end up receiving notifications and Live
+            // Activities for groups they aren't in.
+            let roster = membersByHouseholdId[household.id] ?? []
+            if roster.contains(where: { $0.id == currentMemberId }) {
+                memberships[household.id] = currentMemberId
             }
         }
         return memberships

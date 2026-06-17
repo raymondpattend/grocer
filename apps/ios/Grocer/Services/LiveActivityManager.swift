@@ -44,19 +44,51 @@ final class LiveActivityManager {
     }
 
     func configure(householdMemberships: [String: String]) {
-        let removedMemberships = memberIdsByHouseholdId.filter { householdMemberships[$0.key] == nil }
-        let changed = memberIdsByHouseholdId != householdMemberships
+        // Diff against the *durably persisted* set, not the in-memory one. The
+        // in-memory map resets to empty on every cold launch, so a group that
+        // disappeared while the app was closed would never be detected as
+        // removed and would keep receiving push-to-start fan-outs at this
+        // device forever. The persisted set survives relaunches and lets us
+        // tear those registrations down.
+        let persisted = Self.loadPersistedMemberships()
+        let removedMemberships = persisted.filter { householdMemberships[$0.key] == nil }
+        let changed = persisted != householdMemberships
         self.memberIdsByHouseholdId = householdMemberships
         areActivitiesEnabled = ActivityAuthorizationInfo().areActivitiesEnabled
 
         guard changed || observationTasks.isEmpty else { return }
         startObservingTokens()
 
-        if !removedMemberships.isEmpty {
-            Task { [weak self, removedMemberships] in
+        if removedMemberships.isEmpty {
+            Self.persistMemberships(householdMemberships)
+        } else {
+            // Only update the persisted set *after* unregistering, so a failed
+            // unregister is retried on the next launch instead of being lost.
+            Task { [weak self, removedMemberships, householdMemberships] in
                 await self?.unregisterPushToStart(for: removedMemberships)
+                Self.persistMemberships(householdMemberships)
             }
         }
+    }
+
+    // MARK: - Durable registration ledger
+
+    /// App-Group-scoped record of the (household → member) set this device last
+    /// registered push-to-start tokens for. Environment-suffixed so Debug and
+    /// Release builds don't clobber each other's ledger.
+    private static let registeredMembershipsKey =
+        GrocerAppGroup.scopedName("grocer.liveActivity.registeredMemberships")
+
+    static func loadPersistedMemberships() -> [String: String] {
+        guard let data = GrocerAppGroup.defaults.data(forKey: registeredMembershipsKey),
+              let map = try? JSONDecoder().decode([String: String].self, from: data)
+        else { return [:] }
+        return map
+    }
+
+    static func persistMemberships(_ memberships: [String: String]) {
+        guard let data = try? JSONEncoder().encode(memberships) else { return }
+        GrocerAppGroup.defaults.set(data, forKey: registeredMembershipsKey)
     }
 
     // MARK: - Token observation

@@ -193,6 +193,51 @@ export async function activityTokensForSession(
   return results ?? [];
 }
 
+/**
+ * Disables push/notification delivery for every registration of `deviceId`
+ * whose household is NOT in `activeHouseholdIds`. This reconciles stale rows
+ * left behind when a device stops being a member of a group — without it, those
+ * rows keep matching the household-scoped fan-out and the device keeps getting
+ * that group's trip notifications and Live Activities.
+ *
+ * Returns the number of rows disabled.
+ */
+export async function disableStaleDeviceRegistrations(
+  db: D1Database,
+  deviceId: string,
+  activeHouseholdIds: string[],
+): Promise<number> {
+  const ts = now();
+  // De-dupe to keep the placeholder list tight.
+  const active = [...new Set(activeHouseholdIds)];
+
+  const setClause = `notifications_enabled = 0,
+        live_activities_enabled = 0,
+        token_valid = 0,
+        notification_token_valid = 0,
+        updated_at = ?`;
+
+  if (active.length === 0) {
+    const result = await db
+      .prepare(
+        `UPDATE device_tokens SET ${setClause} WHERE device_id = ?`,
+      )
+      .bind(ts, deviceId)
+      .run();
+    return result.meta.changes ?? 0;
+  }
+
+  const placeholders = active.map(() => "?").join(", ");
+  const result = await db
+    .prepare(
+      `UPDATE device_tokens SET ${setClause}
+        WHERE device_id = ? AND household_id NOT IN (${placeholders})`,
+    )
+    .bind(ts, deviceId, ...active)
+    .run();
+  return result.meta.changes ?? 0;
+}
+
 export async function invalidatePushToStartToken(
   db: D1Database,
   token: string,

@@ -203,9 +203,6 @@ struct AddItemSearchView: View {
                     onRemove: { name in
                         removeFromHistory(name: name)
                     },
-                    onDeleteHistory: { name in
-                        deleteFromHistory(name: name)
-                    },
                     onClose: {
                         withAnimation(.easeInOut(duration: 0.28)) {
                             showHistory = false
@@ -679,11 +676,6 @@ struct AddItemSearchView: View {
         syncTextFromDrafts()
     }
 
-    private func deleteFromHistory(name: String) {
-        Haptics.warning()
-        repo.removeCurrentItemSuggestion(named: name)
-    }
-
     // MARK: - Finalize
 
     private func attemptClose() {
@@ -895,11 +887,9 @@ private struct HistoryItemsView: View {
     var hasProposedItems: Bool
     var onSelect: (String, String, GroceryCategory) -> Void
     var onRemove: (String) -> Void
-    var onDeleteHistory: (String) -> Void
     var onClose: () -> Void
 
     @State private var search = ""
-    @State private var openHistoryRowId: String?
 
     private var filtered: [GroceryItemSuggestion] {
         let query = search.trimmingCharacters(in: .whitespaces).lowercased()
@@ -1021,20 +1011,14 @@ private struct HistoryItemsView: View {
             ScrollView {
                 LazyVStack(spacing: 10) {
                     ForEach(filtered) { suggestion in
-                        HistorySwipeToRemoveRow(
-                            id: suggestion.id,
-                            openRowId: $openHistoryRowId,
-                            onRemove: { onDeleteHistory(suggestion.name) }
-                        ) {
-                            HistoryItemRow(
-                                suggestion: suggestion,
-                                tint: tint,
-                                onAdd: { quantity in
-                                    onSelect(suggestion.name, quantity, suggestion.category)
-                                },
-                                onRemove: { onRemove(suggestion.name) }
-                            )
-                        }
+                        HistoryItemRow(
+                            suggestion: suggestion,
+                            tint: tint,
+                            onAdd: { quantity in
+                                onSelect(suggestion.name, quantity, suggestion.category)
+                            },
+                            onRemove: { onRemove(suggestion.name) }
+                        )
                     }
                 }
                 .padding(.horizontal, 16)
@@ -1059,71 +1043,6 @@ private struct HistoryItemsView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(.vertical, 28)
-    }
-}
-
-/// Custom swipe action for the full-screen item history cards, which live in a
-/// `ScrollView` instead of a native `List`.
-private struct HistorySwipeToRemoveRow<Content: View>: View {
-    let id: String
-    @Binding var openRowId: String?
-    let onRemove: () -> Void
-    @ViewBuilder var content: () -> Content
-
-    @State private var offset: CGFloat = 0
-
-    private let actionWidth: CGFloat = 88
-    private var isOpen: Bool { openRowId == id }
-
-    var body: some View {
-        ZStack(alignment: .trailing) {
-            Button {
-                close()
-                onRemove()
-            } label: {
-                Label("Remove", systemImage: "trash.fill")
-                    .labelStyle(.iconOnly)
-                    .font(.title3)
-                    .foregroundStyle(.white)
-                    .frame(width: actionWidth)
-                    .frame(maxHeight: .infinity)
-                    .background(Color.red)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Remove from history")
-
-            content()
-                .offset(x: offset)
-                .highPriorityGesture(
-                    DragGesture(minimumDistance: 16)
-                        .onChanged { value in
-                            guard abs(value.translation.width) > abs(value.translation.height) else { return }
-                            if openRowId != nil && openRowId != id { openRowId = nil }
-                            let base: CGFloat = isOpen ? -actionWidth : 0
-                            offset = min(0, max(-actionWidth, base + value.translation.width))
-                        }
-                        .onEnded { _ in
-                            let shouldOpen = offset < -actionWidth / 2
-                            withAnimation(.snappy) {
-                                offset = shouldOpen ? -actionWidth : 0
-                                openRowId = shouldOpen ? id : nil
-                            }
-                        }
-                )
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .onChange(of: openRowId) { _, newValue in
-            if newValue != id, offset != 0 {
-                withAnimation(.snappy) { offset = 0 }
-            }
-        }
-    }
-
-    private func close() {
-        withAnimation(.snappy) {
-            offset = 0
-            openRowId = nil
-        }
     }
 }
 

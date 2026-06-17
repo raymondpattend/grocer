@@ -6,6 +6,7 @@ import {
   RegisterTokenRequestSchema,
   RegisterUpdateTokenRequestSchema,
   StartLiveActivityRequestSchema,
+  SyncRegistrationsRequestSchema,
   UpdateLiveActivityRequestSchema,
   type LiveActivityContent,
 } from "@grocer/shared";
@@ -23,6 +24,7 @@ import {
 } from "../services/apns.js";
 import {
   activityTokensForSession,
+  disableStaleDeviceRegistrations,
   eligibleNotificationTokens,
   eligibleStartTokens,
   invalidateNotificationToken,
@@ -205,6 +207,30 @@ liveActivityRoute.post("/live-activity/register-token", async (c) => {
   c.executionCtx.waitUntil(posthog.shutdown());
 
   return c.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// POST /live-activity/sync-registrations
+// Reconciles a device's registrations against its current group membership,
+// disabling rows for groups the device has left. Self-healing cleanup for the
+// stale-registration leak where non-members keep receiving a group's pushes.
+// ---------------------------------------------------------------------------
+liveActivityRoute.post("/live-activity/sync-registrations", async (c) => {
+  const parsed = await parseBody(c, SyncRegistrationsRequestSchema);
+  if ("error" in parsed) return parsed.error;
+
+  const disabled = await disableStaleDeviceRegistrations(
+    c.env.DB,
+    parsed.data.deviceId,
+    parsed.data.householdIds,
+  );
+
+  console.log(
+    `[notifications] sync-registrations device=${parsed.data.deviceId} ` +
+      `activeHouseholds=${parsed.data.householdIds.length} disabledRows=${disabled}`,
+  );
+
+  return c.json({ ok: true, disabled });
 });
 
 // ---------------------------------------------------------------------------

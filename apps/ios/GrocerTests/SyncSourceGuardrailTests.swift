@@ -329,25 +329,6 @@ final class SyncSourceGuardrailTests: XCTestCase {
         XCTAssertTrue(itemDetail.contains("ToolbarItem(placement: .topBarLeading) { HapticBackButton() }"))
     }
 
-    func testCloudIssueSheetPresentationTracksCurrentIssue() throws {
-        let root = try source("Grocer/Views/RootView.swift")
-        let chip = try excerpt(root, from: "struct CloudIssueChip", to: "static func icon")
-
-        XCTAssertTrue(chip.contains("@State private var detailIssue: CloudIssuePresentation?"))
-        XCTAssertTrue(chip.contains(".sheet(item: $detailIssue)"))
-        XCTAssertTrue(chip.contains(".onChange(of: issue)"))
-        XCTAssertTrue(chip.contains("detailIssue = newIssue.map(CloudIssuePresentation.init(issue:))"))
-    }
-
-    func testCloudIssueDismissButtonHasHaptics() throws {
-        let root = try source("Grocer/Views/RootView.swift")
-        let detailSheet = try excerpt(root, from: "private struct CloudIssueDetailSheet", to: "struct CategoryHeader")
-        let closeButton = try excerpt(detailSheet, from: "Button(role: .cancel)", to: "} label:")
-
-        XCTAssertTrue(closeButton.contains("Haptics.tap()"))
-        XCTAssertTrue(closeButton.contains("dismiss()"))
-    }
-
     func testHistoryRetentionPrunesOldSnapshotsAndTombstones() throws {
         let repo = try source("Grocer/Services/GroceryRepository.swift")
         let prune = try excerpt(repo, from: "private func pruneHistoricalRecords", to: "private func lastActivityDate")

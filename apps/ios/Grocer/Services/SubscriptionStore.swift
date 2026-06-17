@@ -60,7 +60,7 @@ enum BillingPolicy {
         purchaseUID: String,
         packageIdentifier: String
     ) -> URL? {
-        workerURL(baseURLString: baseURLString, path: "checkout", queryItems: [
+        workerURL(baseURLString: checkoutBaseURLString(for: baseURLString), path: "checkout", queryItems: [
             URLQueryItem(name: "packageId", value: packageIdentifier),
             URLQueryItem(name: "uid", value: purchaseUID),
         ])
@@ -109,6 +109,15 @@ enum BillingPolicy {
         }
         components.queryItems = queryItems
         return components.url
+    }
+
+    private static func checkoutBaseURLString(for baseURLString: String) -> String {
+        guard var components = URLComponents(string: baseURLString),
+              components.host == "api.grocer.sh" else {
+            return baseURLString
+        }
+        components.host = "grocer.sh"
+        return components.url?.absoluteString ?? baseURLString
     }
 }
 

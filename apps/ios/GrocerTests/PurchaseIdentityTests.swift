@@ -101,12 +101,13 @@ final class BillingPolicyTests: XCTestCase {
 
     func testCheckoutURLIncludesPackageAndPurchaseUID() throws {
         let url = try XCTUnwrap(BillingPolicy.checkoutURL(
-            baseURLString: "https://api.trygrocer.com",
+            baseURLString: "https://api.grocer.sh",
             purchaseUID: uid,
             packageIdentifier: "$rc_monthly"
         ))
         let components = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false))
 
+        XCTAssertEqual(components.host, "grocer.sh")
         XCTAssertEqual(components.path, "/checkout")
         XCTAssertEqual(components.queryItems?.first { $0.name == "packageId" }?.value, "$rc_monthly")
         XCTAssertEqual(components.queryItems?.first { $0.name == "uid" }?.value, uid)
@@ -114,11 +115,12 @@ final class BillingPolicyTests: XCTestCase {
 
     func testBillingPortalURLIncludesPurchaseUID() throws {
         let url = try XCTUnwrap(BillingPolicy.billingPortalURL(
-            baseURLString: "https://api.trygrocer.com",
+            baseURLString: "https://api.grocer.sh",
             purchaseUID: uid
         ))
         let components = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false))
 
+        XCTAssertEqual(components.host, "api.grocer.sh")
         XCTAssertEqual(components.path, "/api/billing/portal")
         XCTAssertEqual(components.queryItems?.first { $0.name == "uid" }?.value, uid)
     }

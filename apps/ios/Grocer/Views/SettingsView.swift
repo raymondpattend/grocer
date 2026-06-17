@@ -3,6 +3,13 @@ import PostHog
 import SwiftUI
 import UIKit
 
+/// How the store-link sheet is opened: `.link` shows the intro first, `.change`
+/// jumps straight to the map picker for an already-linked store.
+enum StoreLinkMode: Identifiable {
+    case link, change
+    var id: Self { self }
+}
+
 struct SettingsView: View {
     @Environment(GroceryRepository.self) private var repo
     @Environment(SettingsStore.self) private var settings
@@ -19,35 +26,31 @@ struct SettingsView: View {
     @State private var purging = false
     @State private var selectedProfilePhoto: PhotosPickerItem?
     @State private var showInviteIntro = false
-    @State private var editingGroup: Household?
     @State private var openMemberRowId: String?
-    @State private var showStoreLink = false
+    @State private var storeLinkMode: StoreLinkMode?
 
     private static let proAccent = Color(red: 0.06, green: 0.72, blue: 0.51)
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 28) {
+            VStack(spacing: 24) {
                 profileHeader
                 proCard
                 generalSection
                 membersSection
-                preferencesSection
                 storeReminderSection
                 moreSection
             }
             .padding(.horizontal, 16)
             .padding(.top, 8)
-            .padding(.bottom, 36)
+            .padding(.bottom, 40)
         }
         .background(Color(.systemGroupedBackground))
-        .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(true)
         .swipeBackEnabled()
         .toolbar {
             ToolbarItem(placement: .topBarLeading) { HapticBackButton() }
-            ToolbarItem(placement: .principal) { GrocerGlassTitle("Settings") }
         }
         .onAppear {
             displayName = repo.displayName
@@ -95,11 +98,8 @@ struct SettingsView: View {
         .sheet(isPresented: $showInviteIntro) {
             InviteToGroupSheet()
         }
-        .sheet(item: $editingGroup) { group in
-            NavigationStack { GroupEditorView(group: group) }
-        }
-        .sheet(isPresented: $showStoreLink) {
-            StoreLinkSheet()
+        .sheet(item: $storeLinkMode) { mode in
+            StoreLinkSheet(startAtPicker: mode == .change)
         }
         .fullScreenCover(isPresented: $showProPaywall) {
             GrocerProPaywallView()
@@ -133,10 +133,10 @@ struct SettingsView: View {
     private func card<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
         VStack(spacing: 0) { content() }
             .background(Color(.secondarySystemGroupedBackground),
-                        in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                        in: RoundedRectangle(cornerRadius: 24, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .strokeBorder(Color(.separator).opacity(0.5), lineWidth: 1)
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .strokeBorder(Color(.separator).opacity(0.35), lineWidth: 1)
             }
     }
 
@@ -279,35 +279,25 @@ struct SettingsView: View {
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
-            RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .fill(Color(red: 0.05, green: 0.06, blue: 0.05))
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .fill(Color(red: 0.07, green: 0.08, blue: 0.07))
 
-            RoundedRectangle(cornerRadius: 28, style: .continuous)
+            // A single restrained glow keeps it on-brand without going neon.
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
                 .fill(
                     RadialGradient(
-                        colors: [Self.proAccent.opacity(0.72), .clear],
+                        colors: [Self.proAccent.opacity(0.28), .clear],
                         center: .bottomTrailing,
-                        startRadius: 4,
-                        endRadius: 190
-                    )
-                )
-
-            RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .fill(
-                    RadialGradient(
-                        colors: [Color.green.opacity(0.28), .clear],
-                        center: UnitPoint(x: 0.62, y: 0.86),
-                        startRadius: 0,
-                        endRadius: 150
+                        startRadius: 8,
+                        endRadius: 260
                     )
                 )
         }
         .overlay {
-            RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .strokeBorder(Self.proAccent.opacity(0.34), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
         }
-        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
-        .shadow(color: Self.proAccent.opacity(0.18), radius: 20, y: 8)
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
     }
 
     private func openManageSubscription() {
@@ -321,63 +311,95 @@ struct SettingsView: View {
     // MARK: - General
 
     private var generalSection: some View {
-        settingsSection(String(localized: "List")) {
-            card {
-                if repo.isOwnerOfCurrentGroup {
-                    HStack(spacing: 14) {
-                        Image(systemName: "person.2.fill")
-                            .font(.body)
-                            .foregroundStyle(Color.accentColor)
-                            .frame(width: 24)
-                        TextField("List Name", text: $groupName)
-                            .submitLabel(.done)
-                            .onSubmit { commitGroupName() }
-                        commitButton(isEnabled: canSaveGroupName) {
-                            commitGroupName()
-                        }
+        settingsSection(String(localized: "General")) {
+            VStack(spacing: 12) {
+                iCloudStatusCard
+                HStack(spacing: 12) {
+                    navTile(String(localized: "Preferences"),
+                            systemImage: "gearshape.fill",
+                            tint: .secondary) {
+                        PreferencesView()
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 13)
-                } else {
-                    HStack(spacing: 14) {
-                        Image(systemName: "person.2.fill")
-                            .font(.body)
-                            .foregroundStyle(Color.accentColor)
-                            .frame(width: 24)
-                        Text("List")
-                        Spacer()
-                        Text(repo.currentHousehold?.name ?? String(localized: "List"))
-                            .foregroundStyle(.secondary)
+                    navTile(String(localized: "Customize List"),
+                            systemImage: "paintbrush.fill",
+                            tint: .accentColor) {
+                        CustomizeListView()
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 13)
                 }
-
-                if repo.isOwnerOfCurrentGroup, repo.currentHousehold != nil {
-                    rowDivider
-
-                    Button {
-                        Haptics.selection()
-                        editingGroup = repo.currentHousehold
-                    } label: {
-                        rowLabel(String(localized: "Customize List"), systemImage: "paintbrush", chevron: true)
-                    }
-                    .buttonStyle(.plain)
-                }
-
-                rowDivider
-
-                NavigationLink {
-                    TripHistoryView()
-                } label: {
-                    rowLabel(String(localized: "Trip History"), systemImage: "clock.arrow.circlepath", chevron: true)
-                }
-                .buttonStyle(.plain)
-                .simultaneousGesture(TapGesture().onEnded {
-                    Haptics.selection()
-                })
             }
         }
+    }
+
+    /// "iCloud Backup" status card mirroring the reference layout: title,
+    /// reassurance copy, then a live status line derived from the sync state.
+    private var iCloudStatusCard: some View {
+        card {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("iCloud Backup")
+                    .font(.headline)
+                Text("Your lists and items are stored securely and privately in your iCloud.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) {
+                    Image(systemName: iCloudStatus.symbol)
+                        .foregroundStyle(iCloudStatus.color)
+                    Text(iCloudStatus.label)
+                        .font(.subheadline.weight(.semibold))
+                }
+                .padding(.top, 2)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(16)
+        }
+    }
+
+    private var iCloudStatus: (label: String, symbol: String, color: Color) {
+        if !repo.iCloudAccountAvailable {
+            return (String(localized: "iCloud unavailable"), "exclamationmark.icloud.fill", .orange)
+        }
+        switch repo.syncState {
+        case .syncing:
+            return (String(localized: "Syncing"), "arrow.triangle.2.circlepath.icloud.fill", .yellow)
+        case .offline:
+            return (String(localized: "Offline"), "icloud.slash.fill", .secondary)
+        case .error:
+            return (String(localized: "Sync error"), "exclamationmark.icloud.fill", .orange)
+        case .idle:
+            return (String(localized: "Up to date"), "checkmark.icloud.fill", .grocerGreen)
+        }
+    }
+
+    /// A square navigation tile (icon top-left, bold label below) — the
+    /// side-by-side card style from the reference "General" section.
+    @ViewBuilder
+    private func navTile<Destination: View>(_ title: String,
+                                            systemImage: String,
+                                            tint: Color,
+                                            @ViewBuilder destination: () -> Destination) -> some View {
+        NavigationLink {
+            destination()
+        } label: {
+            VStack(alignment: .leading, spacing: 0) {
+                Image(systemName: systemImage)
+                    .font(.title2)
+                    .foregroundStyle(tint)
+                Spacer(minLength: 10)
+                Text(title)
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(.primary)
+            }
+            .frame(maxWidth: .infinity, minHeight: 50, alignment: .leading)
+            .padding(16)
+            .background(Color(.secondarySystemGroupedBackground),
+                        in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .strokeBorder(Color(.separator).opacity(0.35), lineWidth: 1)
+            }
+        }
+        .buttonStyle(.plain)
+        .simultaneousGesture(TapGesture().onEnded { Haptics.selection() })
     }
 
     // MARK: - Members
@@ -402,7 +424,7 @@ struct SettingsView: View {
                 }
             }
             // Contain the swipe-to-remove action background within the rounded card.
-            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         }
     }
 
@@ -415,28 +437,6 @@ struct SettingsView: View {
             return String(localized: "Swipe left on a member to remove them from this list.")
         }
         return nil
-    }
-
-    // MARK: - Preferences
-
-    private var preferencesSection: some View {
-        settingsSection(String(localized: "Preferences")) {
-            card {
-                Toggle(isOn: familyLiveActivitiesBinding) {
-                    Label("Show Live Activities", systemImage: "bolt.horizontal.circle")
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-
-                rowDivider
-
-                Toggle(isOn: notificationsBinding) {
-                    Label("Shopping notifications", systemImage: "bell.badge")
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-            }
-        }
     }
 
     // MARK: - More / actions
@@ -472,26 +472,6 @@ struct SettingsView: View {
         }
     }
 
-    private var familyLiveActivitiesBinding: Binding<Bool> {
-        Binding(
-            get: { settings.familyLiveActivitiesEnabled },
-            set: { newValue in
-                settings.familyLiveActivitiesEnabled = newValue
-                LiveActivityManager.shared.familyPreferenceChanged()
-            }
-        )
-    }
-
-    private var notificationsBinding: Binding<Bool> {
-        Binding(
-            get: { settings.notificationsEnabled },
-            set: { newValue in
-                settings.notificationsEnabled = newValue
-                PushNotificationCoordinator.shared.notificationPreferenceChanged()
-            }
-        )
-    }
-
     // MARK: - Store reminders
 
     /// Per-list arrival reminder controls. The store itself is shared on the
@@ -499,50 +479,25 @@ struct SettingsView: View {
     @ViewBuilder
     private var storeReminderSection: some View {
         if let house = repo.currentHousehold {
-            VStack(alignment: .leading, spacing: 10) {
-                card {
-                    if house.hasLinkedStore {
-                        Toggle(isOn: storeRemindersBinding(for: house.id)) {
-                            Label {
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text("Remind me at the store")
-                                    if let store = house.storeName,
-                                       !store.trimmingCharacters(in: .whitespaces).isEmpty {
-                                        Text(store).font(.caption).foregroundStyle(.secondary)
-                                    }
-                                }
-                            } icon: {
-                                Image(systemName: "bell.and.waves.left.and.right")
-                            }
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
-
-                        rowDivider
-
-                        Button {
+            settingsSection(String(localized: "Store"), footer: storeReminderFooter(house)) {
+                if house.hasLinkedStore {
+                    StoreLocationCard(
+                        household: house,
+                        remindersEnabled: storeRemindersBinding(for: house.id),
+                        onChange: {
                             Haptics.tap()
-                            showStoreLink = true
-                        } label: {
-                            rowLabel(String(localized: "Change store"),
-                                     systemImage: "mappin.and.ellipse", chevron: true)
-                        }
-                        .buttonStyle(.plain)
-
-                        rowDivider
-
-                        Button(role: .destructive) {
+                            storeLinkMode = .change
+                        },
+                        onRemove: {
                             Haptics.warning()
                             repo.unlinkStore()
-                        } label: {
-                            rowLabel(String(localized: "Remove store"),
-                                     systemImage: "mappin.slash", destructive: true)
                         }
-                        .buttonStyle(.plain)
-                    } else {
+                    )
+                } else {
+                    card {
                         Button {
                             Haptics.tap()
-                            showStoreLink = true
+                            storeLinkMode = .link
                         } label: {
                             rowLabel(String(localized: "Link a store"),
                                      systemImage: "mappin.and.ellipse", chevron: true)
@@ -550,18 +505,13 @@ struct SettingsView: View {
                         .buttonStyle(.plain)
                     }
                 }
-
-                Text(storeReminderFooter(house))
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 4)
             }
         }
     }
 
-    private func storeReminderFooter(_ house: Household) -> String {
+    private func storeReminderFooter(_ house: Household) -> String? {
         house.hasLinkedStore
-            ? String(localized: "You'll get a reminder to start a trip when you arrive. Each member chooses this for themselves.")
+            ? nil
             : String(localized: "Link this list to a store to be reminded to start a trip when you arrive.")
     }
 
@@ -607,25 +557,6 @@ struct SettingsView: View {
         } else {
             content
         }
-    }
-
-    private var canSaveGroupName: Bool {
-        let trimmed = groupName.trimmingCharacters(in: .whitespacesAndNewlines)
-        return repo.isOwnerOfCurrentGroup && !trimmed.isEmpty && trimmed != committedGroupName
-    }
-
-    @ViewBuilder
-    private func commitButton(isEnabled: Bool, action: @escaping () -> Void) -> some View {
-        Button {
-            Haptics.success()
-            action()
-        } label: {
-            Image(systemName: "checkmark.circle.fill")
-                .imageScale(.large)
-        }
-        .buttonStyle(.borderless)
-        .disabled(!isEnabled)
-        .accessibilityLabel("Save")
     }
 
     private func commitPendingChanges() {

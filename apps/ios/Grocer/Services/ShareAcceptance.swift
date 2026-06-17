@@ -68,22 +68,51 @@ final class PushNotificationCoordinator {
     }
 
     func configure(householdMemberships: [String: String]) {
-        let removedMemberships = memberIdsByHouseholdId.filter { householdMemberships[$0.key] == nil }
-        let changed = memberIdsByHouseholdId != householdMemberships
+        // Diff against the durably persisted set rather than the in-memory map,
+        // which is empty on every cold launch. Without this, a group the user
+        // left while the app was closed is never detected as removed, so its
+        // `device_tokens` row lingers with notifications enabled and the device
+        // keeps receiving that group's trip notifications indefinitely.
+        let persisted = Self.loadPersistedMemberships()
+        let removedMemberships = persisted.filter { householdMemberships[$0.key] == nil }
+        let changed = persisted != householdMemberships
         self.memberIdsByHouseholdId = householdMemberships
         self.isConfigured = true
         let hadPendingToken = hasPendingToken
         hasPendingToken = false
 
         guard changed || hadPendingToken else { return }
-        Task { [removedMemberships] in
+        Task { [removedMemberships, householdMemberships, hadPendingToken] in
             await unregisterNotifications(for: removedMemberships)
             await syncRegistration(
                 requestAuthorizationIfNeeded: settings.notificationsEnabled,
                 forceRegisterForRemoteNotifications: true,
                 logContext: hadPendingToken ? "configure+pending-token" : "configure"
             )
+            // Persist only after the (un)registration round-trips, so a failed
+            // unregister is retried on the next launch instead of being lost.
+            Self.persistMemberships(householdMemberships)
         }
+    }
+
+    // MARK: - Durable registration ledger
+
+    /// App-Group-scoped record of the (household → member) set this device last
+    /// registered notification tokens for. Environment-suffixed so Debug and
+    /// Release builds keep separate ledgers.
+    private static let registeredMembershipsKey =
+        GrocerAppGroup.scopedName("grocer.notifications.registeredMemberships")
+
+    static func loadPersistedMemberships() -> [String: String] {
+        guard let data = GrocerAppGroup.defaults.data(forKey: registeredMembershipsKey),
+              let map = try? JSONDecoder().decode([String: String].self, from: data)
+        else { return [:] }
+        return map
+    }
+
+    static func persistMemberships(_ memberships: [String: String]) {
+        guard let data = try? JSONEncoder().encode(memberships) else { return }
+        GrocerAppGroup.defaults.set(data, forKey: registeredMembershipsKey)
     }
 
     func notificationPreferenceChanged() {

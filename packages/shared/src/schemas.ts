@@ -113,6 +113,22 @@ export const RegisterTokenRequestSchema = z.object({
 });
 export type RegisterTokenRequest = z.infer<typeof RegisterTokenRequestSchema>;
 
+/**
+ * Authoritative list of the groups this device is *currently* a member of.
+ * The backend disables push/notification delivery for any other `device_tokens`
+ * row belonging to this device, cleaning up registrations left behind when the
+ * user left a group (especially while the app was closed). Idempotent and
+ * self-healing: safe to send on every launch.
+ */
+export const SyncRegistrationsRequestSchema = z.object({
+  deviceId: z.string().min(1),
+  /** Household ids the device is an active member of. May be empty (no groups). */
+  householdIds: z.array(z.string().min(1)).max(500),
+});
+export type SyncRegistrationsRequest = z.infer<
+  typeof SyncRegistrationsRequestSchema
+>;
+
 // ---------------------------------------------------------------------------
 // Retention — re-engagement nudges
 // ---------------------------------------------------------------------------

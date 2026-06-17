@@ -91,7 +91,7 @@ struct GroceryListView: View {
                 }
 
                 if !repo.pendingItems.isEmpty {
-                    Text("^[\(repo.pendingItems.count) item](inflect: true) on the list")
+                    Text("^[\(repo.pendingItems.count) item](inflect: true)")
                         .font(.footnote)
                         .foregroundStyle(.tertiary)
                         .frame(maxWidth: .infinity)

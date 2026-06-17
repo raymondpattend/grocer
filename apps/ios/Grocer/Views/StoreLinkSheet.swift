@@ -37,37 +37,41 @@ private enum GeofenceSize: String, CaseIterable, Identifiable {
 struct StoreLinkSheet: View {
     @Environment(GroceryRepository.self) private var repo
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
 
     /// Observed so the flow reacts when the permission prompt resolves.
     private let reminders = StoreReminderManager.shared
 
     private enum Step { case intro, picker }
-    @State private var step: Step = .intro
+    @State private var step: Step
+
+    /// When `true` the flow opens straight on the map picker, skipping the intro
+    /// (used when changing an already-linked store).
+    init(startAtPicker: Bool = false) {
+        _step = State(initialValue: startAtPicker ? .picker : .intro)
+    }
 
     @State private var visibleRegion: MKCoordinateRegion?
     @State private var lastSearchCenter: CLLocationCoordinate2D?
     @State private var nearby: [StoreCandidate] = []
-    @State private var searchText = ""
     @State private var selected: StoreCandidate?
     @State private var size: GeofenceSize = .medium
     @State private var isSearching = false
     @State private var requestingPermission = false
-    @State private var searchDebounce: Task<Void, Never>?
-    @FocusState private var searchFocused: Bool
 
     var body: some View {
         ZStack {
             if step == .intro {
                 intro
-                    .transition(.move(edge: .leading).combined(with: .opacity))
+                    .transition(.opacity)
             } else {
                 picker
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                    .transition(.opacity)
             }
         }
-        .animation(.snappy(duration: 0.34), value: step)
-        .presentationDetents(step == .intro ? [.height(350)] : [.large])
-        .presentationDragIndicator(.visible)
+        .animation(.easeInOut(duration: 0.28), value: step)
+        .presentationDetents(step == .intro ? [.height(370)] : [.large])
+        .presentationDragIndicator(step == .intro ? .hidden : .visible)
         // Require *Always* before revealing the map.
         .onChange(of: reminders.authorizationStatus) { _, status in
             guard requestingPermission else { return }
@@ -85,33 +89,33 @@ struct StoreLinkSheet: View {
     // MARK: - Intro
 
     private var intro: some View {
-        VStack(spacing: 22) {
+        VStack(spacing: 0) {
             HStack {
                 Spacer()
                 closeButton
             }
-            .padding(.horizontal, 20)
-            .padding(.top, 16)
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
 
-            Image(systemName: "bell.and.waves.left.and.right.fill")
-                .font(.system(size: 46, weight: .semibold))
-                .foregroundStyle(tint)
-                .frame(width: 92, height: 92)
-                .accessibilityHidden(true)
+            Spacer(minLength: 0)
 
-            VStack(spacing: 10) {
-                Text("Remember at the store")
-                    .font(.system(size: 32, weight: .bold, design: .rounded))
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
+            VStack(spacing: 16) {
+                introIcon
 
-                Text("Pick a store and Grocer will nudge you when you arrive.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
+                VStack(spacing: 8) {
+                    Text("Remember at the Store")
+                        .font(.system(size: 28, weight: .bold, design: .rounded))
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Text("Link this list to a store and Grocer will remind you to start a trip when you arrive — even when the app is closed.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.horizontal, 28)
             }
-            .padding(.horizontal, 28)
 
             Spacer(minLength: 0)
         }
@@ -120,25 +124,51 @@ struct StoreLinkSheet: View {
         }
     }
 
+    private var introIcon: some View {
+        Image(systemName: "mappin.and.ellipse")
+            .font(.system(size: 38, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(width: 84, height: 84)
+            .background(
+                LinearGradient(
+                    colors: [tint, tint.opacity(0.72)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ),
+                in: RoundedRectangle(cornerRadius: 22, style: .continuous)
+            )
+            .shadow(color: tint.opacity(0.32), radius: 12, y: 6)
+            .accessibilityHidden(true)
+    }
+
     private var introFooter: some View {
         Button(action: introPrimaryAction) {
             Group {
                 if requestingPermission {
-                    ProgressView().tint(.white)
+                    ProgressView().tint(primaryButtonForeground)
                 } else {
                     Text(introPrimaryTitle)
                 }
             }
             .font(.headline)
-            .frame(maxWidth: .infinity, minHeight: 40)
+            .foregroundStyle(primaryButtonForeground)
+            .frame(maxWidth: .infinity, minHeight: 56)
+            .background(Capsule().fill(primaryButtonBackground))
+            .contentShape(Capsule())
         }
-        .grocerGlassButton(prominent: true)
-        .controlSize(.large)
-        .tint(tint)
+        .buttonStyle(.plain)
         .disabled(requestingPermission)
         .padding(.horizontal, 20)
         .padding(.top, 32)
         .padding(.bottom, 8)
+    }
+
+    private var primaryButtonForeground: Color {
+        colorScheme == .dark ? .black : .white
+    }
+
+    private var primaryButtonBackground: Color {
+        colorScheme == .dark ? .white : .black
     }
 
     private var introPrimaryTitle: String {
@@ -200,9 +230,7 @@ struct StoreLinkSheet: View {
 
     private var pickerHeader: some View {
         ZStack {
-            Text("Pick the Store")
-                .font(.headline.weight(.semibold))
-                .shadow(color: .black.opacity(0.18), radius: 3)
+            GrocerGlassTitle("Pick the Store")
 
             HStack {
                 Button {
@@ -238,7 +266,7 @@ struct StoreLinkSheet: View {
             }
         }
         .padding(.horizontal, 16)
-        .padding(.top, 6)
+        .padding(.top, 20)
     }
 
     /// Apple Maps–style "search this area" pill, shown after the map is panned
@@ -248,7 +276,6 @@ struct StoreLinkSheet: View {
         if showSearchHere {
             Button {
                 Haptics.tap()
-                searchFocused = false
                 performSearch()
             } label: {
                 HStack(spacing: 6) {
@@ -272,9 +299,9 @@ struct StoreLinkSheet: View {
     }
 
     private var pickerBottomBar: some View {
-        HStack(spacing: 10) {
+        HStack {
             sizeMenu
-            searchField
+            Spacer(minLength: 0)
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 12)
@@ -299,33 +326,6 @@ struct StoreLinkSheet: View {
         .accessibilityLabel("Reminder radius size")
     }
 
-    private var searchField: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-            TextField("Search", text: $searchText)
-                .textInputAutocapitalization(.words)
-                .submitLabel(.search)
-                .focused($searchFocused)
-                .onSubmit(performSearch)
-            if isSearching {
-                ProgressView().controlSize(.mini)
-            } else if !searchText.isEmpty {
-                Button {
-                    searchText = ""
-                    searchFocused = true
-                } label: {
-                    Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-        .frame(maxWidth: .infinity)
-        .modifier(GlassCapsule())
-        .onChange(of: searchText) { _, _ in scheduleSearch() }
-    }
-
     private var showSearchHere: Bool {
         guard let visibleRegion, let lastSearchCenter else { return false }
         let moved = CLLocation(latitude: visibleRegion.center.latitude, longitude: visibleRegion.center.longitude)
@@ -337,22 +337,9 @@ struct StoreLinkSheet: View {
 
     private var tint: Color { repo.currentHousehold?.tint ?? .accentColor }
 
-    /// Debounce live searches so editing the field re-queries without firing on
-    /// every keystroke.
-    private func scheduleSearch() {
-        searchDebounce?.cancel()
-        searchDebounce = Task {
-            try? await Task.sleep(for: .milliseconds(350))
-            guard !Task.isCancelled else { return }
-            performSearch()
-        }
-    }
-
     private func performSearch() {
         let request = MKLocalSearch.Request()
-        request.naturalLanguageQuery = searchText.trimmingCharacters(in: .whitespaces).isEmpty
-            ? String(localized: "grocery store")
-            : searchText
+        request.naturalLanguageQuery = String(localized: "grocery store")
         if let visibleRegion { request.region = visibleRegion }
         request.resultTypes = .pointOfInterest
         lastSearchCenter = visibleRegion?.center
@@ -397,7 +384,7 @@ struct StoreLinkSheet: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 44, height: 44)
                 .contentShape(Circle())
-                .modifier(GlassCircle())
+                .grocerLiquidGlass(in: Circle(), interactive: true)
         }
         .buttonStyle(.plain)
         .tint(.primary)
@@ -418,7 +405,11 @@ private struct GlassCapsule: ViewModifier {
 /// Liquid-glass circle on iOS 26+, material fallback below.
 private struct GlassCircle: ViewModifier {
     func body(content: Content) -> some View {
-        content.background(.ultraThinMaterial, in: Circle())
+        if #available(iOS 26.0, *) {
+            content.glassEffect(.regular.interactive(), in: .circle)
+        } else {
+            content.background(.ultraThinMaterial, in: Circle())
+        }
     }
 }
 
@@ -691,5 +682,208 @@ struct StoreLinkBanner: View {
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
         .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Linked store card (Settings)
+
+/// Settings card shown once a list is linked to a store: a Find My–style map
+/// snapshot with the geofence ring and store address plus a "Change" button,
+/// followed by the personal arrival-reminder toggle and a remove action.
+struct StoreLocationCard: View {
+    let household: Household
+    @Binding var remindersEnabled: Bool
+    let onChange: () -> Void
+    let onRemove: () -> Void
+
+    private var coordinate: CLLocationCoordinate2D? {
+        guard let latitude = household.storeLatitude,
+              let longitude = household.storeLongitude else { return nil }
+        return CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+    }
+
+    var body: some View {
+        VStack(spacing: 14) {
+            if let coordinate {
+                StoreMapSnapshot(
+                    coordinate: coordinate,
+                    radius: household.storeRadius ?? Household.defaultStoreRadius,
+                    storeName: household.storeName,
+                    tint: household.tint,
+                    onChange: onChange,
+                    onRemove: onRemove
+                )
+            }
+            controls
+        }
+    }
+
+    private var controls: some View {
+        VStack(spacing: 0) {
+            Toggle(isOn: $remindersEnabled) {
+                Label {
+                    Text("Notify me when I arrive")
+                } icon: {
+                    Image(systemName: "location.fill.viewfinder")
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+        }
+        .background(
+            Color(.secondarySystemGroupedBackground),
+            in: RoundedRectangle(cornerRadius: 20, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .strokeBorder(Color(.separator).opacity(0.5), lineWidth: 1)
+        }
+    }
+}
+
+/// Non-interactive map preview of the linked store with its geofence ring and an
+/// address/Change bar overlaid along the bottom edge.
+private struct StoreMapSnapshot: View {
+    let coordinate: CLLocationCoordinate2D
+    let radius: CLLocationDistance
+    let storeName: String?
+    let tint: Color
+    let onChange: () -> Void
+    let onRemove: () -> Void
+
+    @State private var address: String?
+
+    /// Map frame height and the approximate height of the address bar that
+    /// overlays its bottom edge — used to recentre the pin in the visible area.
+    private let mapHeight: CGFloat = 190
+    private let addressBarInset: CGFloat = 52
+
+    private var region: MKCoordinateRegion {
+        // Frame the geofence ring with comfortable padding on every side.
+        let span = max(radius * 4, 400)
+        // Nudge the camera south so the pin lands in the centre of the *visible*
+        // map rather than behind the address bar overlaying the bottom edge.
+        let metersPerPoint = span / mapHeight
+        let offsetMeters = metersPerPoint * (addressBarInset / 2)
+        let center = CLLocationCoordinate2D(
+            latitude: coordinate.latitude - offsetMeters / 111_320,
+            longitude: coordinate.longitude
+        )
+        return MKCoordinateRegion(center: center, latitudinalMeters: span, longitudinalMeters: span)
+    }
+
+    private var primaryLabel: String {
+        storeName?.nilIfBlank ?? address ?? String(localized: "Linked store")
+    }
+
+    private var secondaryLabel: String? {
+        // Only show the address as a subtitle when a store name owns the title.
+        storeName?.nilIfBlank == nil ? nil : address
+    }
+
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            Map(initialPosition: .region(region), interactionModes: []) {
+                MapCircle(center: coordinate, radius: radius)
+                    .foregroundStyle(Color.blue.opacity(0.16))
+                    .stroke(Color.blue.opacity(0.65), lineWidth: 2)
+
+                Annotation("", coordinate: coordinate) {
+                    Image(systemName: "mappin")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 28, height: 28)
+                        .background(Color.red, in: Circle())
+                        .overlay { Circle().strokeBorder(.white, lineWidth: 2) }
+                        .shadow(color: .black.opacity(0.3), radius: 3, y: 1)
+                }
+                .annotationTitles(.hidden)
+            }
+            .frame(height: mapHeight)
+            .allowsHitTesting(false)
+
+            addressBar
+        }
+        .overlay(alignment: .topLeading) { unlinkButton }
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .strokeBorder(Color(.separator).opacity(0.5), lineWidth: 1)
+        }
+        .task(id: "\(coordinate.latitude),\(coordinate.longitude)") {
+            await reverseGeocode()
+        }
+    }
+
+    /// Circular unlink control floating in the map's top-left corner.
+    private var unlinkButton: some View {
+        Button {
+            Haptics.warning()
+            onRemove()
+        } label: {
+            Image(systemName: "trash.fill")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(.red)
+                .frame(width: 38, height: 38)
+                .contentShape(Circle())
+                .modifier(GlassCircle())
+        }
+        .buttonStyle(.plain)
+        .padding(12)
+        .accessibilityLabel("Remove store")
+    }
+
+    private var addressBar: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(primaryLabel)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                if let secondaryLabel {
+                    Text(secondaryLabel)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer(minLength: 8)
+
+            Button {
+                Haptics.tap()
+                onChange()
+            } label: {
+                Text("Change")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 9)
+                    .background(tint, in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Change store")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(.ultraThinMaterial)
+    }
+
+    private func reverseGeocode() async {
+        let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+        guard let placemark = try? await CLGeocoder().reverseGeocodeLocation(location).first else { return }
+        let street = [placemark.subThoroughfare, placemark.thoroughfare]
+            .compactMap { $0 }
+            .joined(separator: " ")
+            .nilIfBlank
+        let parts = [street, placemark.locality].compactMap { $0 }
+        address = parts.isEmpty ? nil : parts.joined(separator: ", ")
+    }
+}
+
+private extension String {
+    var nilIfBlank: String? {
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }

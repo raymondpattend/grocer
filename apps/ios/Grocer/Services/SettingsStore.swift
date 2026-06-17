@@ -1,6 +1,15 @@
 import Foundation
 import Observation
 
+/// User-selectable color scheme. `.system` follows the device setting.
+enum AppAppearance: String, CaseIterable, Identifiable {
+    case system
+    case light
+    case dark
+
+    var id: String { rawValue }
+}
+
 /// Personal, device-local settings backed by UserDefaults. In a fuller build
 /// these would also sync to the user's CloudKit **private** database
 /// (AppSettings record); UserDefaults is the MVP cache and is authoritative
@@ -15,6 +24,7 @@ final class SettingsStore {
         static let deviceId = "grocer.deviceId"
         static let familyLiveActivities = "grocer.familyLiveActivitiesEnabled"
         static let notifications = "grocer.notificationsEnabled"
+        static let appearance = "grocer.appearance"
         static let displayName = "grocer.displayName"
         static let profileImageData = "grocer.profileImageData"
         static let memberId = "grocer.memberId"
@@ -33,6 +43,11 @@ final class SettingsStore {
 
     var notificationsEnabled: Bool {
         didSet { defaults.set(notificationsEnabled, forKey: Keys.notifications) }
+    }
+
+    /// Preferred color scheme. Applied app-wide from the root view.
+    var appearance: AppAppearance {
+        didSet { defaults.set(appearance.rawValue, forKey: Keys.appearance) }
     }
 
     /// Local display name used until the CloudKit member record resolves.
@@ -64,6 +79,7 @@ final class SettingsStore {
         // members opt in — they can toggle this here).
         familyLiveActivitiesEnabled = defaults.object(forKey: Keys.familyLiveActivities) as? Bool ?? true
         notificationsEnabled = defaults.object(forKey: Keys.notifications) as? Bool ?? true
+        appearance = AppAppearance(rawValue: defaults.string(forKey: Keys.appearance) ?? "") ?? .system
         displayName = defaults.string(forKey: Keys.displayName) ?? String(localized: "Me")
         profileImageData = defaults.data(forKey: Keys.profileImageData)
     }

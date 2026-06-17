@@ -13,7 +13,7 @@ actor APIClient {
     #if DEBUG
     static let baseURLString = "https://grocer-75.localcan.dev"
     #else
-    static let baseURLString = "https://api.trygrocer.com"
+    static let baseURLString = "https://api.grocer.sh"
     #endif
 
     /// Override with your deployed Worker URL. For the simulator, the default
@@ -102,6 +102,13 @@ actor APIClient {
 
     func registerUpdateToken(_ payload: RegisterUpdateTokenPayload) async {
         let _: OkResponse? = await post("/live-activity/register-update-token", body: payload)
+    }
+
+    /// Tells the backend the full set of groups this device currently belongs
+    /// to so it can disable registrations for groups the device has left —
+    /// including ones abandoned while the app was closed.
+    func syncRegistrations(_ payload: SyncRegistrationsPayload) async {
+        let _: OkResponse? = await post("/live-activity/sync-registrations", body: payload)
     }
 
     @discardableResult
@@ -360,6 +367,11 @@ struct RegisterUpdateTokenPayload: Encodable {
     let deviceId: String
     let sessionId: String
     let updateToken: String
+}
+
+struct SyncRegistrationsPayload: Encodable {
+    let deviceId: String
+    let householdIds: [String]
 }
 
 struct StartLiveActivityPayload: Encodable {

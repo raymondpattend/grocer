@@ -80,6 +80,7 @@ struct GrocerApp: App {
                 .environment(settings)
                 .environment(subscriptions)
                 .environment(appUpdateGate)
+                .preferredColorScheme(settings.appearance.colorScheme)
                 .task {
                     await subscriptions.start()
                     await repository.bootstrap()

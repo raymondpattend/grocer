@@ -3,6 +3,12 @@ main = "src/index.ts"
 compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
 
+
+routes = [
+  { pattern = "grocer.sh/checkout/*", zone_name = "grocer.sh" },
+  { pattern = "api.grocer.sh/*", zone_name = "grocer.sh" }
+]
+
 # ---------------------------------------------------------------------------
 # D1 database — stores ONLY Live Activity push tokens + lightweight snapshots.
 # CloudKit remains the source of truth for all grocery data.
@@ -73,6 +79,8 @@ destinations = [ "grafana-traces" ]
 enabled = true
 # Must match the destination name you configured in Cloudflare dashboard
 destinations = [ "grafana-logs" ]
+
+
 
 # ---------------------------------------------------------------------------
 # Cron Triggers — hourly retention-nudge sweep. The handler self-gates each

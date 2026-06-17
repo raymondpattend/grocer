@@ -610,7 +610,7 @@ function successPage(message: string): string {
       <main class="status">
         <div class="check">✓</div>
         <h1>${escapeHTML(message)}</h1>
-        <p class="muted">You can close this page and return to Grocer. Access may take a few seconds to appear while RevenueCat syncs the subscription.</p>
+        <p class="muted">Thank you for subscribing to Grocer Pro, you may now close this page.</p>
       </main>
     `,
   );

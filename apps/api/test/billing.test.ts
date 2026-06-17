@@ -40,7 +40,6 @@ function setupStripe(overrides: Record<string, unknown> = {}) {
         payment_method: "pm_card",
         metadata: {
           user_id: UID,
-          app_user_id: UID,
           package_id: "$rc_monthly",
         },
       })),
@@ -123,7 +122,6 @@ describe("billing checkout", () => {
           payment_method_types: ["card"],
           metadata: {
             user_id: UID,
-            app_user_id: UID,
             package_id: canonicalPackageId,
           },
         }),
@@ -175,7 +173,6 @@ describe("billing checkout", () => {
     expect(stripe.customers.create).toHaveBeenCalledWith({
       metadata: {
         user_id: UID,
-        app_user_id: UID,
       },
     });
   });
@@ -237,7 +234,7 @@ describe("billing success", () => {
           status: "requires_payment_method",
           customer: "cus_new",
           payment_method: null,
-          metadata: { user_id: UID, app_user_id: UID, package_id: "$rc_monthly" },
+          metadata: { user_id: UID, package_id: "$rc_monthly" },
         })),
       },
     });
@@ -284,7 +281,6 @@ describe("billing success", () => {
         default_payment_method: "pm_card",
         metadata: {
           user_id: UID,
-          app_user_id: UID,
           package_id: "$rc_monthly",
         },
       }),

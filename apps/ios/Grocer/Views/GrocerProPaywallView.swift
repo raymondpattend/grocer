@@ -20,6 +20,7 @@ struct GrocerProPaywallView: View {
     @State private var infoMessage: String?
     @State private var showSubscribeOptions = false
     @State private var webCheckout: CheckoutPresentation?
+    @State private var completedWebCheckout = false
     @State private var pendingWebCheckoutURL: URL?
     /// Set when the user picks "Use App Store" so the StoreKit purchase is
     /// kicked off only after the options sheet finishes dismissing — starting it
@@ -90,11 +91,11 @@ struct GrocerProPaywallView: View {
         }) {
             subscribeOptionsSheet
         }
-        .fullScreenCover(item: $webCheckout) { checkout in
+        .fullScreenCover(item: $webCheckout, onDismiss: {
+            Task { await refreshAfterWebCheckoutDismissal() }
+        }) { checkout in
             WebCheckoutView(url: checkout.url) { completed in
-                if completed {
-                    dismiss()
-                }
+                completedWebCheckout = completed
             }
         }
     }
@@ -442,6 +443,33 @@ struct GrocerProPaywallView: View {
 
         pendingWebCheckoutURL = checkoutURL
         showSubscribeOptions = false
+    }
+
+    @MainActor
+    private func refreshAfterWebCheckoutDismissal() async {
+        let completed = completedWebCheckout
+        completedWebCheckout = false
+
+        await subscriptions.refresh()
+
+        if subscriptions.hasGrocerPro {
+            dismiss()
+            return
+        }
+
+        guard completed else { return }
+
+        // Stripe -> RevenueCat sync can lag the success page by a few seconds.
+        // Keep the paywall alive and poll briefly instead of assuming success.
+        for _ in 0..<4 {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard !Task.isCancelled else { return }
+            await subscriptions.refresh()
+            if subscriptions.hasGrocerPro {
+                dismiss()
+                return
+            }
+        }
     }
 
     private func restorePurchases() {
