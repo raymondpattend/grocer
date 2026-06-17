@@ -699,6 +699,13 @@ final class GroceryRepository {
         return s.isEmpty ? UUID().uuidString : s
     }
 
+    private static func intValue(_ value: Any?) -> Int {
+        if let int = value as? Int { return int }
+        if let number = value as? NSNumber { return number.intValue }
+        if let string = value as? String, let int = Int(string) { return int }
+        return 0
+    }
+
     private var currentMember: HouseholdMember? {
         guard let household = currentHousehold else { return nil }
         return member(for: household)
@@ -1309,6 +1316,33 @@ final class GroceryRepository {
             )
         }
         await remoteRefreshTask?.value
+    }
+
+    func handleShoppingTripNotification(_ userInfo: [AnyHashable: Any]) async {
+        if userInfo["event"] as? String == "shopping_trip_started",
+           let householdId = userInfo["householdId"] as? String,
+           let sessionId = userInfo["sessionId"] as? String {
+            let content = GroceryActivityAttributes.ContentState(
+                storeName: userInfo["storeName"] as? String,
+                shopperName: (userInfo["shopperName"] as? String)?.nilIfBlank ?? String(localized: "Someone"),
+                status: SessionStatus.active.rawValue,
+                itemsFound: Self.intValue(userInfo["itemsFound"]),
+                itemsRemaining: Self.intValue(userInfo["itemsRemaining"]),
+                totalItems: Self.intValue(userInfo["totalItems"]),
+                outOfStockCount: Self.intValue(userInfo["outOfStockCount"]),
+                replacedCount: Self.intValue(userInfo["replacedCount"]),
+                lastHandledItemName: nil,
+                lastHandledItemStatus: nil
+            )
+            liveActivity.startRemoteActivity(
+                householdId: householdId,
+                sessionId: sessionId,
+                startedByMemberId: userInfo["startedByMemberId"] as? String,
+                content: content
+            )
+        }
+
+        await handleRemoteNotification()
     }
 
     private func refreshSnapshot(

@@ -6,10 +6,9 @@ import Foundation
 /// packages/shared/src/schemas.ts (`LiveActivityContentSchema`) so APNs
 /// `content-state` payloads decode directly into this type.
 ///
-/// IMPORTANT: the type name `GroceryActivityAttributes` must match
-/// `ACTIVITY_ATTRIBUTES_TYPE` in apps/api/src/services/apns.ts, because the
-/// APNs `start` push carries `attributes-type` to tell ActivityKit which
-/// attributes to instantiate.
+/// IMPORTANT: the type name must match `activityAttributesType` in
+/// apps/api/src/services/apns.ts, because the APNs `start` push carries
+/// `attributes-type` to tell ActivityKit which attributes to instantiate.
 struct GroceryActivityAttributes: ActivityAttributes {
     public struct ContentState: Codable, Hashable {
         var storeName: String?

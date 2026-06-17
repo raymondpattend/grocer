@@ -13,7 +13,7 @@ import {
 import type { Env } from "../env.js";
 import { parseBody } from "../lib/validate.js";
 import {
-  ACTIVITY_ATTRIBUTES_TYPE,
+  activityAttributesType,
   sendHeadsUpNotification,
   sendShoppingTripNotification,
   sendEnd,
@@ -148,10 +148,14 @@ async function sendShoppingTripNotificationFanout(
     sourceDeviceId?: string;
     recipientMemberIds?: string[];
     event: ShoppingTripNotificationEvent;
+    startedByMemberId?: string | null;
     shopperName?: string | null;
     storeName?: string | null;
     itemsFound?: number;
+    itemsRemaining?: number;
     totalItems?: number;
+    outOfStockCount?: number;
+    replacedCount?: number;
   },
 ): Promise<{ sent: number; failed: number }> {
   await reconcileHouseholdRecipients(c, input.householdId, input.recipientMemberIds);
@@ -420,7 +424,7 @@ liveActivityRoute.post("/live-activity/start", async (c) => {
       try {
         result = await sendStart(c.env, token, {
           content,
-          attributesType: ACTIVITY_ATTRIBUTES_TYPE,
+          attributesType: activityAttributesType(c.env),
           attributes: {
             householdId: body.householdId,
             sessionId: body.sessionId,
@@ -473,8 +477,14 @@ liveActivityRoute.post("/live-activity/start", async (c) => {
     sourceDeviceId: body.sourceDeviceId,
     recipientMemberIds: body.recipientMemberIds,
     event: "started",
+    startedByMemberId: body.startedByMemberId,
     shopperName: body.shopperName,
     storeName: body.storeName,
+    itemsFound: body.itemsFound,
+    itemsRemaining: body.itemsRemaining,
+    totalItems: body.totalItems,
+    outOfStockCount: body.outOfStockCount,
+    replacedCount: body.replacedCount,
   });
 
   const posthog = createPostHogClient(c.env);
@@ -696,7 +706,10 @@ liveActivityRoute.post("/live-activity/end", async (c) => {
     shopperName: body.shopperName,
     storeName: body.storeName,
     itemsFound: body.itemsFound,
+    itemsRemaining: body.itemsRemaining,
     totalItems: body.totalItems,
+    outOfStockCount: body.outOfStockCount,
+    replacedCount: body.replacedCount,
   });
 
   const posthog = createPostHogClient(c.env);

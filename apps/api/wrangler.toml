@@ -5,7 +5,7 @@ compatibility_flags = ["nodejs_compat"]
 
 
 routes = [
-  { pattern = "grocer.sh/checkout/*", zone_name = "grocer.sh" },
+  { pattern = "grocer.sh/checkout*", zone_name = "grocer.sh" },
   { pattern = "api.grocer.sh/*", zone_name = "grocer.sh" }
 ]
 

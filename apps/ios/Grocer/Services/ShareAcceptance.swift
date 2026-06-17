@@ -451,12 +451,18 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     func application(_ application: UIApplication,
                      didReceiveRemoteNotification userInfo: [AnyHashable: Any],
                      fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
-        guard CKNotification(fromRemoteNotificationDictionary: userInfo) != nil else {
+        let isCloudKitNotification = CKNotification(fromRemoteNotificationDictionary: userInfo) != nil
+        let isShoppingTripNotification = (userInfo["event"] as? String)?.hasPrefix("shopping_trip_") == true
+        guard isCloudKitNotification || isShoppingTripNotification else {
             completionHandler(.noData)
             return
         }
         Task { @MainActor in
-            await GroceryRepository.current?.handleRemoteNotification()
+            if isShoppingTripNotification {
+                await GroceryRepository.current?.handleShoppingTripNotification(userInfo)
+            } else {
+                await GroceryRepository.current?.handleRemoteNotification()
+            }
             completionHandler(.newData)
         }
     }

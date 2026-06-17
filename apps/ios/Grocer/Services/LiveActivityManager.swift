@@ -210,13 +210,41 @@ final class LiveActivityManager {
     /// Start the Live Activity locally on the shopper's device. Family devices
     /// receive a push-to-start from the API instead (see GroceryRepository).
     func startLocalActivity(session: ShoppingSession, content: GroceryActivityAttributes.ContentState) {
+        startActivity(
+            householdId: session.householdId,
+            sessionId: session.id,
+            startedByMemberId: session.startedByMemberId,
+            content: content
+        )
+    }
+
+    func startRemoteActivity(householdId: String,
+                             sessionId: String,
+                             startedByMemberId: String?,
+                             content: GroceryActivityAttributes.ContentState) {
+        startActivity(
+            householdId: householdId,
+            sessionId: sessionId,
+            startedByMemberId: startedByMemberId,
+            content: content
+        )
+    }
+
+    private func startActivity(householdId: String,
+                               sessionId: String,
+                               startedByMemberId: String?,
+                               content: GroceryActivityAttributes.ContentState) {
+        guard findRunningActivity(sessionId: sessionId) == nil else {
+            updateRemoteActivity(sessionId: sessionId, content: content)
+            return
+        }
         guard ActivityAuthorizationInfo().areActivitiesEnabled,
               settings.familyLiveActivitiesEnabled else { return }
 
         let attributes = GroceryActivityAttributes(
-            householdId: session.householdId,
-            sessionId: session.id,
-            startedByMemberId: session.startedByMemberId
+            householdId: householdId,
+            sessionId: sessionId,
+            startedByMemberId: startedByMemberId
         )
 
         // The Simulator can't register for APNs, so requesting `.token` fails
@@ -236,10 +264,18 @@ final class LiveActivityManager {
                 pushType: pushType
             )
             currentActivity = activity
-            currentSessionId = session.id
+            currentSessionId = sessionId
             observeUpdateToken(for: activity)
         } catch {
             print("[LiveActivity] start failed: \(error)")
+        }
+    }
+
+    func updateRemoteActivity(sessionId: String, content: GroceryActivityAttributes.ContentState) {
+        let activity = findRunningActivity(sessionId: sessionId)
+        guard let activity else { return }
+        Task {
+            await activity.update(.init(state: content, staleDate: nil, relevanceScore: Self.activeRelevanceScore))
         }
     }
 
@@ -316,7 +352,7 @@ final class LiveActivityManager {
             Task {
                 await activity.end(
                     .init(state: content, staleDate: nil, relevanceScore: Self.endedRelevanceScore),
-                    dismissalPolicy: .after(.now + 60 * 5)
+                    dismissalPolicy: .immediate
                 )
                 if currentActivity?.id == activity.id {
                     currentActivity = nil

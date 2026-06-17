@@ -22,6 +22,7 @@ const APNS_HOST: Record<Env["APNS_ENVIRONMENT"], string> = {
 };
 const ACTIVE_LIVE_ACTIVITY_RELEVANCE = 100;
 const ENDED_LIVE_ACTIVITY_RELEVANCE = 0;
+const DEFAULT_ACTIVITY_ATTRIBUTES_TYPE = "Grocer.GroceryActivityAttributes";
 
 export type ApnsEvent = "start" | "update" | "end";
 export type ShoppingTripNotificationEvent = "started" | "completed" | "cancelled";
@@ -365,8 +366,9 @@ export function sendEnd(
     event: "end",
     content,
     relevanceScore: ENDED_LIVE_ACTIVITY_RELEVANCE,
-    // Dismiss shortly after showing the completed/cancelled state.
-    dismissalDate: Math.floor(Date.now() / 1000) + 60 * 5,
+    // Remove ended activities immediately so a new active trip is never stacked
+    // beneath stale completed/cancelled ones.
+    dismissalDate: Math.floor(Date.now() / 1000) - 1,
   });
   return postToApns(env, updateToken, payload, { priority: 10 });
 }
@@ -409,10 +411,14 @@ export function sendShoppingTripNotification(
     event: ShoppingTripNotificationEvent;
     householdId: string;
     sessionId: string;
+    startedByMemberId?: string | null;
     shopperName?: string | null;
     storeName?: string | null;
     itemsFound?: number;
+    itemsRemaining?: number;
     totalItems?: number;
+    outOfStockCount?: number;
+    replacedCount?: number;
   },
 ): Promise<ApnsResult> {
   const copy = shoppingTripNotificationCopy(args);
@@ -421,10 +427,19 @@ export function sendShoppingTripNotification(
       alert: copy,
       sound: "default",
       "thread-id": `shopping-trip-${args.householdId}`,
+      "content-available": 1,
     },
     event: `shopping_trip_${args.event}`,
     householdId: args.householdId,
     sessionId: args.sessionId,
+    startedByMemberId: args.startedByMemberId ?? null,
+    shopperName: args.shopperName ?? null,
+    storeName: args.storeName ?? null,
+    itemsFound: args.itemsFound ?? 0,
+    itemsRemaining: args.itemsRemaining ?? 0,
+    totalItems: args.totalItems ?? 0,
+    outOfStockCount: args.outOfStockCount ?? 0,
+    replacedCount: args.replacedCount ?? 0,
   };
 
   return postToApns(env, deviceToken, payload, {
@@ -515,5 +530,7 @@ export function sendRetentionNotification(
   });
 }
 
-/** Swift ActivityAttributes type name — must match GroceryActivityAttributes. */
-export const ACTIVITY_ATTRIBUTES_TYPE = "GroceryActivityAttributes";
+/** Swift ActivityAttributes type name used by APNs push-to-start payloads. */
+export function activityAttributesType(env: Env): string {
+  return env.APNS_ACTIVITY_ATTRIBUTES_TYPE?.trim() || DEFAULT_ACTIVITY_ATTRIBUTES_TYPE;
+}
