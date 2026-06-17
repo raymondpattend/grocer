@@ -20,6 +20,8 @@ const APNS_HOST: Record<Env["APNS_ENVIRONMENT"], string> = {
   sandbox: "https://api.sandbox.push.apple.com",
   production: "https://api.push.apple.com",
 };
+const ACTIVE_LIVE_ACTIVITY_RELEVANCE = 100;
+const ENDED_LIVE_ACTIVITY_RELEVANCE = 0;
 
 export type ApnsEvent = "start" | "update" | "end";
 export type ShoppingTripNotificationEvent = "started" | "completed" | "cancelled";
@@ -130,6 +132,8 @@ interface BuildPayloadArgs {
   attributes?: Record<string, unknown>;
   /** "default" | "after" — only used for `end`. */
   dismissalDate?: number;
+  /** Higher scores are shown more prominently when multiple Live Activities exist. */
+  relevanceScore?: number;
   alert?: { title: string; body: string };
 }
 
@@ -140,6 +144,10 @@ function buildPayload(args: BuildPayloadArgs): Record<string, unknown> {
     event: args.event,
     "content-state": contentState(args.content),
   };
+
+  if (args.relevanceScore !== undefined) {
+    aps["relevance-score"] = args.relevanceScore;
+  }
 
   if (args.event === "start") {
     aps["attributes-type"] = args.attributesType;
@@ -321,6 +329,7 @@ export function sendStart(
     content: args.content,
     attributesType: args.attributesType,
     attributes: args.attributes,
+    relevanceScore: ACTIVE_LIVE_ACTIVITY_RELEVANCE,
     // Apple recommends a start push carry an alert so the system reliably
     // presents/starts the activity even when the app isn't running.
     alert: shoppingTripNotificationCopy({
@@ -338,7 +347,11 @@ export function sendUpdate(
   updateToken: string,
   content: LiveActivityContent,
 ): Promise<ApnsResult> {
-  const payload = buildPayload({ event: "update", content });
+  const payload = buildPayload({
+    event: "update",
+    content,
+    relevanceScore: ACTIVE_LIVE_ACTIVITY_RELEVANCE,
+  });
   return postToApns(env, updateToken, payload);
 }
 
@@ -351,6 +364,7 @@ export function sendEnd(
   const payload = buildPayload({
     event: "end",
     content,
+    relevanceScore: ENDED_LIVE_ACTIVITY_RELEVANCE,
     // Dismiss shortly after showing the completed/cancelled state.
     dismissalDate: Math.floor(Date.now() / 1000) + 60 * 5,
   });

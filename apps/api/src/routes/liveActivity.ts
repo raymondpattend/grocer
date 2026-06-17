@@ -24,9 +24,11 @@ import {
 } from "../services/apns.js";
 import {
   activityTokensForSession,
+  disableHouseholdRegistrationsExceptMembers,
   disableStaleDeviceRegistrations,
   eligibleNotificationTokens,
   eligibleStartTokens,
+  invalidateSessionActivityTokensExceptMembers,
   invalidateNotificationToken,
   invalidatePushToStartToken,
   invalidateUpdateToken,
@@ -63,6 +65,41 @@ function rateLimitConfig(pathname: string): { scope: string; limit: number; wind
     return { scope: "fanout", limit: 30, windowSeconds: 60 };
   }
   return { scope: "register", limit: 90, windowSeconds: 60 };
+}
+
+async function reconcileHouseholdRecipients(
+  c: Context<{ Bindings: Env }>,
+  householdId: string,
+  recipientMemberIds?: string[],
+) {
+  const disabled = await disableHouseholdRegistrationsExceptMembers(
+    c.env.DB,
+    householdId,
+    recipientMemberIds,
+  );
+  if (disabled > 0) {
+    console.log(
+      `[notifications] disabled stale household registrations ` +
+        `household=${householdId} disabledRows=${disabled}`,
+    );
+  }
+}
+
+async function reconcileSessionRecipients(
+  c: Context<{ Bindings: Env }>,
+  input: { householdId: string; sessionId: string; recipientMemberIds?: string[] },
+) {
+  const disabled = await invalidateSessionActivityTokensExceptMembers(c.env.DB, {
+    householdId: input.householdId,
+    sessionId: input.sessionId,
+    activeMemberIds: input.recipientMemberIds,
+  });
+  if (disabled > 0) {
+    console.log(
+      `[live-activity] invalidated stale session activity tokens ` +
+        `household=${input.householdId} session=${input.sessionId} disabledRows=${disabled}`,
+    );
+  }
 }
 
 liveActivityRoute.use("/live-activity/*", async (c, next) => {
@@ -109,6 +146,7 @@ async function sendShoppingTripNotificationFanout(
     householdId: string;
     sessionId: string;
     sourceDeviceId?: string;
+    recipientMemberIds?: string[];
     event: ShoppingTripNotificationEvent;
     shopperName?: string | null;
     storeName?: string | null;
@@ -116,10 +154,13 @@ async function sendShoppingTripNotificationFanout(
     totalItems?: number;
   },
 ): Promise<{ sent: number; failed: number }> {
+  await reconcileHouseholdRecipients(c, input.householdId, input.recipientMemberIds);
+
   const devices = await eligibleNotificationTokens(
     c.env.DB,
     input.householdId,
     input.sourceDeviceId,
+    input.recipientMemberIds,
   );
 
   console.log(
@@ -243,10 +284,13 @@ liveActivityRoute.post("/live-activity/heads-up", async (c) => {
   if ("error" in parsed) return parsed.error;
   const body = parsed.data;
 
+  await reconcileHouseholdRecipients(c, body.householdId, body.recipientMemberIds);
+
   const devices = await eligibleNotificationTokens(
     c.env.DB,
     body.householdId,
     body.sourceDeviceId,
+    body.recipientMemberIds,
   );
 
   console.log(
@@ -352,10 +396,13 @@ liveActivityRoute.post("/live-activity/start", async (c) => {
     startedAt: body.startedAt,
   });
 
+  await reconcileHouseholdRecipients(c, body.householdId, body.recipientMemberIds);
+
   const devices = await eligibleStartTokens(
     c.env.DB,
     body.householdId,
     body.sourceDeviceId,
+    body.recipientMemberIds,
   );
 
   console.log(
@@ -424,6 +471,7 @@ liveActivityRoute.post("/live-activity/start", async (c) => {
     householdId: body.householdId,
     sessionId: body.sessionId,
     sourceDeviceId: body.sourceDeviceId,
+    recipientMemberIds: body.recipientMemberIds,
     event: "started",
     shopperName: body.shopperName,
     storeName: body.storeName,
@@ -473,7 +521,18 @@ liveActivityRoute.post("/live-activity/update", async (c) => {
     status: "Active",
   });
 
-  const activities = await activityTokensForSession(c.env.DB, body.sessionId);
+  await reconcileSessionRecipients(c, {
+    householdId: body.householdId,
+    sessionId: body.sessionId,
+    recipientMemberIds: body.recipientMemberIds,
+  });
+
+  const activities = await activityTokensForSession(
+    c.env.DB,
+    body.sessionId,
+    body.householdId,
+    body.recipientMemberIds,
+  );
 
   let sent = 0;
   let failed = 0;
@@ -571,7 +630,18 @@ liveActivityRoute.post("/live-activity/end", async (c) => {
     status,
   });
 
-  const activities = await activityTokensForSession(c.env.DB, body.sessionId);
+  await reconcileSessionRecipients(c, {
+    householdId: body.householdId,
+    sessionId: body.sessionId,
+    recipientMemberIds: body.recipientMemberIds,
+  });
+
+  const activities = await activityTokensForSession(
+    c.env.DB,
+    body.sessionId,
+    body.householdId,
+    body.recipientMemberIds,
+  );
 
   let sent = 0;
   let failed = 0;
@@ -621,6 +691,7 @@ liveActivityRoute.post("/live-activity/end", async (c) => {
     householdId: body.householdId,
     sessionId: body.sessionId,
     sourceDeviceId: body.sourceDeviceId,
+    recipientMemberIds: body.recipientMemberIds,
     event: body.status === "completed" ? "completed" : "cancelled",
     shopperName: body.shopperName,
     storeName: body.storeName,

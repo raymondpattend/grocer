@@ -37,6 +37,18 @@ export interface ActivityTokenRow {
 
 const now = () => new Date().toISOString();
 
+function uniqueMemberIds(memberIds?: string[]): string[] | undefined {
+  if (memberIds === undefined) return undefined;
+  return [...new Set(memberIds.filter(Boolean))];
+}
+
+function memberFilterClause(memberIds: string[] | undefined, startIndex: number) {
+  if (memberIds === undefined) return "";
+  if (memberIds.length === 0) return " AND 0";
+  const placeholders = memberIds.map((_, idx) => `?${startIndex + idx}`).join(", ");
+  return ` AND member_id IN (${placeholders})`;
+}
+
 export async function upsertDeviceToken(
   db: D1Database,
   input: {
@@ -102,22 +114,27 @@ export async function eligibleStartTokens(
   db: D1Database,
   householdId: string,
   excludeDeviceId?: string,
+  recipientMemberIds?: string[],
 ): Promise<DeviceTokenRow[]> {
+  const members = uniqueMemberIds(recipientMemberIds);
+  const memberClause = memberFilterClause(members, excludeDeviceId ? 3 : 2);
   const where = excludeDeviceId
     ? `WHERE household_id = ?1
           AND device_id <> ?2
+          ${memberClause}
           AND live_activities_enabled = 1
           AND token_valid = 1
           AND push_to_start_token IS NOT NULL`
     : `WHERE household_id = ?1
+          ${memberClause}
           AND live_activities_enabled = 1
           AND token_valid = 1
           AND push_to_start_token IS NOT NULL`;
 
   const stmt = db.prepare(`SELECT * FROM device_tokens ${where}`);
   const { results } = excludeDeviceId
-    ? await stmt.bind(householdId, excludeDeviceId).all<DeviceTokenRow>()
-    : await stmt.bind(householdId).all<DeviceTokenRow>();
+    ? await stmt.bind(householdId, excludeDeviceId, ...(members ?? [])).all<DeviceTokenRow>()
+    : await stmt.bind(householdId, ...(members ?? [])).all<DeviceTokenRow>();
   return results ?? [];
 }
 
@@ -126,22 +143,27 @@ export async function eligibleNotificationTokens(
   db: D1Database,
   householdId: string,
   excludeDeviceId?: string,
+  recipientMemberIds?: string[],
 ): Promise<DeviceTokenRow[]> {
+  const members = uniqueMemberIds(recipientMemberIds);
+  const memberClause = memberFilterClause(members, excludeDeviceId ? 3 : 2);
   const where = excludeDeviceId
     ? `WHERE household_id = ?1
           AND device_id <> ?2
+          ${memberClause}
           AND notifications_enabled = 1
           AND notification_token_valid = 1
           AND push_notification_token IS NOT NULL`
     : `WHERE household_id = ?1
+          ${memberClause}
           AND notifications_enabled = 1
           AND notification_token_valid = 1
           AND push_notification_token IS NOT NULL`;
 
   const stmt = db.prepare(`SELECT * FROM device_tokens ${where}`);
   const { results } = excludeDeviceId
-    ? await stmt.bind(householdId, excludeDeviceId).all<DeviceTokenRow>()
-    : await stmt.bind(householdId).all<DeviceTokenRow>();
+    ? await stmt.bind(householdId, excludeDeviceId, ...(members ?? [])).all<DeviceTokenRow>()
+    : await stmt.bind(householdId, ...(members ?? [])).all<DeviceTokenRow>();
   return results ?? [];
 }
 
@@ -182,13 +204,22 @@ export async function upsertActivityToken(
 export async function activityTokensForSession(
   db: D1Database,
   sessionId: string,
+  householdId?: string,
+  recipientMemberIds?: string[],
 ): Promise<ActivityTokenRow[]> {
+  const members = uniqueMemberIds(recipientMemberIds);
+  const householdClause = householdId ? " AND household_id = ?2" : "";
+  const memberStart = householdId ? 3 : 2;
+  const memberClause = memberFilterClause(members, memberStart);
   const { results } = await db
     .prepare(
       `SELECT * FROM activity_tokens
-        WHERE session_id = ?1 AND token_valid = 1`,
+        WHERE session_id = ?1
+          ${householdClause}
+          ${memberClause}
+          AND token_valid = 1`,
     )
-    .bind(sessionId)
+    .bind(sessionId, ...(householdId ? [householdId] : []), ...(members ?? []))
     .all<ActivityTokenRow>();
   return results ?? [];
 }
@@ -234,6 +265,92 @@ export async function disableStaleDeviceRegistrations(
         WHERE device_id = ? AND household_id NOT IN (${placeholders})`,
     )
     .bind(ts, deviceId, ...active)
+    .run();
+  return result.meta.changes ?? 0;
+}
+
+/**
+ * Disables delivery rows for members who are no longer in a household's current
+ * roster. Unlike device-scoped sync, this heals removed/left users even if
+ * their own app never opens again.
+ *
+ * `activeMemberIds === undefined` means the caller did not provide an
+ * authoritative roster, so no cleanup is attempted. An explicit empty array is
+ * authoritative and disables every delivery row for the household.
+ */
+export async function disableHouseholdRegistrationsExceptMembers(
+  db: D1Database,
+  householdId: string,
+  activeMemberIds?: string[],
+): Promise<number> {
+  const active = uniqueMemberIds(activeMemberIds);
+  if (active === undefined) return 0;
+
+  const ts = now();
+  const setClause = `notifications_enabled = 0,
+        live_activities_enabled = 0,
+        token_valid = 0,
+        notification_token_valid = 0,
+        updated_at = ?`;
+
+  if (active.length === 0) {
+    const result = await db
+      .prepare(
+        `UPDATE device_tokens SET ${setClause} WHERE household_id = ?`,
+      )
+      .bind(ts, householdId)
+      .run();
+    return result.meta.changes ?? 0;
+  }
+
+  const placeholders = active.map(() => "?").join(", ");
+  const result = await db
+    .prepare(
+      `UPDATE device_tokens SET ${setClause}
+        WHERE household_id = ? AND member_id NOT IN (${placeholders})`,
+    )
+    .bind(ts, householdId, ...active)
+    .run();
+  return result.meta.changes ?? 0;
+}
+
+/**
+ * Invalidates per-activity update tokens for members outside the current
+ * session household roster. These are what drive update/end pushes after a
+ * Live Activity has already been started.
+ */
+export async function invalidateSessionActivityTokensExceptMembers(
+  db: D1Database,
+  input: {
+    sessionId: string;
+    householdId: string;
+    activeMemberIds?: string[];
+  },
+): Promise<number> {
+  const active = uniqueMemberIds(input.activeMemberIds);
+  if (active === undefined) return 0;
+
+  const ts = now();
+  const setClause = `token_valid = 0, updated_at = ?`;
+
+  if (active.length === 0) {
+    const result = await db
+      .prepare(
+        `UPDATE activity_tokens SET ${setClause}
+          WHERE session_id = ? AND household_id = ?`,
+      )
+      .bind(ts, input.sessionId, input.householdId)
+      .run();
+    return result.meta.changes ?? 0;
+  }
+
+  const placeholders = active.map(() => "?").join(", ");
+  const result = await db
+    .prepare(
+      `UPDATE activity_tokens SET ${setClause}
+        WHERE session_id = ? AND household_id = ? AND member_id NOT IN (${placeholders})`,
+    )
+    .bind(ts, input.sessionId, input.householdId, ...active)
     .run();
   return result.meta.changes ?? 0;
 }

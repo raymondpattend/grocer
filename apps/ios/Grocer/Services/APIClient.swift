@@ -355,6 +355,7 @@ struct HeartbeatPayload: Encodable {
 
 struct ListActivityPayload: Encodable {
     let householdId: String
+    let recipientMemberIds: [String]
     let actorMemberId: String
     let actorDisplayName: String?
     let deviceId: String
@@ -377,6 +378,7 @@ struct SyncRegistrationsPayload: Encodable {
 struct StartLiveActivityPayload: Encodable {
     let householdId: String
     let sessionId: String
+    let recipientMemberIds: [String]
     let startedByMemberId: String
     let sourceDeviceId: String
     let storeName: String?
@@ -394,6 +396,7 @@ struct StartLiveActivityPayload: Encodable {
 
 struct HeadsUpPayload: Encodable {
     let householdId: String
+    let recipientMemberIds: [String]
     let sourceDeviceId: String
     let shopperName: String
     let storeName: String?
@@ -403,6 +406,7 @@ struct HeadsUpPayload: Encodable {
 struct UpdateLiveActivityPayload: Encodable {
     let householdId: String
     let sessionId: String
+    let recipientMemberIds: [String]
     let storeName: String?
     let shopperName: String
     let status: String
@@ -419,6 +423,7 @@ struct UpdateLiveActivityPayload: Encodable {
 struct EndLiveActivityPayload: Encodable {
     let householdId: String
     let sessionId: String
+    let recipientMemberIds: [String]
     let sourceDeviceId: String
     let storeName: String?
     let shopperName: String

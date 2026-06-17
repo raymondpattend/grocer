@@ -7,6 +7,7 @@ import type { Env } from "../env.js";
 import { parseBody } from "../lib/validate.js";
 import { authenticateSignedRequest, enforceRateLimit } from "../lib/signing.js";
 import {
+  disableHouseholdRegistrationsExceptMembers,
   insertListActivity,
   markDeviceOpened,
 } from "../db/liveActivityTokens.js";
@@ -46,6 +47,18 @@ retentionRoute.post("/retention/heartbeat", async (c) => {
 retentionRoute.post("/retention/activity", async (c) => {
   const parsed = await parseBody(c, ListActivityRequestSchema);
   if ("error" in parsed) return parsed.error;
+
+  const disabled = await disableHouseholdRegistrationsExceptMembers(
+    c.env.DB,
+    parsed.data.householdId,
+    parsed.data.recipientMemberIds,
+  );
+  if (disabled > 0) {
+    console.log(
+      `[retention] disabled stale household registrations ` +
+        `household=${parsed.data.householdId} disabledRows=${disabled}`,
+    );
+  }
 
   await insertListActivity(c.env.DB, {
     householdId: parsed.data.householdId,

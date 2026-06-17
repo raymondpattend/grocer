@@ -38,6 +38,8 @@ final class LiveActivityManager {
 
     private var observationTasks: [Task<Void, Never>] = []
     private var observedActivityIds: Set<String> = []
+    private static let activeRelevanceScore = 100.0
+    private static let endedRelevanceScore = 0.0
 
     func configure(householdId: String, memberId: String) {
         configure(householdMemberships: [householdId: memberId])
@@ -230,7 +232,7 @@ final class LiveActivityManager {
         do {
             let activity = try Activity.request(
                 attributes: attributes,
-                content: .init(state: content, staleDate: nil),
+                content: .init(state: content, staleDate: nil, relevanceScore: Self.activeRelevanceScore),
                 pushType: pushType
             )
             currentActivity = activity
@@ -245,7 +247,7 @@ final class LiveActivityManager {
         let activity = findRunningActivity(sessionId: session.id)
         guard let activity else { return }
         Task {
-            await activity.update(.init(state: content, staleDate: nil))
+            await activity.update(.init(state: content, staleDate: nil, relevanceScore: Self.activeRelevanceScore))
         }
     }
 
@@ -312,7 +314,10 @@ final class LiveActivityManager {
                      content: GroceryActivityAttributes.ContentState) {
         for activity in activities {
             Task {
-                await activity.end(.init(state: content, staleDate: nil), dismissalPolicy: .after(.now + 60 * 5))
+                await activity.end(
+                    .init(state: content, staleDate: nil, relevanceScore: Self.endedRelevanceScore),
+                    dismissalPolicy: .after(.now + 60 * 5)
+                )
                 if currentActivity?.id == activity.id {
                     currentActivity = nil
                     currentSessionId = nil

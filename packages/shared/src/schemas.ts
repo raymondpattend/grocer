@@ -147,6 +147,8 @@ export type HeartbeatRequest = z.infer<typeof HeartbeatRequestSchema>;
  *  later tell OTHER members "N new items were added while you were away". */
 export const ListActivityRequestSchema = z.object({
   householdId: z.string().min(1),
+  /** Current group roster. When present, stale household push rows are disabled. */
+  recipientMemberIds: z.array(z.string().min(1)).max(500).optional(),
   actorMemberId: z.string().min(1),
   actorDisplayName: z.string().max(120).optional(),
   deviceId: z.string().min(1),
@@ -195,6 +197,8 @@ export type LiveActivityContent = z.infer<typeof LiveActivityContentSchema>;
 export const StartLiveActivityRequestSchema = LiveActivityContentSchema.extend({
   householdId: z.string().min(1),
   sessionId: z.string().min(1),
+  /** Current group roster. When present, fanout is limited to these members. */
+  recipientMemberIds: z.array(z.string().min(1)).max(500).optional(),
   // Forwarded into the Live Activity attributes so the widget can look up the
   // shopper's avatar (keyed by member id). Optional for older clients.
   startedByMemberId: z.string().min(1).optional(),
@@ -209,6 +213,8 @@ export const UpdateLiveActivityRequestSchema = LiveActivityContentSchema.extend(
   {
     householdId: z.string().min(1),
     sessionId: z.string().min(1),
+    /** Current group roster. When present, fanout is limited to these members. */
+    recipientMemberIds: z.array(z.string().min(1)).max(500).optional(),
     updatedAt: isoDate,
   },
 );
@@ -219,6 +225,8 @@ export type UpdateLiveActivityRequest = z.infer<
 export const EndLiveActivityRequestSchema = z.object({
   householdId: z.string().min(1),
   sessionId: z.string().min(1),
+  /** Current group roster. When present, fanout is limited to these members. */
+  recipientMemberIds: z.array(z.string().min(1)).max(500).optional(),
   sourceDeviceId: z.string().min(1).optional(),
   storeName: z.string().nullable().optional(),
   shopperName: z.string().optional(),
@@ -240,6 +248,8 @@ export type EndLiveActivityRequest = z.infer<
  */
 export const HeadsUpRequestSchema = z.object({
   householdId: z.string().min(1),
+  /** Current group roster. When present, fanout is limited to these members. */
+  recipientMemberIds: z.array(z.string().min(1)).max(500).optional(),
   sourceDeviceId: z.string().min(1).optional(),
   shopperName: z.string().min(1),
   storeName: z.string().nullable().optional(),

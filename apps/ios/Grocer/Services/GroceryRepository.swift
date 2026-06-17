@@ -1803,6 +1803,7 @@ final class GroceryRepository {
         if !newItems.isEmpty, householdMemberCount > 1 {
             let payload = ListActivityPayload(
                 householdId: household.id,
+                recipientMemberIds: recipientMemberIds(for: household.id),
                 actorMemberId: member?.id ?? settings.deviceId,
                 actorDisplayName: member?.displayName ?? settings.displayName,
                 deviceId: settings.deviceId,
@@ -2002,6 +2003,7 @@ final class GroceryRepository {
         let member = currentMember
         let payload = HeadsUpPayload(
             householdId: household.id,
+            recipientMemberIds: recipientMemberIds(for: household.id),
             sourceDeviceId: settings.deviceId,
             shopperName: member?.displayName ?? settings.displayName,
             storeName: notificationStoreName(householdId: household.id, preferred: household.storeName),
@@ -2204,6 +2206,12 @@ final class GroceryRepository {
         preferred?.nilIfBlank ?? householdById[householdId]?.name.nilIfBlank
     }
 
+    private func recipientMemberIds(for householdId: String) -> [String] {
+        (membersByHouseholdId[householdId] ?? [])
+            .map(\.id)
+            .filter { !$0.isEmpty }
+    }
+
     private func reconcileEndedLocalActivities() {
         liveActivity.reconcileEndedActivities(sessions) { [weak self] session in
             self?.contentState(for: session, overrideStatus: session.status)
@@ -2225,6 +2233,7 @@ final class GroceryRepository {
     private func startPayload(session: ShoppingSession, content: GroceryActivityAttributes.ContentState) -> StartLiveActivityPayload {
         StartLiveActivityPayload(
             householdId: session.householdId, sessionId: session.id,
+            recipientMemberIds: recipientMemberIds(for: session.householdId),
             startedByMemberId: session.startedByMemberId,
             sourceDeviceId: settings.deviceId,
             storeName: notificationStoreName(householdId: session.householdId, preferred: content.storeName),
@@ -2239,6 +2248,7 @@ final class GroceryRepository {
     private func updatePayload(session: ShoppingSession, content: GroceryActivityAttributes.ContentState) -> UpdateLiveActivityPayload {
         UpdateLiveActivityPayload(
             householdId: session.householdId, sessionId: session.id,
+            recipientMemberIds: recipientMemberIds(for: session.householdId),
             storeName: notificationStoreName(householdId: session.householdId, preferred: content.storeName),
             shopperName: content.shopperName, status: content.status,
             itemsFound: content.itemsFound, itemsRemaining: content.itemsRemaining, totalItems: content.totalItems,
@@ -2251,6 +2261,7 @@ final class GroceryRepository {
     private func endPayload(session: ShoppingSession, status: String, progress p: SessionProgress) -> EndLiveActivityPayload {
         EndLiveActivityPayload(
             householdId: session.householdId, sessionId: session.id,
+            recipientMemberIds: recipientMemberIds(for: session.householdId),
             sourceDeviceId: settings.deviceId,
             storeName: notificationStoreName(householdId: session.householdId, preferred: session.storeName),
             shopperName: session.startedByDisplayName,
