@@ -704,7 +704,6 @@ struct InviteToGroupSheet: View {
     @State private var preparingShare = false
     @State private var shareError: String?
     @State private var showingContacts = false
-    @State private var showingCopiedConfirmation = false
     @State private var showProPaywall = false
 
     private var groupName: String {
@@ -752,8 +751,8 @@ struct InviteToGroupSheet: View {
                 }
                 .buttonStyle(.plain)
 
-                Button(action: copyLink) {
-                    Text("Copy Link")
+                Button(action: shareLink) {
+                    Text("Share Link")
                         .font(.headline)
                         .foregroundStyle(preparingShare ? Color.secondary : Color.primary)
                         .frame(maxWidth: .infinity, minHeight: 56)
@@ -780,11 +779,6 @@ struct InviteToGroupSheet: View {
         )) {
             Button("OK", role: .cancel) {}
         } message: { Text(shareError ?? "") }
-        .alert("Link Copied", isPresented: $showingCopiedConfirmation) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text("The invite link has been copied.")
-        }
     }
 
     /// Tilted preview of the group being shared — mirrors the card recipients
@@ -874,8 +868,9 @@ struct InviteToGroupSheet: View {
         }
     }
 
-    /// Mints a single-use invite link and drops it on the clipboard.
-    private func copyLink() {
+    /// Mints a single-use invite link and hands it to the iOS share sheet so it
+    /// can be sent anywhere in a couple of taps.
+    private func shareLink() {
         if isAtFreeInviteLimit {
             Haptics.selection()
             showProPaywall = true
@@ -891,16 +886,11 @@ struct InviteToGroupSheet: View {
         Task {
             defer { preparingShare = false }
             do {
-                let url: URL
-                if #available(iOS 26.0, *) {
-                    // Single-use link that can't be reshared once accepted.
-                    url = try await repo.prepareOneTimeInviteURL()
-                } else {
-                    url = try await repo.prepareInviteLink()
-                }
-                UIPasteboard.general.url = url
+                // Branded share.grocer.sh link — single-use so it can't be
+                // reshared once accepted.
+                let url = try await repo.prepareBrandedInviteURL(singleUse: true)
                 Haptics.success()
-                showingCopiedConfirmation = true
+                ShareSheetPresenter.presentInvite(url: url)
             } catch {
                 Haptics.error()
                 shareError = error.localizedDescription

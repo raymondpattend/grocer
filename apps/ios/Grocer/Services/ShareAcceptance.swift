@@ -39,6 +39,18 @@ final class ShareCoordinator {
             Task { await handler(pending) }
         }
     }
+
+    /// Accepts an invite that arrived as a `share.grocer.sh` Universal Link.
+    /// We recover the wrapped CloudKit share URL, fetch its metadata, and route
+    /// it through the same handler as a natively-tapped iCloud share.
+    func acceptShareURL(_ url: URL) async {
+        do {
+            let metadata = try await CloudKitService.shared.shareMetadata(for: url)
+            handle(metadata)
+        } catch {
+            print("[ShareCoordinator] couldn't resolve invite link: \(error)")
+        }
+    }
 }
 
 /// Registers this device for ordinary APNs alert notifications used for
@@ -529,6 +541,10 @@ final class ShareSceneDelegate: NSObject, UIWindowSceneDelegate {
         }
 
         handle(connectionOptions.urlContexts)
+        // Cold launch from a tapped share.grocer.sh Universal Link.
+        for activity in connectionOptions.userActivities {
+            handle(activity)
+        }
     }
 
     func windowScene(_ windowScene: UIWindowScene,
@@ -542,12 +558,26 @@ final class ShareSceneDelegate: NSObject, UIWindowSceneDelegate {
         handle(URLContexts)
     }
 
+    /// Warm-launch Universal Link (`https://share.grocer.sh/<token>`).
+    func scene(_ scene: UIScene, continue userActivity: NSUserActivity) {
+        handle(userActivity)
+    }
+
     private func handle(_ urlContexts: Set<UIOpenURLContext>) {
         for context in urlContexts {
             guard let householdId = GroupDeepLink.householdId(from: context.url) else { continue }
             Task { @MainActor in
                 GroupNavigationCoordinator.shared.openGroup(householdId: householdId)
             }
+        }
+    }
+
+    private func handle(_ userActivity: NSUserActivity) {
+        guard userActivity.activityType == NSUserActivityTypeBrowsingWeb,
+              let url = userActivity.webpageURL,
+              let shareURL = ShareInviteLink.shareURL(from: url) else { return }
+        Task { @MainActor in
+            await ShareCoordinator.shared.acceptShareURL(shareURL)
         }
     }
 }

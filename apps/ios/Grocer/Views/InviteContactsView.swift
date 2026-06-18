@@ -195,7 +195,9 @@ struct InviteContactsView: View {
         Task {
             defer { preparing = false }
             do {
-                let url = try await repo.prepareInviteLink()
+                // Branded share.grocer.sh link; multi-use so every chosen
+                // recipient can accept the same message.
+                let url = try await repo.prepareBrandedInviteURL(singleUse: false)
                 Haptics.success()
                 completion(url)
             } catch {

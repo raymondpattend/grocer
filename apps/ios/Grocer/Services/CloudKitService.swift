@@ -455,6 +455,16 @@ final class CloudKitService {
         }
     }
 
+    /// Resolves the `CKShare.Metadata` for a CloudKit share URL recovered from a
+    /// `share.grocer.sh` Universal Link. The native `userDidAcceptCloudKitShareWith`
+    /// callback only fires for iCloud URLs tapped directly, so when the URL
+    /// arrives wrapped in our own link we fetch the metadata ourselves and hand
+    /// it to the same acceptance path.
+    func shareMetadata(for url: URL) async throws -> CKShare.Metadata {
+        guard let container else { throw CloudKitUnavailable() }
+        return try await container.shareMetadata(for: url)
+    }
+
     // MARK: - Sharing
 
     func share(for householdRecord: CKRecord) async throws -> CKShare {

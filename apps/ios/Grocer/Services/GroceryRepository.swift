@@ -2346,6 +2346,25 @@ final class GroceryRepository {
         return url
     }
 
+    /// Public, branded invite link (`share.grocer.sh/<token>`) wrapping the
+    /// CloudKit share URL, carrying the group + inviter names so the web
+    /// landing page can greet people by name. Pass `singleUse: true` for the
+    /// one-tap share sheet (one-time link); `false` for the multi-recipient
+    /// contacts flow. Falls back to the raw CloudKit URL if wrapping fails.
+    func prepareBrandedInviteURL(singleUse: Bool) async throws -> URL {
+        let shareURL: URL
+        if singleUse, #available(iOS 26.0, *) {
+            shareURL = try await prepareOneTimeInviteURL()
+        } else {
+            shareURL = try await prepareInviteLink()
+        }
+        return ShareInviteLink.url(
+            shareURL: shareURL,
+            groupName: currentHousehold?.name,
+            inviterName: displayName
+        ) ?? shareURL
+    }
+
     @available(iOS 26.0, *)
     func prepareOneTimeInviteURL() async throws -> URL {
         print("[Repo] prepareOneTimeInviteURL starting…")

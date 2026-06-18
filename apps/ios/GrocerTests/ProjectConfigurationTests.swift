@@ -19,6 +19,9 @@ final class ProjectConfigurationTests: XCTestCase {
         XCTAssertTrue(entitlements.contains("$(APS_ENVIRONMENT)"))
         XCTAssertTrue(entitlements.contains("group.org.narro.grocer"))
         XCTAssertTrue(widgetEntitlements.contains("group.org.narro.grocer"))
+        // Universal Links for share.grocer.sh invite links.
+        XCTAssertTrue(entitlements.contains("com.apple.developer.associated-domains"))
+        XCTAssertTrue(entitlements.contains("applinks:share.grocer.sh"))
         XCTAssertTrue(infoPlist.contains("<string>remote-notification</string>"))
         XCTAssertTrue(infoPlist.contains("<key>CKSharingSupported</key>"))
         XCTAssertTrue(infoPlist.contains("<key>GRLiveActivityAPISecret</key>"))

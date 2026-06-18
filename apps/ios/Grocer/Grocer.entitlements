@@ -20,6 +20,15 @@
 		<string>InProcessOneTimeLinks</string>
 	</array>
 
+	<!-- Universal Links: lets share.grocer.sh/<token> invite links open the
+	     app and route into ShareCoordinator instead of bouncing to Safari.
+	     Requires the apple-app-site-association file hosted at
+	     https://share.grocer.sh/.well-known/apple-app-site-association. -->
+	<key>com.apple.developer.associated-domains</key>
+	<array>
+		<string>applinks:share.grocer.sh</string>
+	</array>
+
 	<!-- Push Notifications: needed for ActivityKit push-to-start / updates. -->
 	<key>aps-environment</key>
 	<string>$(APS_ENVIRONMENT)</string>
