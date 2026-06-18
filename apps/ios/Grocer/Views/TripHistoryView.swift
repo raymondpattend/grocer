@@ -20,6 +20,13 @@ struct TripHistoryView: View {
             } else {
                 List {
                     ForEach(trips) { trip in
+                        let progress = repo.tripProgress(for: trip)
+                        let parts: [String] = [
+                            trip.startedAt.formatted(date: .abbreviated, time: .shortened),
+                            trip.storeName.flatMap { $0.isEmpty ? nil : $0 },
+                            trip.startedByDisplayName.isEmpty ? nil : trip.startedByDisplayName,
+                            String(localized: "\(progress.found + progress.replaced) of \(progress.total) found"),
+                        ].compactMap { $0 }
                         Button {
                             Haptics.selection()
                             selectedTrip = trip
@@ -28,6 +35,8 @@ struct TripHistoryView: View {
                         }
                         .buttonStyle(.plain)
                         .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(parts.joined(separator: ", "))
                     }
                 }
             }

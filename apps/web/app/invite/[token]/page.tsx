@@ -42,11 +42,32 @@ const pillClass =
 const badgeClass =
   "absolute z-10 inline-flex items-center gap-1.5 whitespace-nowrap rounded-[10px] bg-white px-[11px] py-1.5 text-xs font-bold text-[#18181b] shadow-[0_8px_20px_rgba(0,0,0,0.2)]";
 
-export const metadata: Metadata = {
-  title: "You're invited to Grocer",
-  description:
-    "Shop together in real time, check items off, and get notified when your list changes.",
-};
+export async function generateMetadata({ searchParams }: InvitePageProps): Promise<Metadata> {
+  const sp = await searchParams;
+  const inviter = clean(sp.inviter);
+  const group = clean(sp.group);
+  const title = headline(inviter, group);
+  const description =
+    "Shop together in real time, check items off, and get notified when your list changes.";
+  return {
+    title,
+    description,
+    metadataBase: new URL("https://share.grocer.sh"),
+    openGraph: {
+      title,
+      description,
+      images: [{ url: "/og-image.png", width: 1024, height: 1024 }],
+      siteName: "Grocer",
+      type: "website",
+    },
+    twitter: {
+      card: "summary",
+      title,
+      description,
+      images: ["/og-image.png"],
+    },
+  };
+}
 
 export default async function InvitePage({ params, searchParams }: InvitePageProps) {
   const { token } = await params;

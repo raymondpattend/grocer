@@ -3,6 +3,7 @@ import SwiftUI
 struct ItemDetailView: View {
     @Environment(GroceryRepository.self) private var repo
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State var item: GroceryItem
     @State private var editing = false
@@ -30,6 +31,7 @@ struct ItemDetailView: View {
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 8)
                 .listRowBackground(Color.clear)
+                .accessibilityHidden(true)
             }
 
             Section {
@@ -145,7 +147,7 @@ struct ItemDetailView: View {
 
     private func setQuantity(amount: Double, unit: String) {
         Haptics.selection()
-        withAnimation(.snappy(duration: 0.22)) {
+        withAnimation(reduceMotion ? nil : .snappy(duration: 0.22)) {
             item.quantity = Quantity(amount: amount, unit: unit).formatted
         }
         // Persist on the next runloop pass so the repo's observable write doesn't
@@ -156,7 +158,7 @@ struct ItemDetailView: View {
     }
 
     private func moveItem(_ action: () -> Void) {
-        withAnimation(.spring(response: 0.28, dampingFraction: 0.86), action)
+        withAnimation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.86), action)
     }
 }
 

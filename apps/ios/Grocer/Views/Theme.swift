@@ -207,13 +207,13 @@ extension ItemPriority {
 /// `.toolbar { ToolbarItem(placement: .principal) { GrocerGlassTitle("Settings") } }`.
 struct GrocerGlassTitle: View {
     private let title: LocalizedStringKey
+    @ScaledMetric(relativeTo: Font.TextStyle.headline) private var titleFontSize: CGFloat = 18.7
 
     init(_ title: LocalizedStringKey) { self.title = title }
 
     var body: some View {
         Text(title)
-            // Matches the "Add Items" / "History" titles.
-            .font(.system(size: 18.7, weight: .semibold))
+            .font(.system(size: titleFontSize, weight: .semibold))
             .padding(.horizontal, 16)
             .frame(height: 36)
             .grocerLiquidGlass(in: Capsule())
@@ -225,17 +225,35 @@ struct GrocerGlassTitle: View {
 struct PriorityCircle: View {
     let priority: ItemPriority
     var size: CGFloat = 9
+    @Environment(\.accessibilityDifferentiateWithoutColor) private var differentiateWithoutColor
 
     var body: some View {
-        Circle()
-            .fill(priority.markerColor)
-            .frame(width: size, height: size)
-            .accessibilityLabel(String(localized: "\(priority.localizedName) priority"))
+        ZStack {
+            Circle()
+                .fill(priority.markerColor)
+                .frame(width: size, height: size)
+            if differentiateWithoutColor, let symbol = prioritySymbol {
+                Image(systemName: symbol)
+                    .font(.system(size: size * 0.6, weight: .bold))
+                    .foregroundStyle(.white)
+            }
+        }
+        .accessibilityLabel(String(localized: "\(priority.localizedName) priority"))
+    }
+
+    private var prioritySymbol: String? {
+        switch priority {
+        case .high: return "exclamationmark"
+        case .low: return "arrow.down"
+        case .normal: return nil
+        }
     }
 }
 
 struct PriorityLabel: View {
     let priority: ItemPriority
+    @ScaledMetric(relativeTo: Font.TextStyle.caption2) private var labelFontSize: CGFloat = 10
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
 
     private var chipColor: Color? {
         switch priority {
@@ -248,13 +266,13 @@ struct PriorityLabel: View {
     var body: some View {
         if let color = chipColor {
             Text(priority.localizedName.uppercased())
-                .font(.system(size: 10, weight: .semibold))
+                .font(.system(size: labelFontSize, weight: .semibold))
                 .foregroundColor(color)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
                 .overlay(
                     RoundedRectangle(cornerRadius: 4)
-                        .stroke(color, lineWidth: 1)
+                        .stroke(color, lineWidth: colorSchemeContrast == .increased ? 1.5 : 1)
                 )
                 .accessibilityLabel(String(localized: "\(priority.localizedName) priority"))
         }

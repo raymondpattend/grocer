@@ -38,6 +38,7 @@ struct StoreLinkSheet: View {
     @Environment(GroceryRepository.self) private var repo
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Observed so the flow reacts when the permission prompt resolves.
     private let reminders = StoreReminderManager.shared
@@ -77,7 +78,7 @@ struct StoreLinkSheet: View {
             guard requestingPermission else { return }
             if status == .authorizedAlways {
                 requestingPermission = false
-                withAnimation(.snappy(duration: 0.34)) { step = .picker }
+                withAnimation(reduceMotion ? nil : .snappy(duration: 0.34)) { step = .picker }
             } else if status != .notDetermined {
                 // They answered, but not with Always — drop the spinner so the
                 // intro can show the next step (upgrade prompt / Settings).
@@ -183,7 +184,7 @@ struct StoreLinkSheet: View {
         Haptics.selection()
         switch reminders.authorizationStatus {
         case .authorizedAlways:
-            withAnimation(.snappy(duration: 0.34)) { step = .picker }
+            withAnimation(reduceMotion ? nil : .snappy(duration: 0.34)) { step = .picker }
         case .denied, .restricted:
             if let url = URL(string: UIApplication.openSettingsURLString) {
                 UIApplication.shared.open(url)
@@ -230,7 +231,7 @@ struct StoreLinkSheet: View {
 
     private var pickerHeader: some View {
         ZStack {
-            GrocerGlassTitle("Pick the Store")
+            GrocerGlassTitle("Choose a store")
 
             HStack {
                 Button {
@@ -652,6 +653,7 @@ struct StoreLinkBanner: View {
                     .foregroundStyle(tint)
                     .frame(width: 44, height: 44)
                     .background(Circle().fill(tint.opacity(0.16)))
+                    .accessibilityHidden(true)
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Connect this list to a store")
@@ -682,6 +684,8 @@ struct StoreLinkBanner: View {
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("Connect this list to a store")
+        .accessibilityHint("Get reminded to start a trip when you arrive")
     }
 }
 
@@ -801,6 +805,7 @@ private struct StoreMapSnapshot: View {
             }
             .frame(height: mapHeight)
             .allowsHitTesting(false)
+            .accessibilityHidden(true)
 
             addressBar
         }

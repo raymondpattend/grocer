@@ -85,9 +85,11 @@ struct InviteContactsView: View {
                         Image(systemName: selected.contains(contact.id) ? "checkmark.circle.fill" : "circle")
                             .font(.title3)
                             .foregroundStyle(selected.contains(contact.id) ? Color.accentColor : Color.secondary.opacity(0.4))
+                            .accessibilityHidden(true)
                     }
                 }
                 .buttonStyle(.plain)
+                .accessibilityAddTraits(selected.contains(contact.id) ? .isSelected : [])
             }
         }
         .listStyle(.plain)

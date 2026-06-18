@@ -5,6 +5,7 @@ import Combine
 /// Focused shopping mode — swipe-driven, one-handed item marking.
 struct ShoppingSessionView: View {
     @Environment(GroceryRepository.self) private var repo
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     let sessionId: String
     var onExit: () -> Void = {}
@@ -242,7 +243,7 @@ struct ShoppingSessionView: View {
         // `.snappy` is critically damped (no overshoot). A bouncy spring made
         // rows visibly jump past their spot while a category Section collapsed
         // around them — `.snappy` keeps the section reflow clean.
-        withAnimation(.snappy(duration: 0.25)) {
+        withAnimation(reduceMotion ? nil : .snappy(duration: 0.25)) {
             repo.mark(item, as: status, replacement: replacement)
         }
     }
@@ -290,7 +291,7 @@ struct ShoppingSessionView: View {
             }
             ProgressView(value: Double(progress.total - progress.remaining), total: Double(max(progress.total, 1)))
                 .tint(tint)
-                .animation(.snappy(duration: 0.25), value: progress.remaining)
+                .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: progress.remaining)
             HStack(spacing: 16) {
                 stat("\(progress.remaining)", String(localized: "left"))
                 stat("\(progress.found)", String(localized: "found"))
@@ -307,6 +308,7 @@ struct ShoppingSessionView: View {
                         .font(.caption2)
                 }
                 .foregroundStyle(.tertiary)
+                .accessibilityHidden(true)
             }
         }
         .padding(.vertical, 4)
@@ -329,7 +331,7 @@ struct ShoppingSessionView: View {
             Section {
                 Button {
                     Haptics.selection()
-                    withAnimation { showCompleted.toggle() }
+                    withAnimation(reduceMotion ? nil : .default) { showCompleted.toggle() }
                 } label: {
                     HStack {
                         Text("Completed (\(handled.count))")
@@ -344,6 +346,7 @@ struct ShoppingSessionView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityHint(showCompleted ? String(localized: "Collapse completed items") : String(localized: "Expand completed items"))
 
                 if showCompleted {
                     ForEach(handled, id: \.shoppingHandledRowID) { item in
@@ -379,7 +382,8 @@ struct ShoppingSessionView: View {
         // Dimmed while items remain — still fully tappable, just signals there's
         // unfinished work. Goes fully opaque once everything's been handled.
         .opacity(allHandled ? 1 : 0.55)
-        .animation(.easeInOut(duration: 0.25), value: allHandled)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: allHandled)
+        .accessibilityHint(allHandled ? "" : String(localized: "\(progress.remaining) items still remaining"))
         .padding()
     }
 }
@@ -433,6 +437,16 @@ struct ShopItemRow: View {
         }
         .padding(.vertical, 4)
         .contentShape(Rectangle())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(rowAccessibilityLabel)
+    }
+
+    private var rowAccessibilityLabel: String {
+        var parts = [item.name]
+        if let qty = quantityText { parts.append(qty) }
+        if let notes = item.notes, !notes.isEmpty { parts.append(notes) }
+        if item.priority != .normal { parts.append(String(localized: "\(item.priority.localizedName) priority")) }
+        return parts.joined(separator: ", ")
     }
 
     /// Quantity shown as a multiplier ("50x bunches") in the glass pill.
@@ -484,6 +498,7 @@ private struct CompletedItemRow: View {
                     .font(.body)
                     .foregroundStyle(.secondary)
             }
+            .accessibilityLabel(String(localized: "Options for \(item.name)"))
         }
         .padding(.vertical, 2)
     }

@@ -8,7 +8,7 @@ struct PreferencesView: View {
     @Environment(SettingsStore.self) private var settings
 
     /// Prominent in-card title. Uses the standard system font (bold).
-    private let titleFont = Font.system(size: 22, weight: .bold)
+    private let titleFont = Font.system(.title2, design: .default, weight: .bold)
 
     var body: some View {
         ScrollView {
@@ -130,6 +130,7 @@ struct PreferencesView: View {
                             .strokeBorder(isSelected ? Color.accentColor : Color(.separator).opacity(0.4),
                                           lineWidth: isSelected ? 2.5 : 1)
                     }
+                    .accessibilityHidden(true)
                 Text(option.localizedName)
                     .font(.subheadline.weight(isSelected ? .semibold : .regular))
                     .foregroundStyle(isSelected ? .primary : .secondary)

@@ -7,6 +7,7 @@ import SwiftUI
 /// Shopping CTA themed to the group.
 struct GroceryListView: View {
     @Environment(GroceryRepository.self) private var repo
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var showingAddSearch = false
     @State private var showingSettings = false
@@ -49,7 +50,7 @@ struct GroceryListView: View {
                     if let id = repo.currentHousehold?.id {
                         SettingsStore.shared.setStoreBannerDismissed(true, forHousehold: id)
                     }
-                    withAnimation { storeBannerHidden = true }
+                    withAnimation(reduceMotion ? nil : .default) { storeBannerHidden = true }
                 }
                 .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 12, trailing: 0))
                 .listRowBackground(Color.clear)
@@ -120,6 +121,7 @@ struct GroceryListView: View {
                     .listRowInsets(EdgeInsets())
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
+                    .accessibilityHidden(true)
             }
         }
         .listStyle(.insetGrouped)
@@ -164,9 +166,12 @@ struct GroceryListView: View {
                 }
                 if repo.isOwnerOfCurrentGroup && repo.currentHousehold != nil {
                     Button { Haptics.tap(); showingInvite = true } label: { Image(systemName: "person.crop.circle.badge.plus") }
+                        .accessibilityLabel("Invite to list")
                 }
                 Button { Haptics.tap(); showingHistory = true } label: { Image(systemName: "clock.arrow.circlepath") }
+                    .accessibilityLabel("Trip history")
                 Button { Haptics.tap(); showingSettings = true } label: { Image(systemName: "gearshape") }
+                    .accessibilityLabel("Settings")
             }
         }
         .fullScreenCover(isPresented: $showingAddSearch) {
@@ -228,6 +233,7 @@ struct GroceryListView: View {
         }
         .grocerGlassButton()
         .buttonBorderShape(.circle)
+        .accessibilityLabel("Add item")
     }
 
     private func itemButton(_ item: GroceryItem) -> some View {
@@ -258,7 +264,7 @@ struct GroceryListView: View {
             "item_name": item.name,
             "category": item.category.rawValue,
         ])
-        withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+        withAnimation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.86)) {
             repo.delete(item)
         }
     }
@@ -308,6 +314,22 @@ struct GroceryItemRow: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .contentShape(Rectangle())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(rowAccessibilityLabel)
+    }
+
+    private var rowAccessibilityLabel: String {
+        var parts = [item.name]
+        if let qty = item.quantity, !qty.isEmpty {
+            parts.append(Quantity.displayString(qty))
+        }
+        if let notes = item.notes, !notes.isEmpty {
+            parts.append(notes)
+        }
+        if item.priority != .normal {
+            parts.append(String(localized: "\(item.priority.localizedName) priority"))
+        }
+        return parts.joined(separator: ", ")
     }
 }
 
@@ -351,6 +373,7 @@ struct MemberAvatarView: View {
                     }
             }
         }
+        .accessibilityHidden(true)
         .task(id: token) {
             guard let data = member?.profileImageData else {
                 image = nil
@@ -469,6 +492,8 @@ struct ActiveSessionBanner: View {
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(String(localized: "\(headline), \(progress.found) found, \(progress.remaining) left"))
+        .accessibilityHint(String(localized: "Opens shopping session"))
     }
 
     private var headline: String {

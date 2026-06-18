@@ -934,6 +934,7 @@ struct HeadsUpSheet: View {
     @Environment(GroceryRepository.self) private var repo
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var sending = false
     @State private var sent = false
@@ -1043,7 +1044,7 @@ struct HeadsUpSheet: View {
             sending = false
             if ok {
                 Haptics.success()
-                withAnimation(.snappy) { sent = true }
+                withAnimation(reduceMotion ? nil : .snappy) { sent = true }
                 try? await Task.sleep(for: .seconds(0.9))
                 dismiss()
             } else {
@@ -1168,6 +1169,8 @@ private struct SwipeToRemoveRow<Content: View>: View {
     let onRemove: () -> Void
     @ViewBuilder var content: () -> Content
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     @State private var offset: CGFloat = 0
 
     private let actionWidth: CGFloat = 88
@@ -1204,7 +1207,7 @@ private struct SwipeToRemoveRow<Content: View>: View {
                         }
                         .onEnded { _ in
                             let shouldOpen = offset < -actionWidth / 2
-                            withAnimation(.snappy) {
+                            withAnimation(reduceMotion ? nil : .snappy) {
                                 offset = shouldOpen ? -actionWidth : 0
                                 openRowId = shouldOpen ? id : nil
                             }
@@ -1214,13 +1217,13 @@ private struct SwipeToRemoveRow<Content: View>: View {
         .clipped()
         .onChange(of: openRowId) { _, newValue in
             if newValue != id, offset != 0 {
-                withAnimation(.snappy) { offset = 0 }
+                withAnimation(reduceMotion ? nil : .snappy) { offset = 0 }
             }
         }
     }
 
     private func close() {
-        withAnimation(.snappy) {
+        withAnimation(reduceMotion ? nil : .snappy) {
             offset = 0
             openRowId = nil
         }

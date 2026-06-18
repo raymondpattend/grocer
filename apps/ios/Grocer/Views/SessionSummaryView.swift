@@ -97,6 +97,7 @@ struct SessionSummaryView: View {
                 Image(systemName: "checkmark.seal.fill")
                     .font(.system(size: 48))
                     .foregroundStyle(tint)
+                    .accessibilityHidden(true)
                 Text("Shopping Complete")
                     .font(.title2.bold())
                 if let store = session.storeName {

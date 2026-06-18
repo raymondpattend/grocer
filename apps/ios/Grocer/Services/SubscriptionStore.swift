@@ -267,7 +267,7 @@ final class SubscriptionStore {
     var homeGroupLimitCardCopy: GrocerProGroupUpsellCopy {
         let fallback = GrocerProGroupUpsellCopy(
             title: String(localized: "Upgrade to Grocer Pro"),
-            subtitle: String(localized: "Unlimited lists, live activities, and more."),
+            subtitle: String(localized: "Unlimited lists, family sharing, widgets, and more."),
             accessibilityLabel: String(localized: "Upgrade to Grocer Pro. Create unlimited grocery lists.")
         )
         guard let cardCopy = currentOffering?.metadata["home_group_limit_card"] as? [String: Any] else {

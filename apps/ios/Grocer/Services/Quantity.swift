@@ -270,6 +270,7 @@ struct QuantityStepperField: View {
 
     @State private var showingCustomUnit = false
     @State private var customUnit = ""
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var parsed: Quantity { Quantity(parsing: quantity) }
 
@@ -359,7 +360,7 @@ struct QuantityStepperField: View {
         let unit = effectiveUnit
         let step = GroceryUnits.step(for: unit)
         let next = (parsed.amount ?? 0) + direction * step
-        withAnimation(.snappy(duration: 0.22)) {
+        withAnimation(reduceMotion ? nil : .snappy(duration: 0.22)) {
             // Stepping to zero clears the quantity.
             quantity = next > 0 ? Quantity(amount: next, unit: unit).formatted : ""
         }
@@ -373,7 +374,7 @@ struct QuantityStepperField: View {
         if !unit.isEmpty && next.amount == nil {
             next.amount = 1
         }
-        withAnimation(.snappy(duration: 0.22)) {
+        withAnimation(reduceMotion ? nil : .snappy(duration: 0.22)) {
             quantity = next.formatted
         }
     }

@@ -7,6 +7,7 @@ import SwiftUI
 struct HomeView: View {
     @Environment(GroceryRepository.self) private var repo
     @Environment(SubscriptionStore.self) private var subscriptions
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @AppStorage("home.separateShared") private var separateShared = true
 
@@ -36,7 +37,7 @@ struct HomeView: View {
                 content
                     .padding(.horizontal, 16)
                     .padding(.top, 8)
-                    .animation(.snappy(duration: 0.35), value: separateShared)
+                    .animation(reduceMotion ? nil : .snappy(duration: 0.35), value: separateShared)
             }
             .background(Color(.systemGroupedBackground))
             .refreshable { await repo.manualRefresh() }
@@ -49,7 +50,7 @@ struct HomeView: View {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button {
                         Haptics.selection()
-                        withAnimation(.snappy) { separateShared.toggle() }
+                        withAnimation(reduceMotion ? nil : .snappy) { separateShared.toggle() }
                     } label: {
                         Image(systemName: separateShared ? "person.2.fill" : "person.2")
                     }
@@ -226,7 +227,7 @@ struct HomeView: View {
                     VStack(alignment: .leading, spacing: 12) {
                         Button {
                             Haptics.selection()
-                            withAnimation(.snappy) {
+                            withAnimation(reduceMotion ? nil : .snappy) {
                                 if collapsed {
                                     collapsedSharers.remove(sharer.id)
                                 } else {
@@ -253,7 +254,7 @@ struct HomeView: View {
 
                         if !collapsed {
                             groupCollection(sharer.households)
-                                .transition(.opacity)
+                                .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.97, anchor: .top)))
                         }
                     }
                 }
@@ -368,7 +369,17 @@ struct HomeView: View {
     // MARK: - Grid card
 
     private func gridCard(_ house: Household) -> some View {
-        Button {
+        let count = pendingCount(for: house)
+        let isShared = repo.isSharedWithMe(house)
+        let isActive = hasActiveSession(house)
+        let cardLabel = [
+            house.name,
+            count == 1 ? String(localized: "1 item") : String(localized: "\(count) items"),
+            isActive ? String(localized: "Shopping in progress") : nil,
+            isShared ? String(localized: "Shared with you") : nil,
+        ].compactMap { $0 }.joined(separator: ", ")
+
+        return Button {
             open(house)
         } label: {
             VStack(alignment: .leading, spacing: 10) {
@@ -404,6 +415,7 @@ struct HomeView: View {
             .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(cardLabel)
         .groupZoomSource(id: house.id, in: zoomNamespace)
         .contextMenu { contextActions(house) }
         .overlay(alignment: .topTrailing) { sharedBadge(house) }
@@ -419,6 +431,7 @@ struct HomeView: View {
                 .font(.caption)
                 .foregroundStyle(.tertiary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .accessibilityHidden(true)
         } else {
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(items) { item in
@@ -453,7 +466,7 @@ struct HomeView: View {
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .frame(width: 44, height: 44)
-                .accessibilityLabel("Shared with you")
+                .accessibilityHidden(true)
         }
     }
 

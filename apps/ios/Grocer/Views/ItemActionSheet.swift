@@ -4,6 +4,7 @@ import SwiftUI
 struct ItemActionSheet: View {
     @Environment(GroceryRepository.self) private var repo
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     let item: GroceryItem
     let onReplace: () -> Void
@@ -96,7 +97,7 @@ struct ItemActionSheet: View {
     }
 
     private func moveItem(_ action: () -> Void) {
-        withAnimation(.spring(response: 0.28, dampingFraction: 0.86), action)
+        withAnimation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.86), action)
     }
 }
 
@@ -104,6 +105,7 @@ struct ItemActionSheet: View {
 struct ReplacementSheet: View {
     @Environment(GroceryRepository.self) private var repo
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     let item: GroceryItem
     @State private var customReplacement = ""
@@ -167,7 +169,7 @@ struct ReplacementSheet: View {
     }
 
     private func moveItem(_ action: () -> Void) {
-        withAnimation(.spring(response: 0.28, dampingFraction: 0.86), action)
+        withAnimation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.86), action)
     }
 }
 

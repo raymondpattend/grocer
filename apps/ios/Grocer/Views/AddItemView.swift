@@ -136,6 +136,7 @@ struct AddItemView: View {
 struct AddItemSearchView: View {
     @Environment(GroceryRepository.self) private var repo
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var tint: Color = .green
 
@@ -204,7 +205,7 @@ struct AddItemSearchView: View {
                         removeFromHistory(name: name)
                     },
                     onClose: {
-                        withAnimation(.easeInOut(duration: 0.28)) {
+                        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.28)) {
                             showHistory = false
                         }
                     }
@@ -215,7 +216,7 @@ struct AddItemSearchView: View {
         }
         .tint(tint)
         .onAppear {
-            withAnimation(.spring(response: 0.36, dampingFraction: 0.88)) {
+            withAnimation(reduceMotion ? nil : .spring(response: 0.36, dampingFraction: 0.88)) {
                 contentAppeared = true
             }
             refocusInput(after: 0.24)
@@ -242,10 +243,10 @@ struct AddItemSearchView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
-            withAnimation(.easeInOut(duration: 0.2)) { keyboardVisible = true }
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { keyboardVisible = true }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
-            withAnimation(.easeInOut(duration: 0.2)) { keyboardVisible = false }
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { keyboardVisible = false }
         }
         .alert("Discard proposed items?", isPresented: $showDiscardConfirm) {
             Button("Discard", role: .destructive) {
@@ -263,7 +264,7 @@ struct AddItemSearchView: View {
         Button {
             Haptics.tap()
             inputFocused = false
-            withAnimation(.easeInOut(duration: 0.28)) {
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.28)) {
                 showHistory = true
             }
         } label: {
@@ -355,14 +356,14 @@ struct AddItemSearchView: View {
             }
             .buttonStyle(.plain)
             .tint(.primary)
-            .accessibilityLabel(keyboardVisible ? "Dismiss keyboard" : "Close")
+            .accessibilityLabel(keyboardVisible ? String(localized: "Dismiss keyboard") : String(localized: "Close"))
         }
     }
 
     // MARK: - Top pane: input + autocomplete
 
     private var composePanel: some View {
-        TextField("Type your list freely — milk, eggs, bananas, e.t.c.", text: $inputText, axis: .vertical)
+        TextField("Type your list freely — milk, eggs, bananas, etc.", text: $inputText, axis: .vertical)
             .focused($inputFocused)
             .font(.title3.weight(.medium))
             .textInputAutocapitalization(.sentences)
@@ -382,6 +383,7 @@ struct AddItemSearchView: View {
                         ParsedGroceryDraftSkeletonRow()
                     }
                 }
+                .accessibilityElement(children: .ignore)
                 .accessibilityLabel("Detecting items")
             } else {
                 emptyProposed
@@ -469,7 +471,7 @@ struct AddItemSearchView: View {
     private func runParse(_ text: String) async {
         guard text != lastParsedText else { return }
         guard !text.isEmpty else {
-            withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) { drafts = [] }
+            withAnimation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.86)) { drafts = [] }
             lastParsedText = ""
             return
         }
@@ -482,7 +484,7 @@ struct AddItemSearchView: View {
         guard !Task.isCancelled else { isParsing = false; return }
 
         let detected = parsed.isEmpty ? localSplit(cleaned) : parsed.compactMap(DetectedItem.init(parsedItem:))
-        withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
+        withAnimation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.86)) {
             drafts = merge(detected, into: drafts)
         }
         lastParsedText = text
@@ -576,7 +578,7 @@ struct AddItemSearchView: View {
 
     private func removeDraft(_ id: UUID) {
         Haptics.tap()
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.84)) {
+        withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.84)) {
             drafts.removeAll { $0.id == id }
         }
         syncTextFromDrafts()
@@ -653,7 +655,7 @@ struct AddItemSearchView: View {
         let trimmedQuantity = quantity.trimmingCharacters(in: .whitespacesAndNewlines)
         let proposedUnit = Quantity(parsing: trimmedQuantity).unit
 
-        withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
+        withAnimation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.86)) {
             if let idx = drafts.firstIndex(where: { $0.name.lowercased() == trimmedName.lowercased() }) {
                 if !trimmedQuantity.isEmpty { drafts[idx].quantity = trimmedQuantity }
                 drafts[idx].category = category
@@ -670,7 +672,7 @@ struct AddItemSearchView: View {
     /// is toggled to "Remove".
     private func removeFromHistory(name: String) {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
+        withAnimation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.86)) {
             drafts.removeAll { $0.name.lowercased() == trimmedName.lowercased() }
         }
         syncTextFromDrafts()
@@ -833,7 +835,7 @@ private struct ParsedGroceryDraftRow: View {
                             .frame(width: 30, height: 30)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("Remove \(draft.name)")
+                    .accessibilityLabel(String(localized: "Remove \(draft.name)"))
                 }
 
                 HStack(spacing: 10) {
@@ -996,6 +998,7 @@ private struct HistoryItemsView: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Clear search")
             }
         }
         .padding(.horizontal, 12)
@@ -1055,6 +1058,8 @@ private struct HistoryItemRow: View {
     var onAdd: (String) -> Void
     var onRemove: () -> Void
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     @State private var quantity = ""
     /// Drives the "already on your list" confirmation before re-adding.
     @State private var showAddAgainConfirm = false
@@ -1109,6 +1114,9 @@ private struct HistoryItemRow: View {
                 .tint(.primary)
                 .grocerGlassButton()
                 .clipShape(Capsule())
+                .accessibilityLabel(addedToList
+                    ? String(localized: "Remove \(suggestion.name) from list")
+                    : String(localized: "Add \(suggestion.name) to list"))
             }
         }
         .padding(14)
@@ -1183,7 +1191,7 @@ private struct HistoryItemRow: View {
 
     private func performAdd(_ quantity: String) {
         onAdd(quantity)
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+        withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.8)) {
             addedToList = true
         }
         // Sound the success notification just after the press tap. Haptics
@@ -1196,7 +1204,7 @@ private struct HistoryItemRow: View {
 
     private func performRemove() {
         onRemove()
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+        withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.8)) {
             addedToList = false
         }
     }

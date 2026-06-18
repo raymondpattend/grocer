@@ -39,18 +39,22 @@ struct GroupEditorView: View {
             Section("Color") {
                 LazyVGrid(columns: columns, spacing: 12) {
                     ForEach(ListColorTheme.allCases) { t in
-                        Circle()
-                            .fill(t.color)
-                            .frame(width: 32, height: 32)
-                            .overlay {
-                                if t == theme {
-                                    Image(systemName: "checkmark").font(.caption.bold()).foregroundStyle(.white)
+                        Button {
+                            Haptics.selection()
+                            theme = t
+                        } label: {
+                            Circle()
+                                .fill(t.color)
+                                .frame(width: 32, height: 32)
+                                .overlay {
+                                    if t == theme {
+                                        Image(systemName: "checkmark").font(.caption.bold()).foregroundStyle(.white)
+                                    }
                                 }
-                            }
-                            .onTapGesture {
-                                Haptics.selection()
-                                theme = t
-                            }
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(t.localizedName)
+                        .accessibilityAddTraits(t == theme ? [.isSelected] : [])
                     }
                 }
                 .padding(.vertical, 4)
@@ -59,15 +63,19 @@ struct GroupEditorView: View {
             Section("Icon") {
                 LazyVGrid(columns: columns, spacing: 12) {
                     ForEach(GROUP_ICON_CHOICES, id: \.self) { choice in
-                        Image(systemName: choice)
-                            .font(.title3)
-                            .foregroundStyle(choice == icon ? .white : theme.color)
-                            .frame(width: 40, height: 40)
-                            .background(Circle().fill(choice == icon ? AnyShapeStyle(theme.color) : AnyShapeStyle(theme.color.opacity(0.15))))
-                            .onTapGesture {
-                                Haptics.selection()
-                                icon = choice
-                            }
+                        Button {
+                            Haptics.selection()
+                            icon = choice
+                        } label: {
+                            Image(systemName: choice)
+                                .font(.title3)
+                                .foregroundStyle(choice == icon ? .white : theme.color)
+                                .frame(width: 40, height: 40)
+                                .background(Circle().fill(choice == icon ? AnyShapeStyle(theme.color) : AnyShapeStyle(theme.color.opacity(0.15))))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(choice)
+                        .accessibilityAddTraits(choice == icon ? [.isSelected] : [])
                     }
                 }
                 .padding(.vertical, 4)

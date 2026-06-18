@@ -14,6 +14,7 @@ struct GrocerProPaywallView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var selectedPackageID: String?
     @State private var showAllPlans = false
@@ -224,6 +225,7 @@ struct GrocerProPaywallView: View {
             .frame(height: 150)
             .frame(maxWidth: .infinity)
             .padding(.top, 8)
+            .accessibilityHidden(true)
     }
 
     private var headline: some View {
@@ -253,14 +255,14 @@ struct GrocerProPaywallView: View {
                     isSelected: selectedPackageID == package.identifier
                 ) {
                     Haptics.selection()
-                    withAnimation(.snappy) { selectedPackageID = package.identifier }
+                    withAnimation(reduceMotion ? nil : .snappy) { selectedPackageID = package.identifier }
                 }
             }
 
             if orderedPackages.count > visiblePackages.count {
                 Button {
                     Haptics.selection()
-                    withAnimation(.snappy) { showAllPlans = true }
+                    withAnimation(reduceMotion ? nil : .snappy) { showAllPlans = true }
                 } label: {
                     Text("Show all plans")
                         .font(.subheadline.weight(.semibold))
@@ -583,7 +585,7 @@ struct GrocerProPaywallView: View {
         Feature(icon: "list.bullet.rectangle.portrait", title: String(localized: "Unlimited Lists"),
                 subtitle: String(localized: "Create as many grocery lists as you need.")),
         Feature(icon: "person.2.fill", title: String(localized: "Shared Lists"),
-                subtitle: String(localized: "Share your lists with as many people as you want.")),
+                subtitle: String(localized: "Share your lists with unlimited people.")),
         Feature(icon: "bolt.horizontal.circle", title: String(localized: "Live Activities"),
                 subtitle: String(localized: "Track shopping trips in real time.")),
         Feature(icon: "square.grid.2x2", title: String(localized: "Smart Categories"),
@@ -591,7 +593,7 @@ struct GrocerProPaywallView: View {
         Feature(icon: "clock.arrow.circlepath", title: String(localized: "Trip History"),
                 subtitle: String(localized: "Look back at past shopping trips.")),
         Feature(icon: "person.3.fill", title: String(localized: "Family Sharing"),
-                subtitle: String(localized: "Your Pro plan is automatically shared with your iCloud Family.")),
+                subtitle: String(localized: "Share Pro with your entire iCloud Family.")),
         Feature(icon: "sparkles", title: String(localized: "Future Updates"),
                 subtitle: String(localized: "Every new Pro feature, included.")),
     ]
