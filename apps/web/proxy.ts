@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-// The invite page lives on its own subdomain: share.grocer.sh/<token>. The
+// The invite page lives on its own subdomain: share.grocer.sh/<token> in
+// production and share.localhost/<token> during local development. The
 // public-facing URL stays clean; internally we rewrite onto the /invite/<token>
-// route. Anything hitting share.grocer.sh without a valid token (the bare
-// domain, junk paths, crawlers asking for /robots.txt, etc.) is bounced to the
+// route. Anything hitting a share host without a valid token (the bare domain,
+// junk paths, crawlers asking for /robots.txt, etc.) is bounced to the
 // marketing site.
-const SHARE_HOST = "share.grocer.sh";
+const SHARE_HOSTS = new Set(["share.grocer.sh", "share.localhost"]);
 const FALLBACK = "https://grocer.sh";
 
 // A share token is a single path segment of url-safe characters. The app mints
@@ -45,7 +46,7 @@ export function proxy(req: NextRequest) {
     });
   }
 
-  if (host !== SHARE_HOST) {
+  if (!SHARE_HOSTS.has(host)) {
     // The /invite route is an implementation detail of the share subdomain —
     // don't expose it on grocer.sh. (Allowed locally so the page is testable.)
     if (pathname.startsWith("/invite") && process.env.NODE_ENV === "production") {

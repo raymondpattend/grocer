@@ -128,7 +128,7 @@ struct GroceryListView: View {
         .background(Color(.systemGroupedBackground))
         .refreshable { await repo.manualRefresh() }
         .safeAreaInset(edge: .top, spacing: 0) {
-            SyncStatusBar(state: repo.syncState, pendingCount: repo.pendingCloudWriteCount)
+            CloudIssueChip(issue: repo.cloudIssue)
         }
         .navigationTitle(repo.currentHousehold?.name ?? String(localized: "Grocer"))
         .navigationBarTitleDisplayMode(.large)

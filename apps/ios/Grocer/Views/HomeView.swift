@@ -41,7 +41,7 @@ struct HomeView: View {
             .background(Color(.systemGroupedBackground))
             .refreshable { await repo.manualRefresh() }
             .safeAreaInset(edge: .top, spacing: 0) {
-                SyncStatusBar(state: repo.syncState, pendingCount: repo.pendingCloudWriteCount)
+                CloudIssueChip(issue: repo.cloudIssue)
             }
             .navigationTitle("My Lists")
             .navigationBarTitleDisplayMode(.large)

@@ -150,9 +150,9 @@ final class SyncSourceGuardrailTests: XCTestCase {
     }
 
     func testMainScreensExposeSyncStatus() throws {
-        XCTAssertTrue(try hasUncommentedLine(containing: "SyncStatusBar(state: repo.syncState, pendingCount: repo.pendingCloudWriteCount)", in: "Grocer/Views/HomeView.swift"))
-        XCTAssertTrue(try hasUncommentedLine(containing: "SyncStatusBar(state: repo.syncState, pendingCount: repo.pendingCloudWriteCount)", in: "Grocer/Views/GroceryListView.swift"))
-        XCTAssertTrue(try hasUncommentedLine(containing: "SyncStatusBar(state: repo.syncState, pendingCount: repo.pendingCloudWriteCount)", in: "Grocer/Views/RootView.swift"))
+        XCTAssertTrue(try hasUncommentedLine(containing: "CloudIssueChip(issue: repo.cloudIssue)", in: "Grocer/Views/HomeView.swift"))
+        XCTAssertTrue(try hasUncommentedLine(containing: "CloudIssueChip(issue: repo.cloudIssue)", in: "Grocer/Views/GroceryListView.swift"))
+        XCTAssertTrue(try hasUncommentedLine(containing: "CloudIssueChip(issue: repo.cloudIssue)", in: "Grocer/Views/RootView.swift"))
     }
 
     func testForegroundRefreshUsesFastAdaptiveRealtimeCadence() throws {
