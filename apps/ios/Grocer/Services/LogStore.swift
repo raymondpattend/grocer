@@ -4,7 +4,7 @@ import Foundation
 ///
 /// The codebase logs diagnostics with plain `print(...)` (e.g. the `[CK]`,
 /// `[RevenueCat]`, `[Notifications]` traces). To make those visible inside the
-/// app — and exportable from the shake-to-debug screen — we redirect the
+/// app — and exportable from the diagnostics screen — we redirect the
 /// process's stdout/stderr through a pipe, tee a copy into a ring buffer, and
 /// forward the original bytes back to the real console so Xcode keeps showing
 /// logs as usual.

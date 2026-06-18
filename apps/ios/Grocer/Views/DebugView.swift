@@ -3,37 +3,6 @@ import RevenueCat
 import SwiftUI
 import UIKit
 
-// MARK: - Shake to present
-
-extension Notification.Name {
-    static let deviceDidShake = Notification.Name("org.narro.grocer.deviceDidShake")
-}
-
-extension UIWindow {
-    open override func motionEnded(_ motion: UIEvent.EventSubtype, with event: UIEvent?) {
-        if motion == .motionShake {
-            NotificationCenter.default.post(name: .deviceDidShake, object: nil)
-        }
-        super.motionEnded(motion, with: event)
-    }
-}
-
-private struct ShakeDetector: ViewModifier {
-    let action: () -> Void
-    func body(content: Content) -> some View {
-        content.onReceive(NotificationCenter.default.publisher(for: .deviceDidShake)) { _ in
-            action()
-        }
-    }
-}
-
-extension View {
-    /// Calls `action` when the device is physically shaken.
-    func onShake(perform action: @escaping () -> Void) -> some View {
-        modifier(ShakeDetector(action: action))
-    }
-}
-
 // MARK: - Report model
 
 private struct DebugRow: Identifiable {
@@ -51,9 +20,10 @@ private struct DebugSection: Identifiable {
 
 // MARK: - Debug screen
 
-/// Engineer-facing diagnostics, presented by shaking the device. Surfaces the
-/// live state of every subsystem (RevenueCat, iCloud/CloudKit sync, local data,
-/// settings, push) plus a captured log feed that can be exported/shared.
+/// Engineer-facing diagnostics, opened by long-pressing the version label in
+/// Settings. Surfaces the live state of every subsystem (RevenueCat,
+/// iCloud/CloudKit sync, local data, settings, push) plus a captured log feed
+/// that can be exported/shared.
 struct DebugView: View {
     @Environment(GroceryRepository.self) private var repo
     @Environment(SettingsStore.self) private var settings

@@ -122,11 +122,73 @@ describe("billing checkout", () => {
           payment_method_types: ["card"],
           metadata: {
             user_id: UID,
+            app_user_id: UID,
             package_id: canonicalPackageId,
           },
         }),
       );
     }
+  });
+
+  it("renders trial messaging and tags the SetupIntent when trial=1 on an eligible plan", async () => {
+    const stripe = setupStripe();
+    const response = await routeFor(stripe).request(
+      `/checkout?packageId=%24rc_annual&trial=1&uid=${UID}`,
+      {},
+      env,
+    );
+    const html = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(html).toContain("Free trial");
+    expect(html).toContain("3 days");
+    expect(html).toContain("Start free trial");
+    expect(html).toContain('"trialDays":3');
+    // Shows the renewal date rather than a generic "Then" label.
+    expect(html).toContain("Renews");
+    const expectedDate = new Intl.DateTimeFormat("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    }).format(new Date(Date.now() + 3 * 24 * 60 * 60 * 1000));
+    expect(html).toContain(expectedDate);
+    expect(stripe.setupIntents.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({ package_id: "$rc_annual", trial: "1" }),
+      }),
+    );
+  });
+
+  it("ignores trial=1 on a plan with no configured trial", async () => {
+    const stripe = setupStripe();
+    const response = await routeFor(stripe).request(
+      `/checkout?packageId=%24rc_monthly&trial=1&uid=${UID}`,
+      {},
+      env,
+    );
+    const html = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(html).toContain("Billed today");
+    expect(html).not.toContain("Start free trial");
+    const metadata = stripe.setupIntents.create.mock.calls[0][0].metadata;
+    expect(metadata).not.toHaveProperty("trial");
+  });
+
+  it("bills the eligible plan with no trial when the flag is absent", async () => {
+    const stripe = setupStripe();
+    const response = await routeFor(stripe).request(
+      `/checkout?packageId=%24rc_annual&uid=${UID}`,
+      {},
+      env,
+    );
+    const html = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(html).toContain("Billed today");
+    expect(html).not.toContain("Start free trial");
+    const metadata = stripe.setupIntents.create.mock.calls[0][0].metadata;
+    expect(metadata).not.toHaveProperty("trial");
   });
 
   it("returns 500 when the publishable key is missing", async () => {
@@ -173,6 +235,7 @@ describe("billing checkout", () => {
     expect(stripe.customers.create).toHaveBeenCalledWith({
       metadata: {
         user_id: UID,
+        app_user_id: UID,
       },
     });
   });
@@ -281,10 +344,68 @@ describe("billing success", () => {
         default_payment_method: "pm_card",
         metadata: {
           user_id: UID,
+          app_user_id: UID,
           package_id: "$rc_monthly",
         },
       }),
     );
+  });
+
+  it("applies the 3-day trial when the SetupIntent carries the trial flag", async () => {
+    const stripe = setupStripe({
+      setupIntents: {
+        create: vi.fn(),
+        retrieve: vi.fn(async () => ({
+          id: "seti_done",
+          status: "succeeded",
+          customer: "cus_new",
+          payment_method: "pm_card",
+          metadata: { user_id: UID, package_id: "$rc_annual", trial: "1" },
+        })),
+      },
+    });
+
+    const response = await routeFor(stripe).request(
+      "/checkout/success?setup_intent=seti_done&redirect_status=succeeded",
+      {},
+      env,
+    );
+
+    expect(response.status).toBe(200);
+    expect(stripe.subscriptions.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        customer: "cus_new",
+        items: [{ price: "price_annual" }],
+        default_payment_method: "pm_card",
+        trial_period_days: 3,
+        metadata: { user_id: UID, app_user_id: UID, package_id: "$rc_annual", trial: "1" },
+      }),
+    );
+  });
+
+  it("omits the trial for the eligible plan when the flag is absent", async () => {
+    const stripe = setupStripe({
+      setupIntents: {
+        create: vi.fn(),
+        retrieve: vi.fn(async () => ({
+          id: "seti_done",
+          status: "succeeded",
+          customer: "cus_new",
+          payment_method: "pm_card",
+          metadata: { user_id: UID, package_id: "$rc_annual" },
+        })),
+      },
+    });
+
+    await routeFor(stripe).request(
+      "/checkout/success?setup_intent=seti_done&redirect_status=succeeded",
+      {},
+      env,
+    );
+
+    const createArgs = stripe.subscriptions.create.mock.calls[0][0];
+    expect(createArgs).not.toHaveProperty("trial_period_days");
+    expect(createArgs.metadata).not.toHaveProperty("trial");
   });
 
   it("is idempotent when an active subscription already exists", async () => {
@@ -345,5 +466,14 @@ describe("planForPackageId", () => {
     expect(planForPackageId("$rc_annual")?.priceEnv).toBe("STRIPE_PRICE_ANNUAL");
     expect(planForPackageId("grocer_pro_subscription_quarterly_1")?.priceEnv).toBe("STRIPE_PRICE_QUARTERLY");
     expect(planForPackageId("missing")).toBeUndefined();
+  });
+
+  it("marks the annual plan eligible for a 3-day trial", () => {
+    expect(planForPackageId("$rc_annual")?.trialDays).toBe(3);
+  });
+
+  it("leaves monthly and quarterly plans trial-ineligible", () => {
+    expect(planForPackageId("$rc_monthly")?.trialDays).toBeUndefined();
+    expect(planForPackageId("$rc_three_month")?.trialDays).toBeUndefined();
   });
 });

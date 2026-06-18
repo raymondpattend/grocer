@@ -10,6 +10,8 @@ struct HomeView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @AppStorage("home.separateShared") private var separateShared = true
+    // Pinned group ids, newline-joined (ids are UUIDs, so never contain "\n").
+    @AppStorage("home.pinnedHouseholdIds") private var pinnedHouseholdIdsRaw = ""
 
     @State private var path: [String] = []
     @State private var showNewGroup = false
@@ -135,23 +137,63 @@ struct HomeView: View {
             } else {
                 skeleton
             }
-        } else if separateShared {
+        } else {
             VStack(alignment: .leading, spacing: 24) {
-                groupSection(households: ownedHouseholds, includesProUpsell: true)
-                if !sharedHouseholds.isEmpty {
-                    sharedBySharerSection
+                if !pinnedHouseholds.isEmpty {
+                    pinnedSection
                 }
+                unpinnedContent
+            }
+        }
+    }
+
+    /// Pinned groups float to the very top of the page, above every section,
+    /// in the order they appear in the list.
+    @ViewBuilder
+    private var pinnedSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            sectionHeader(String(localized: "Pinned"))
+            groupCollection(pinnedHouseholds)
+        }
+    }
+
+    /// Everything that isn't pinned, laid out in its usual sections.
+    @ViewBuilder
+    private var unpinnedContent: some View {
+        if separateShared {
+            ownedSection
+            if !unpinned(sharedHouseholds).isEmpty {
+                sharedBySharerSection
             }
         } else if isAtFreeOwnedGroupLimit {
             VStack(spacing: 14) {
-                groupCollection(ownedHouseholds)
+                let owned = unpinned(ownedHouseholds)
+                if !owned.isEmpty {
+                    groupCollection(owned)
+                }
                 proGroupUpsellCard
-                if !sharedHouseholds.isEmpty {
-                    groupCollection(sharedHouseholds)
+                let shared = unpinned(sharedHouseholds)
+                if !shared.isEmpty {
+                    groupCollection(shared)
                 }
             }
         } else {
-            groupCollection(repo.households)
+            groupCollection(unpinned(repo.households))
+        }
+    }
+
+    /// Owned lists under "Separate shared lists". Keeps the genuine "no owned
+    /// lists" hint, but stays quiet when the section is empty only because the
+    /// owned lists are all pinned up top.
+    @ViewBuilder
+    private var ownedSection: some View {
+        let owned = unpinned(ownedHouseholds)
+        if !owned.isEmpty {
+            groupSection(households: owned, includesProUpsell: true)
+        } else if ownedHouseholds.isEmpty {
+            groupSection(households: [], includesProUpsell: true)
+        } else if isAtFreeOwnedGroupLimit {
+            proGroupUpsellCard
         }
     }
 
@@ -201,7 +243,7 @@ struct HomeView: View {
     }
 
     private var sharedGroupsBySharer: [SharerGroup] {
-        let grouped = Dictionary(grouping: sharedHouseholds) { $0.recordOwnerName ?? "shared" }
+        let grouped = Dictionary(grouping: unpinned(sharedHouseholds)) { $0.recordOwnerName ?? "shared" }
         return grouped
             .map { key, houses in
                 let sorted = houses.sorted {
@@ -219,7 +261,7 @@ struct HomeView: View {
     private var sharedBySharerSection: some View {
         VStack(alignment: .leading, spacing: 20) {
             sectionHeader(String(localized: "Shared with Me"))
-            if sharedHouseholds.isEmpty {
+            if sharedGroupsBySharer.isEmpty {
                 emptySectionPlaceholder(String(localized: "Nothing shared with you yet."))
             } else {
                 ForEach(sharedGroupsBySharer) { sharer in
@@ -370,27 +412,40 @@ struct HomeView: View {
 
     private func gridCard(_ house: Household) -> some View {
         let count = pendingCount(for: house)
-        let isShared = repo.isSharedWithMe(house)
         let isActive = hasActiveSession(house)
+        let sharedLabel: String? = {
+            if repo.isSharedWithMe(house) { return String(localized: "Shared with you") }
+            if repo.isSharedWithOthers(house) { return String(localized: "Shared with others") }
+            return nil
+        }()
         let cardLabel = [
             house.name,
             count == 1 ? String(localized: "1 item") : String(localized: "\(count) items"),
             isActive ? String(localized: "Shopping in progress") : nil,
-            isShared ? String(localized: "Shared with you") : nil,
+            isPinned(house) ? String(localized: "Pinned") : nil,
+            sharedLabel,
         ].compactMap { $0 }.joined(separator: ", ")
 
         return Button {
             open(house)
         } label: {
             VStack(alignment: .leading, spacing: 10) {
-                itemPreview(house)
+                itemPreview(house, reserveBadgeSpace: showsSharedBadge(house))
 
                 // Label: group name + item count, anchored bottom-left.
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(house.name)
-                        .font(.title3.bold())
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
+                    HStack(spacing: 5) {
+                        Text(house.name)
+                            .font(.title3.bold())
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        if isPinned(house) {
+                            Image(systemName: "pin.fill")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                                .accessibilityHidden(true)
+                        }
+                    }
 
                     HStack(spacing: 4) {
                         Text("^[\(pendingCount(for: house)) item](inflect: true)")
@@ -424,7 +479,7 @@ struct HomeView: View {
     /// The first few pending items, as a mini read-only list that fades out at
     /// the bottom edge so the list reads as continuing past the card.
     @ViewBuilder
-    private func itemPreview(_ house: Household) -> some View {
+    private func itemPreview(_ house: Household, reserveBadgeSpace: Bool) -> some View {
         let items = previewItems(for: house)
         if items.isEmpty {
             Text("Nothing on the list")
@@ -434,14 +489,19 @@ struct HomeView: View {
                 .accessibilityHidden(true)
         } else {
             VStack(alignment: .leading, spacing: 8) {
-                ForEach(items) { item in
+                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                     HStack(spacing: 7) {
                         ProductImageView(itemName: item.name, size: 22)
                         Text(item.name)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
+                        Spacer(minLength: 0)
                     }
+                    // The shared badge sits in the top-right corner over the
+                    // first row only; inset that row so a long name ellipsizes
+                    // before it slides under the icon.
+                    .padding(.trailing, (reserveBadgeSpace && index == 0) ? 32 : 0)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -458,10 +518,16 @@ struct HomeView: View {
         }
     }
 
-    /// Top-right accessory for groups shared into your account.
+    /// True for groups shared into this account *and* owned groups shared out
+    /// to other people — both wear the two-person badge.
+    private func showsSharedBadge(_ house: Household) -> Bool {
+        repo.isSharedWithMe(house) || repo.isSharedWithOthers(house)
+    }
+
+    /// Top-right accessory for shared groups.
     @ViewBuilder
     private func sharedBadge(_ house: Household) -> some View {
-        if repo.isSharedWithMe(house) {
+        if showsSharedBadge(house) {
             Image(systemName: "person.2.fill")
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.secondary)
@@ -470,11 +536,24 @@ struct HomeView: View {
         }
     }
 
-    /// Press-and-hold actions for group cards.
+    /// Press-and-hold actions for group cards. Every group can be pinned;
+    /// owned groups can also be edited.
     @ViewBuilder
     private func contextActions(_ house: Household) -> some View {
+        pinButton(house)
         if !repo.isSharedWithMe(house) {
             editButton(house)
+        }
+    }
+
+    private func pinButton(_ house: Household) -> some View {
+        let pinned = isPinned(house)
+        return Button {
+            Haptics.selection()
+            withAnimation(reduceMotion ? nil : .snappy) { togglePin(house) }
+        } label: {
+            Label(pinned ? "Unpin" : "Pin to Top",
+                  systemImage: pinned ? "pin.slash" : "pin")
         }
     }
 
@@ -534,6 +613,35 @@ struct HomeView: View {
 
     private func hasActiveSession(_ house: Household) -> Bool {
         repo.activeSession(for: repo.list(for: house)?.id) != nil
+    }
+
+    // MARK: - Pinning
+
+    private var pinnedHouseholdIds: Set<String> {
+        Set(pinnedHouseholdIdsRaw.split(separator: "\n").map(String.init))
+    }
+
+    /// All pinned groups, in list order, for the page-top Pinned section.
+    private var pinnedHouseholds: [Household] {
+        repo.households.filter { isPinned($0) }
+    }
+
+    private func unpinned(_ households: [Household]) -> [Household] {
+        households.filter { !isPinned($0) }
+    }
+
+    private func isPinned(_ house: Household) -> Bool {
+        pinnedHouseholdIds.contains(house.id)
+    }
+
+    private func togglePin(_ house: Household) {
+        var ids = pinnedHouseholdIds
+        if ids.contains(house.id) {
+            ids.remove(house.id)
+        } else {
+            ids.insert(house.id)
+        }
+        pinnedHouseholdIdsRaw = ids.sorted().joined(separator: "\n")
     }
 
     // Number of preview rows to fake per skeleton card. Varied per card so the

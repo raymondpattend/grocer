@@ -22,6 +22,13 @@ type BillingPlan = {
   packageId: string;
   priceEnv: "STRIPE_PRICE_ANNUAL" | "STRIPE_PRICE_QUARTERLY" | "STRIPE_PRICE_MONTHLY";
   aliases: string[];
+  /**
+   * Length of an introductory free trial, in days, applied at subscription
+   * creation *only when the client requests the trial variant* (`trial=1`).
+   * Set on plans eligible for an A/B-test trial; the same plan bills with no
+   * trial when the flag is absent. Omit for plans that never offer a trial.
+   */
+  trialDays?: number;
 };
 
 type PriceSummary = {
@@ -40,6 +47,12 @@ const PLANS: BillingPlan[] = [
     title: "Annual",
     packageId: "$rc_annual",
     priceEnv: "STRIPE_PRICE_ANNUAL",
+    // Trial length applied only when the client signals the trial variant
+    // (`trial=1`), e.g. the `trial_3day_annual_only` RevenueCat A/B-test
+    // offering. The control annual offering omits the flag and bills with no
+    // trial. The trial is applied at subscription creation, not baked into the
+    // Stripe price, so both variants share STRIPE_PRICE_ANNUAL.
+    trialDays: 3,
     aliases: [
       "$rc_annual",
       "annual",
@@ -95,6 +108,11 @@ export function createBillingRoute(overrides: Partial<BillingDeps> = {}) {
       return c.html(errorPage("Plan unavailable", "This plan is not available for web checkout."), 400);
     }
 
+    // The trial variant only earns a trial if the resolved plan is eligible
+    // (has a configured trialDays), so an unexpected `trial=1` can't conjure a
+    // trial on a plan that should never have one.
+    const wantsTrial = c.req.query("trial") === "1" && plan.trialDays != null;
+
     const priceId = c.env[plan.priceEnv]?.trim();
     if (!priceId) {
       return c.html(errorPage("Checkout unavailable", "This plan is not configured yet."), 500);
@@ -125,7 +143,7 @@ export function createBillingRoute(overrides: Partial<BillingDeps> = {}) {
       customer: customer.id,
       usage: "off_session",
       payment_method_types: ["card"],
-      metadata: checkoutMetadata(input.uid, plan),
+      metadata: checkoutMetadata(input.uid, plan, wantsTrial),
     });
 
     if (!setupIntent.client_secret) {
@@ -140,6 +158,7 @@ export function createBillingRoute(overrides: Partial<BillingDeps> = {}) {
         price: priceSummary(price),
         uid: input.uid,
         origin: url.origin,
+        trialDays: wantsTrial ? plan.trialDays ?? 0 : 0,
       }),
     );
   });
@@ -271,10 +290,17 @@ function revenueCatIdentityMetadata(appUserId: string): Record<string, string> {
   };
 }
 
-function checkoutMetadata(appUserId: string, plan: BillingPlan): Record<string, string> {
+function checkoutMetadata(
+  appUserId: string,
+  plan: BillingPlan,
+  wantsTrial = false,
+): Record<string, string> {
   return {
     ...revenueCatIdentityMetadata(appUserId),
     package_id: plan.packageId,
+    // Round-trips the trial variant through the SetupIntent so the subscription,
+    // created later on the success page, applies the matching trial.
+    ...(wantsTrial ? { trial: "1" } : {}),
   };
 }
 
@@ -315,6 +341,8 @@ async function createSubscriptionFromSetupIntent(
     return { ok: false, error: "Stripe returned incomplete purchase data." };
   }
 
+  const wantsTrial = setupIntent.metadata?.trial === "1" && plan.trialDays != null;
+
   const existing = await findActiveSubscription(stripe, customerId);
   if (existing) return { ok: true };
 
@@ -322,7 +350,8 @@ async function createSubscriptionFromSetupIntent(
     customer: customerId,
     items: [{ price: priceId }],
     default_payment_method: paymentMethodId,
-    metadata: checkoutMetadata(appUserId, plan),
+    ...(wantsTrial ? { trial_period_days: plan.trialDays } : {}),
+    metadata: checkoutMetadata(appUserId, plan, wantsTrial),
   });
 
   return { ok: true };
@@ -378,10 +407,20 @@ type CheckoutPageInput = {
   price: PriceSummary;
   uid: string;
   origin: string;
+  /** Resolved trial length to display (0 unless the trial variant was requested). */
+  trialDays: number;
 };
 
 function checkoutPage(input: CheckoutPageInput): string {
   const { price } = input;
+  const trialDays = input.trialDays;
+  // The trial converts to a paid renewal trialDays after the subscription is
+  // created (which happens right after card confirmation), so today + trialDays
+  // is the date the customer is first charged the normal price.
+  const renewsOn = trialDays > 0
+    ? new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" })
+        .format(new Date(Date.now() + trialDays * 24 * 60 * 60 * 1000))
+    : "";
   const config = {
     publishableKey: input.publishableKey,
     clientSecret: input.clientSecret,
@@ -392,6 +431,7 @@ function checkoutPage(input: CheckoutPageInput): string {
     interval: price.interval,
     intervalCount: price.intervalCount,
     intervalLabel: price.intervalLabel,
+    trialDays,
   };
 
   const body = `
@@ -404,10 +444,23 @@ function checkoutPage(input: CheckoutPageInput): string {
       <h1 class="title">Subscribe to Pro</h1>
 
       <section class="summary">
+        ${trialDays > 0
+          ? `<div class="summary-row">
+          <span class="summary-label">Free trial</span>
+          <span class="summary-price">${trialDays} days</span>
+        </div>
         <div class="summary-row">
+          <span class="summary-label">Due today</span>
+          <span class="summary-price">${escapeHTML(formatMoney(0, price.currency))}</span>
+        </div>
+        <div class="summary-row">
+          <span class="summary-label">Renews ${escapeHTML(renewsOn)}</span>
+          <span class="summary-price">${escapeHTML(price.formatted)}<span class="cadence">/${escapeHTML(price.cadence)}</span></span>
+        </div>`
+          : `<div class="summary-row">
           <span class="summary-label">Billed today</span>
           <span class="summary-price">${escapeHTML(price.formatted)}<span class="cadence">/${escapeHTML(price.cadence)}</span></span>
-        </div>
+        </div>`}
       </section>
 
       <div id="express-wrap" class="express">
@@ -422,16 +475,16 @@ function checkoutPage(input: CheckoutPageInput): string {
           <div id="payment-element"></div>
           <p id="error-message" class="error" role="alert"></p>
           <button id="submit" type="submit" class="pay">
-            <span id="button-text">Subscribe</span>
+            <span id="button-text">${trialDays > 0 ? "Start free trial" : "Subscribe"}</span>
             <span id="spinner" class="spinner hidden"></span>
           </button>
         </form>
       </div>
 
       <p class="fineprint">
-        You'll be charged ${escapeHTML(price.formatted)} plus applicable taxes. Your subscription
-        renews every ${escapeHTML(price.cadence)} unless you turn off auto-renewal in your Grocer
-        settings before the renewal date.
+        ${trialDays > 0
+          ? `Your free trial lasts ${trialDays} days. After it ends you'll be charged ${escapeHTML(price.formatted)} plus applicable taxes, and your subscription renews every ${escapeHTML(price.cadence)} unless you turn off auto-renewal in your Grocer settings before the renewal date.`
+          : `You'll be charged ${escapeHTML(price.formatted)} plus applicable taxes. Your subscription renews every ${escapeHTML(price.cadence)} unless you turn off auto-renewal in your Grocer settings before the renewal date.`}
       </p>
 
       <footer class="footer">© ${new Date().getFullYear()} Narro. All rights reserved.</footer>
@@ -568,6 +621,14 @@ function checkoutPage(input: CheckoutPageInput): string {
                 recurringPaymentIntervalUnit: config.interval,
                 recurringPaymentIntervalCount: config.intervalCount,
               },
+              trialBilling: config.trialDays > 0
+                ? {
+                    amount: 0,
+                    label: config.trialDays + "-day free trial",
+                    recurringPaymentIntervalUnit: "day",
+                    recurringPaymentIntervalCount: config.trialDays,
+                  }
+                : undefined,
             },
           },
         });

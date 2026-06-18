@@ -12,9 +12,9 @@ private enum GeofenceSize: String, CaseIterable, Identifiable {
 
     var meters: Double {
         switch self {
-        case .small: return 128
-        case .medium: return 255
-        case .large: return 425
+        case .small: return 64
+        case .medium: return 128
+        case .large: return 255
         }
     }
 
@@ -53,7 +53,6 @@ struct StoreLinkSheet: View {
     }
 
     @State private var visibleRegion: MKCoordinateRegion?
-    @State private var lastSearchCenter: CLLocationCoordinate2D?
     @State private var nearby: [StoreCandidate] = []
     @State private var selected: StoreCandidate?
     @State private var size: GeofenceSize = .medium
@@ -211,7 +210,7 @@ struct StoreLinkSheet: View {
             // Island while the map stays full-bleed behind it.
             VStack(spacing: 10) {
                 pickerHeader
-                searchHereButton
+                searchingIndicator
                 Spacer(minLength: 0)
             }
         }
@@ -225,7 +224,7 @@ struct StoreLinkSheet: View {
             radius: size.meters,
             visibleRegion: $visibleRegion
         ) {
-            if nearby.isEmpty { performSearch() }
+            performSearch()
         }
     }
 
@@ -270,29 +269,20 @@ struct StoreLinkSheet: View {
         .padding(.top, 20)
     }
 
-    /// Apple Maps–style "search this area" pill, shown after the map is panned
-    /// away from the last results.
+    /// Transient pill confirming the store query is re-running as the member
+    /// pans or zooms the map (the query now follows the visible region instead
+    /// of an explicit "search this area" tap).
     @ViewBuilder
-    private var searchHereButton: some View {
-        if showSearchHere {
-            Button {
-                Haptics.tap()
-                performSearch()
-            } label: {
-                HStack(spacing: 6) {
-                    if isSearching {
-                        ProgressView().controlSize(.mini)
-                            .tint(.white)
-                    } else {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                    Text("Search This Area").fontWeight(.semibold)
-                }
-                .font(.subheadline)
-                .foregroundStyle(.white)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 9)
+    private var searchingIndicator: some View {
+        if isSearching {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.mini).tint(.white)
+                Text("Finding stores…").fontWeight(.semibold)
             }
+            .font(.subheadline)
+            .foregroundStyle(.white)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 9)
             .modifier(GlassCapsule())
             .shadow(color: .black.opacity(0.12), radius: 5, y: 2)
             .transition(.move(edge: .top).combined(with: .opacity))
@@ -327,13 +317,6 @@ struct StoreLinkSheet: View {
         .accessibilityLabel("Reminder radius size")
     }
 
-    private var showSearchHere: Bool {
-        guard let visibleRegion, let lastSearchCenter else { return false }
-        let moved = CLLocation(latitude: visibleRegion.center.latitude, longitude: visibleRegion.center.longitude)
-            .distance(from: CLLocation(latitude: lastSearchCenter.latitude, longitude: lastSearchCenter.longitude))
-        return moved > 600
-    }
-
     // MARK: - Actions
 
     private var tint: Color { repo.currentHousehold?.tint ?? .accentColor }
@@ -343,7 +326,6 @@ struct StoreLinkSheet: View {
         request.naturalLanguageQuery = String(localized: "grocery store")
         if let visibleRegion { request.region = visibleRegion }
         request.resultTypes = .pointOfInterest
-        lastSearchCenter = visibleRegion?.center
 
         isSearching = true
         Task {
@@ -421,7 +403,9 @@ private struct StorePickerMapView: UIViewRepresentable {
     @Binding var selected: StoreCandidate?
     let radius: CLLocationDistance
     @Binding var visibleRegion: MKCoordinateRegion?
-    let onRegionReady: () -> Void
+    /// Invoked (debounced) whenever the visible region settles after a pan or
+    /// zoom, so the store query tracks whatever the member is looking at.
+    let onSearch: () -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -449,6 +433,15 @@ private struct StorePickerMapView: UIViewRepresentable {
         var parent: StorePickerMapView
         private var isSyncingSelection = false
         private var radiusOverlay: MKCircle?
+        /// Pending debounced search, replaced on every region change so we only
+        /// query once the map has settled.
+        private var searchDebounce: Task<Void, Never>?
+        /// Set while we drive the camera ourselves (zoom-to-fit) so the
+        /// resulting region change doesn't kick off another search.
+        private var isProgrammaticRegionChange = false
+        /// Guards the one-time "zoom out to reveal the nearest stores" pass so
+        /// later searches don't fight the member's own panning.
+        private var hasFitResults = false
 
         init(_ parent: StorePickerMapView) {
             self.parent = parent
@@ -456,12 +449,65 @@ private struct StorePickerMapView: UIViewRepresentable {
 
         func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
             let region = mapView.region
-            DispatchQueue.main.async {
-                self.parent.visibleRegion = region
-                if self.parent.candidates.isEmpty {
-                    self.parent.onRegionReady()
-                }
+            DispatchQueue.main.async { self.parent.visibleRegion = region }
+
+            if isProgrammaticRegionChange {
+                isProgrammaticRegionChange = false
+                return
             }
+            scheduleSearch()
+        }
+
+        /// Coalesces rapid region changes (pinch / drag momentum) into a single
+        /// query fired shortly after the map stops moving.
+        private func scheduleSearch() {
+            searchDebounce?.cancel()
+            searchDebounce = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(450))
+                guard let self, !Task.isCancelled else { return }
+                self.parent.onSearch()
+            }
+        }
+
+        /// Zooms the camera out so every result sits comfortably in view. Runs
+        /// once, the first time results arrive.
+        private func fitResultsIfNeeded(on mapView: MKMapView) {
+            guard !hasFitResults, !parent.candidates.isEmpty else { return }
+            let annotations = mapView.annotations.filter { $0 is StoreCandidateAnnotation }
+            guard !annotations.isEmpty else { return }
+            hasFitResults = true
+            // Stop following the user so the fitted region sticks.
+            mapView.userTrackingMode = .none
+            isProgrammaticRegionChange = true
+            // Generous insets clear the header pill at the top and the size bar
+            // at the bottom so no marker hides behind the chrome.
+            let padding = UIEdgeInsets(top: 140, left: 48, bottom: 120, right: 48)
+            mapView.setVisibleMapRect(
+                mapView.mapRectThatFits(boundingMapRect(for: annotations), edgePadding: padding),
+                animated: true
+            )
+        }
+
+        private func boundingMapRect(for annotations: [MKAnnotation]) -> MKMapRect {
+            let rect = annotations.reduce(MKMapRect.null) { rect, annotation in
+                let point = MKMapPoint(annotation.coordinate)
+                return rect.union(MKMapRect(x: point.x, y: point.y, width: 0, height: 0))
+            }
+            guard !rect.isNull else { return rect }
+            // Floor the span so a lone result (or a tight cluster) doesn't slam
+            // the camera to maximum zoom. ~800m at the rect's centre.
+            let metersPerPoint = MKMetersPerMapPointAtLatitude(rect.origin.coordinate.latitude)
+            let minSide = (metersPerPoint > 0 ? 800 / metersPerPoint : rect.size.width)
+            let width = max(rect.size.width, minSide)
+            let height = max(rect.size.height, minSide)
+            let centerX = rect.midX
+            let centerY = rect.midY
+            return MKMapRect(
+                x: centerX - width / 2,
+                y: centerY - height / 2,
+                width: width,
+                height: height
+            )
         }
 
         func mapView(_ mapView: MKMapView, didSelect annotation: MKAnnotation) {
@@ -528,6 +574,7 @@ private struct StorePickerMapView: UIViewRepresentable {
                 mapView.addAnnotations(additions)
             }
 
+            fitResultsIfNeeded(on: mapView)
             syncSelection(on: mapView)
             refreshVisibleMarkers(on: mapView)
             syncRadiusOverlay(on: mapView)
@@ -575,7 +622,7 @@ private struct StorePickerMapView: UIViewRepresentable {
 
         private func style(_ view: MKMarkerAnnotationView, selected: Bool) {
             view.markerTintColor = selected ? .systemRed : .systemBlue
-            view.glyphImage = UIImage(systemName: selected ? "cart.fill" : "mappin")
+            view.glyphImage = UIImage(systemName: selected ? "cart.fill" : "storefront.fill")
         }
     }
 }

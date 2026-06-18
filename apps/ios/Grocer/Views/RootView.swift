@@ -10,11 +10,10 @@ struct RootView: View {
     static var forceShowOnboardingForDebug = false
 
     @Environment(GroceryRepository.self) private var repo
+    @Environment(SubscriptionStore.self) private var subscriptions
     @Environment(AppUpdateGate.self) private var appUpdateGate
     @Environment(\.openURL) private var openURL
     @Environment(\.scenePhase) private var scenePhase
-
-    @State private var showDebug = false
 
     var body: some View {
         Group {
@@ -34,10 +33,6 @@ struct RootView: View {
                 CloudIssueChip(issue: repo.cloudIssue)
             }
         }
-        .onShake { showDebug = true }
-        .sheet(isPresented: $showDebug) {
-            DebugView()
-        }
         .onAppear {
             repo.startForegroundRefreshLoop()
         }
@@ -48,8 +43,13 @@ struct RootView: View {
             repo.stopForegroundRefreshLoop()
         }
         .onOpenURL { url in
-            guard let householdId = GroupDeepLink.householdId(from: url) else { return }
-            GroupNavigationCoordinator.shared.openGroup(householdId: householdId)
+            if let householdId = GroupDeepLink.householdId(from: url) {
+                GroupNavigationCoordinator.shared.openGroup(householdId: householdId)
+            } else if url.scheme == "grocer", url.host == "invite",
+                      let token = url.pathComponents.dropFirst().first,
+                      let shareURL = ShareInviteLink.decode(token) {
+                Task { await ShareCoordinator.shared.acceptShareURL(shareURL) }
+            }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
@@ -81,6 +81,17 @@ struct RootView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: repo.isAcceptingInvite)
+        .overlay {
+            // Brief celebratory confirmation after a checkout grants Pro. A
+            // richer onboarding sheet for new Pro users will replace this later.
+            if subscriptions.didJustUpgradeToPro {
+                UpgradedToProOverlay {
+                    subscriptions.clearJustUpgradedToPro()
+                }
+                .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: subscriptions.didJustUpgradeToPro)
         .fullScreenCover(item: Binding(
             get: { appUpdateGate.requiredUpdate },
             set: { _ in }
@@ -197,6 +208,44 @@ private struct AcceptingInviteOverlay: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(Text("Joining list"))
+    }
+}
+
+// MARK: - Upgraded To Pro Overlay
+
+/// Brief confirmation shown after a checkout grants Grocer Pro. Mirrors the
+/// joining-list overlay's look, then auto-dismisses after a couple of seconds.
+private struct UpgradedToProOverlay: View {
+    let onFinished: () -> Void
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.25)
+                .ignoresSafeArea()
+
+            VStack(spacing: 16) {
+                Image(systemName: "checkmark.seal.fill")
+                    .font(.system(size: 44, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .symbolRenderingMode(.hierarchical)
+
+                Text("You\u{2019}ve upgraded to Pro!")
+                    .font(.headline)
+                    .foregroundStyle(.white)
+            }
+            .padding(28)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .environment(\.colorScheme, .dark)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(Text("You\u{2019}ve upgraded to Pro!"))
+        .onAppear {
+            Haptics.success()
+            Task {
+                try? await Task.sleep(nanoseconds: 2_200_000_000)
+                onFinished()
+            }
+        }
     }
 }
 

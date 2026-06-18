@@ -37,7 +37,7 @@ enum PostHogConfiguration {
 struct GrocerApp: App {
     init() {
         // Capture stdout/stderr first so the [CK]/[RevenueCat]/etc. launch
-        // traces are available in the shake-to-debug screen.
+        // traces are available in the diagnostics screen.
         LogStore.shared.startCapturing()
 
         PostHogConfiguration.configureIfAvailable()

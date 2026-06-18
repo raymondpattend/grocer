@@ -77,14 +77,16 @@ struct WebCheckoutView: View {
         .accessibilityLabel("Close")
     }
 
+    /// Checkout succeeded: skip the web success page entirely and dismiss the
+    /// sheet right away. The hosting paywall refreshes the entitlement (and
+    /// shows the "You've upgraded to Pro!" confirmation) on dismissal.
     private func checkoutDidComplete() {
-        guard !didCompleteCheckout else { return }
+        guard !didCompleteCheckout, !didCloseCheckout else { return }
         didCompleteCheckout = true
-        Task {
-            await subscriptions.refresh()
-            try? await Task.sleep(nanoseconds: 5_000_000_000)
-            await subscriptions.refresh()
-        }
+        didCloseCheckout = true
+        Haptics.selection()
+        onClose(true)
+        dismiss()
     }
 
     private func close() {
@@ -92,7 +94,10 @@ struct WebCheckoutView: View {
         didCloseCheckout = true
         Haptics.selection()
         Task {
-            await subscriptions.refresh()
+            // Force a cache-bypassing fetch in case checkout completed (e.g. the
+            // user dismissed the success page manually) — the Stripe webhook
+            // grants the entitlement server-side, so the cached snapshot is stale.
+            await subscriptions.refresh(force: didCompleteCheckout)
             onClose(didCompleteCheckout)
             dismiss()
         }
@@ -164,7 +169,11 @@ private struct WebView: UIViewRepresentable {
             }
 
             if Self.isCheckoutSuccess(url) {
+                // Cancel the load so the web success page never paints — the
+                // host closes the sheet and shows a native confirmation instead.
                 onCheckoutSuccess()
+                decisionHandler(.cancel)
+                return
             }
             decisionHandler(.allow)
         }

@@ -6,6 +6,13 @@ import SwiftUI
 /// the reference design — rather than separate gray section headers.
 struct PreferencesView: View {
     @Environment(SettingsStore.self) private var settings
+    @Environment(SubscriptionStore.self) private var subscriptions
+
+    /// Live home-screen icon selection. Source of truth is
+    /// `UIApplication.alternateIconName`; mirrored here so tiles update at once.
+    @State private var selectedIcon: AppIcon = .default
+    /// Presented when a non-Pro user taps a Pro-only icon.
+    @State private var showProPaywall = false
 
     /// Prominent in-card title. Uses the standard system font (bold).
     private let titleFont = Font.system(.title2, design: .default, weight: .bold)
@@ -29,6 +36,10 @@ struct PreferencesView: View {
         .toolbar {
             ToolbarItem(placement: .topBarLeading) { HapticBackButton() }
         }
+        .onAppear { selectedIcon = AppIconManager.current }
+        .fullScreenCover(isPresented: $showProPaywall) {
+            GrocerProPaywallView()
+        }
     }
 
     // MARK: - Cards
@@ -47,11 +58,16 @@ struct PreferencesView: View {
     }
 
     private var notificationsCard: some View {
-        toggleCard(
-            String(localized: "Shopping notifications"),
-            subtitle: String(localized: "Get a heads-up when someone starts a trip or changes the shared list."),
-            isOn: notificationsBinding
-        )
+        featureCard {
+            VStack(alignment: .leading, spacing: 18) {
+                notificationPreview
+                toggleHeader(
+                    String(localized: "Shopping notifications"),
+                    subtitle: String(localized: "Get a heads-up when someone starts a trip or changes the shared list."),
+                    isOn: notificationsBinding
+                )
+            }
+        }
     }
 
     private var appearanceCard: some View {
@@ -73,19 +89,62 @@ struct PreferencesView: View {
             VStack(alignment: .leading, spacing: 18) {
                 Text("App Icon")
                     .font(titleFont)
-                HStack(spacing: 14) {
-                    appIconPreview
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Default")
-                            .font(.body.weight(.semibold))
-                        Text("More icons coming soon.")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                HStack(spacing: 12) {
+                    ForEach(AppIcon.allCases) { option in
+                        appIconTile(option)
                     }
                     Spacer(minLength: 0)
                 }
             }
         }
+    }
+
+    private func appIconTile(_ option: AppIcon) -> some View {
+        let isSelected = selectedIcon == option
+        let isLocked = option.requiresPro && !subscriptions.hasGrocerPro
+        return Button {
+            Haptics.selection()
+            if isLocked {
+                showProPaywall = true
+            } else {
+                selectedIcon = option
+                Task { await AppIconManager.set(option) }
+            }
+        } label: {
+            VStack(spacing: 10) {
+                Image(option.previewImageName)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 64, height: 64)
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .saturation(isLocked ? 0 : 1)
+                    .opacity(isLocked ? 0.55 : 1)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .strokeBorder(isSelected ? Color.accentColor : Color(.separator).opacity(0.4),
+                                          lineWidth: isSelected ? 2.5 : 1)
+                    }
+                    .overlay(alignment: .bottomTrailing) {
+                        if isLocked {
+                            Image(systemName: "lock.fill")
+                                .font(.caption2.weight(.bold))
+                                .foregroundStyle(.white)
+                                .padding(5)
+                                .background(Color.accentColor, in: Circle())
+                                .padding(4)
+                        }
+                    }
+                    .accessibilityHidden(true)
+                Text(option.localizedName)
+                    .font(.subheadline.weight(isSelected ? .semibold : .regular))
+                    .foregroundStyle(isSelected ? .primary : .secondary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(option.localizedName)
+        .accessibilityValue(isLocked ? Text("Grocer Pro required") : Text(""))
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     // MARK: - Appearance picker
@@ -102,17 +161,16 @@ struct PreferencesView: View {
             .accessibilityHidden(true)
     }
 
-    private var appIconPreview: some View {
-        Image("PreferencesAppIcon")
+    private var notificationPreview: some View {
+        Image("NotificationPreview")
             .resizable()
-            .scaledToFill()
-        .frame(width: 64, height: 64)
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(Color(.separator).opacity(0.35), lineWidth: 1)
-        }
-        .accessibilityHidden(true)
+            .scaledToFit()
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .strokeBorder(Color(.separator).opacity(0.35), lineWidth: 1)
+            }
+            .accessibilityHidden(true)
     }
 
     private func appearanceTile(_ option: AppAppearance) -> some View {

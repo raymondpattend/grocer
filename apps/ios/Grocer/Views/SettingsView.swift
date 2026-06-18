@@ -10,6 +10,12 @@ enum StoreLinkMode: Identifiable {
     var id: Self { self }
 }
 
+/// Wraps the Stripe billing-portal URL so it can drive an `item:`-based sheet.
+struct BillingPortalPresentation: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
 struct SettingsView: View {
     @Environment(GroceryRepository.self) private var repo
     @Environment(SettingsStore.self) private var settings
@@ -22,12 +28,12 @@ struct SettingsView: View {
     @State private var groupName = ""
     @State private var committedGroupName = ""
     @State private var confirmLeave = false
-    @State private var confirmPurge = false
-    @State private var purging = false
     @State private var selectedProfilePhoto: PhotosPickerItem?
     @State private var showInviteIntro = false
+    @State private var showDebug = false
     @State private var openMemberRowId: String?
     @State private var storeLinkMode: StoreLinkMode?
+    @State private var billingPortal: BillingPortalPresentation?
 
     private static let proAccent = Color(red: 0.06, green: 0.72, blue: 0.51)
 
@@ -40,6 +46,7 @@ struct SettingsView: View {
                 membersSection
                 storeReminderSection
                 moreSection
+                versionFooter
             }
             .padding(.horizontal, 16)
             .padding(.top, 8)
@@ -68,38 +75,17 @@ struct SettingsView: View {
         .onDisappear {
             commitPendingChanges()
         }
-        .confirmationDialog(
-            repo.isOwnerOfCurrentGroup
-                ? String(localized: "Delete this list?")
-                : String(localized: "Leave this list?"),
-            isPresented: $confirmLeave,
-            titleVisibility: .visible
-        ) {
-            Button(repo.isOwnerOfCurrentGroup ? String(localized: "Delete List") : String(localized: "Leave List"),
-                   role: .destructive) {
-                Haptics.warning()
-                repo.leaveCurrentGroup()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text(repo.isOwnerOfCurrentGroup
-                 ? String(localized: "As the owner, this deletes the list for everyone.")
-                 : String(localized: "You’ll stop seeing this list on this device."))
-        }
-        .confirmationDialog("Delete all data?", isPresented: $confirmPurge, titleVisibility: .visible) {
-            Button("Delete Everything", role: .destructive) {
-                Haptics.warning()
-                purgeAllData()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This permanently deletes all lists and items from iCloud. You can create or join a list again afterward.")
-        }
         .sheet(isPresented: $showInviteIntro) {
             InviteToGroupSheet()
         }
+        .sheet(isPresented: $showDebug) {
+            DebugView()
+        }
         .sheet(item: $storeLinkMode) { mode in
             StoreLinkSheet(startAtPicker: mode == .change)
+        }
+        .sheet(item: $billingPortal) { portal in
+            WebCheckoutView(url: portal.url)
         }
         .fullScreenCover(isPresented: $showProPaywall) {
             GrocerProPaywallView()
@@ -305,7 +291,14 @@ struct SettingsView: View {
             subscriptions.recordErrorMessage(String(localized: "Subscription management is not available yet."))
             return
         }
-        openURL(url)
+        // Stripe (web) subscriptions are managed through our own billing portal,
+        // so keep the user in-app with a sheet. App Store subscriptions can only
+        // be managed by Apple, so hand those off to the system subscription UI.
+        if subscriptions.isWebSubscription {
+            billingPortal = BillingPortalPresentation(url: url)
+        } else {
+            openURL(url)
+        }
     }
 
     // MARK: - General
@@ -412,14 +405,13 @@ struct SettingsView: View {
                     Haptics.selection()
                     showInviteIntro = true
                 } label: {
-                    rowLabel(String(localized: "Invite to List"), systemImage: "person.crop.circle.badge.plus",
-                             enabled: canInvite)
+                    inviteRow(enabled: canInvite)
                 }
                 .buttonStyle(.plain)
                 .disabled(!canInvite)
 
                 ForEach(repo.currentMembers) { member in
-                    rowDivider
+                    Divider().padding(.leading, member.role == .owner ? 52 : 68)
                     memberRow(member)
                 }
             }
@@ -428,12 +420,34 @@ struct SettingsView: View {
         }
     }
 
+    /// "Invite to List" row. Sized to match the General section's nav tiles —
+    /// `.title2` icon and a semibold body title — so it reads as a primary action.
+    private func inviteRow(enabled: Bool) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "person.crop.circle.fill.badge.plus")
+                .font(.title2)
+                .foregroundStyle(enabled ? Color.accentColor : .secondary)
+                .frame(width: 30)
+            Text("Invite to List")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(enabled ? .primary : .secondary)
+            Spacer(minLength: 8)
+            Image(systemName: "chevron.right")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .contentShape(Rectangle())
+    }
+
     private var membersFooter: String? {
         if !repo.isOwnerOfCurrentGroup {
             return String(localized: "Only the list owner can invite people.")
         } else if let reason = repo.sharingUnavailableReason {
             return reason
-        } else if repo.isOwnerOfCurrentGroup {
+        } else if repo.currentMembers.contains(where: { $0.role != .owner }) {
+            // Only relevant once there's someone other than the owner to remove.
             return String(localized: "Swipe left on a member to remove them from this list.")
         }
         return nil
@@ -441,35 +455,57 @@ struct SettingsView: View {
 
     // MARK: - More / actions
 
+    @ViewBuilder
     private var moreSection: some View {
-        settingsSection(String(localized: "More")) {
+        if repo.households.count > 1 || !repo.isOwnerOfCurrentGroup {
             card {
-                if repo.households.count > 1 || !repo.isOwnerOfCurrentGroup {
-                    Button(role: .destructive) {
-                        Haptics.selection()
-                        confirmLeave = true
-                    } label: {
-                        rowLabel(repo.isOwnerOfCurrentGroup ? String(localized: "Delete List") : String(localized: "Leave List"),
-                                 systemImage: repo.isOwnerOfCurrentGroup ? "trash" : "rectangle.portrait.and.arrow.right",
-                                 destructive: true)
-                    }
-                    .buttonStyle(.plain)
-                    rowDivider
-                }
-
                 Button(role: .destructive) {
                     Haptics.selection()
-                    confirmPurge = true
+                    confirmLeave = true
                 } label: {
-                    HStack(spacing: 0) {
-                        rowLabel(String(localized: "Reset All Data"), systemImage: "trash", destructive: true)
-                        if purging { ProgressView().padding(.trailing, 16) }
-                    }
+                    rowLabel(repo.isOwnerOfCurrentGroup ? String(localized: "Delete List") : String(localized: "Leave List"),
+                             systemImage: repo.isOwnerOfCurrentGroup ? "trash" : "rectangle.portrait.and.arrow.right",
+                             destructive: true)
                 }
                 .buttonStyle(.plain)
-                .disabled(purging)
+                // Anchor the confirmation popover (iPad/Mac) to the button itself.
+                .confirmationDialog(
+                    repo.isOwnerOfCurrentGroup
+                        ? String(localized: "Delete this list?")
+                        : String(localized: "Leave this list?"),
+                    isPresented: $confirmLeave,
+                    titleVisibility: .visible
+                ) {
+                    Button(repo.isOwnerOfCurrentGroup ? String(localized: "Delete List") : String(localized: "Leave List"),
+                           role: .destructive) {
+                        Haptics.warning()
+                        repo.leaveCurrentGroup()
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text(repo.isOwnerOfCurrentGroup
+                         ? String(localized: "As the owner, this deletes the list for everyone.")
+                         : String(localized: "You\u{2019}ll stop seeing this list on this device."))
+                }
             }
         }
+    }
+
+    /// App version pinned at the bottom. Long-pressing it opens the engineer
+    /// diagnostics screen (replaces the old shake gesture).
+    private var versionFooter: some View {
+        Text(verbatim: "Grocer \(settings.appVersion)")
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity)
+            .padding(.top, 8)
+            .contentShape(Rectangle())
+            .onLongPressGesture(minimumDuration: 0.8) {
+                Haptics.success()
+                showDebug = true
+            }
+            .accessibilityLabel(Text("Version \(settings.appVersion)"))
+            .accessibilityHint(Text("Opens diagnostics"))
     }
 
     // MARK: - Store reminders
@@ -528,18 +564,24 @@ struct SettingsView: View {
 
     @ViewBuilder
     private func memberRow(_ member: HouseholdMember) -> some View {
+        let isOwner = member.role == .owner
         let content = HStack(spacing: 12) {
             ProfilePicture(
                 imageData: repo.isCurrentUser(member) ? repo.profileImageData : member.profileImageData,
                 size: 30
             )
             Text(member.displayName)
-            Spacer()
-            Text(member.role.localizedName)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            Spacer(minLength: 8)
+            if isOwner {
+                Image(systemName: "crown.fill")
+                    .font(.footnote)
+                    .foregroundStyle(.yellow)
+                    .accessibilityLabel(Text(member.role.localizedName))
+            }
         }
-        .padding(.horizontal, 16)
+        // Nest non-owner members slightly beneath the owner to show hierarchy.
+        .padding(.leading, isOwner ? 16 : 32)
+        .padding(.trailing, 16)
         .padding(.vertical, 11)
 
         if canRemove(member) {
@@ -625,20 +667,6 @@ struct SettingsView: View {
         }
     }
 
-    private func purgeAllData() {
-        purging = true
-        Task {
-            do {
-                try await repo.purgeAndRebootstrap()
-                groupName = repo.currentHousehold?.name ?? ""
-                Haptics.success()
-            } catch {
-                Haptics.error()
-                print("[Settings] purge failed: \(error)")
-            }
-            purging = false
-        }
-    }
 }
 
 private struct ProfilePicture: View {
@@ -730,7 +758,7 @@ struct InviteToGroupSheet: View {
             .padding(.horizontal, 20)
             .padding(.top, 16)
 
-            Text("Shopping is better with friends")
+            Text("Shopping is better together")
                 .font(.system(size: 40, weight: .bold, design: .rounded))
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)

@@ -718,6 +718,14 @@ final class GroceryRepository {
         (household.recordOwnerName ?? CKCurrentUserDefaultName) != CKCurrentUserDefaultName
     }
 
+    /// True when the group is owned by this account but has accepted
+    /// participants besides the owner — i.e. you've shared it out with other
+    /// people. Drives the "shared" badge on owned lists in My Lists.
+    func isSharedWithOthers(_ household: Household) -> Bool {
+        guard !isSharedWithMe(household) else { return false }
+        return (membersByHouseholdId[household.id]?.count ?? 0) > 1
+    }
+
     var isOwnerOfCurrentGroup: Bool {
         guard let h = currentHousehold else { return false }
         let rootOwnedByCurrentAccount = (h.recordOwnerName ?? CKCurrentUserDefaultName) == CKCurrentUserDefaultName

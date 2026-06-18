@@ -277,7 +277,7 @@ struct GrocerProPaywallView: View {
 
     private var featureList: some View {
         VStack(alignment: .leading, spacing: 22) {
-            Text("More Features")
+            Text("Features")
                 .font(.system(.title, design: .rounded).weight(.bold))
                 .foregroundStyle(Palette.primaryText)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -452,22 +452,24 @@ struct GrocerProPaywallView: View {
         let completed = completedWebCheckout
         completedWebCheckout = false
 
-        await subscriptions.refresh()
+        await subscriptions.refresh(force: completed)
 
         if subscriptions.hasGrocerPro {
+            if completed { subscriptions.markJustUpgradedToPro() }
             dismiss()
             return
         }
 
         guard completed else { return }
 
-        // Stripe -> RevenueCat sync can lag the success page by a few seconds.
-        // Keep the paywall alive and poll briefly instead of assuming success.
+        // Stripe -> RevenueCat sync can lag a few seconds behind checkout. Keep
+        // the paywall alive and poll briefly instead of assuming success.
         for _ in 0..<4 {
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             guard !Task.isCancelled else { return }
-            await subscriptions.refresh()
+            await subscriptions.refresh(force: true)
             if subscriptions.hasGrocerPro {
+                subscriptions.markJustUpgradedToPro()
                 dismiss()
                 return
             }
@@ -544,7 +546,7 @@ struct GrocerProPaywallView: View {
 
     private var ctaTitle: String {
         guard let package = selectedPackage else { return String(localized: "Continue") }
-        if PackagePricing.trialText(for: package) != nil { return String(localized: "Try for $0.00") }
+        if PackagePricing.trialText(for: package) != nil { return String(localized: "Try for Free") }
         return String(localized: "Subscribe")
     }
 
@@ -552,7 +554,7 @@ struct GrocerProPaywallView: View {
         guard let package = selectedPackage else { return nil }
         let summary = PackagePricing.priceSummary(for: package)
         if let trial = PackagePricing.trialText(for: package) {
-            return String(localized: "Free trial \(trial), then \(summary)\nCancel anytime · No payment now")
+            return String(localized: "\(trial) Free, then \(summary)\nCancel anytime · No payment now")
         }
         return String(localized: "\(summary) · Cancel anytime, no commitment")
     }
@@ -786,7 +788,7 @@ private enum PackagePricing {
         switch package.packageType {
         case .annual:
             return isRecommended
-                ? String(localized: "Best Value · Just \(package.storeProduct.localizedPriceString)/year")
+                ? String(localized: "Best Value · Cancel anytime")
                 : String(localized: "Billed annually")
         case .threeMonth:
             return String(localized: "Billed quarterly · Cancel anytime")

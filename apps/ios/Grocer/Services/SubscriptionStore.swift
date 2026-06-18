@@ -58,12 +58,21 @@ enum BillingPolicy {
     static func checkoutURL(
         baseURLString: String,
         purchaseUID: String,
-        packageIdentifier: String
+        packageIdentifier: String,
+        offersTrial: Bool = false
     ) -> URL? {
-        workerURL(baseURLString: checkoutBaseURLString(for: baseURLString), path: "checkout", queryItems: [
+        var queryItems = [
             URLQueryItem(name: "packageId", value: packageIdentifier),
             URLQueryItem(name: "uid", value: purchaseUID),
-        ])
+        ]
+        // Signals the A/B-test trial variant so the worker applies the matching
+        // Stripe free trial. Derived from the selected package's StoreKit intro
+        // offer, so it stays correct across the App Store and the Test Store
+        // (whose product identifiers differ) — unlike keying off the product id.
+        if offersTrial {
+            queryItems.append(URLQueryItem(name: "trial", value: "1"))
+        }
+        return workerURL(baseURLString: checkoutBaseURLString(for: baseURLString), path: "checkout", queryItems: queryItems)
     }
 
     static func billingPortalURL(baseURLString: String, purchaseUID: String) -> URL? {
@@ -180,6 +189,10 @@ final class SubscriptionStore {
     private(set) var isPurchasing = false
     private(set) var isRestoring = false
     var lastErrorMessage: String?
+    /// Set the moment a checkout grants Pro so the UI can show a brief
+    /// "You've upgraded to Pro!" confirmation. Consumed (and cleared) by the
+    /// celebratory overlay in `RootView`.
+    private(set) var didJustUpgradeToPro = false
 
     @ObservationIgnored private var customerInfoTask: Task<Void, Never>?
     @ObservationIgnored private var didStart = false
@@ -304,15 +317,26 @@ final class SubscriptionStore {
         await refresh()
     }
 
+    /// Refreshes offerings and customer info.
+    ///
+    /// Pass `force: true` after an off-platform (Stripe) checkout. RevenueCat
+    /// caches `CustomerInfo` for several minutes in the foreground, but a web
+    /// subscription's entitlement is granted server-side via a Stripe webhook —
+    /// the device cache is untouched, so a default (`.cachedOrFetched`) read
+    /// keeps returning the stale "not subscribed" snapshot until the cache
+    /// expires or the app is relaunched. `.fetchCurrent` bypasses the cache and
+    /// pulls the freshly-granted entitlement from RevenueCat's servers.
     @MainActor
-    func refresh() async {
+    func refresh(force: Bool = false) async {
         guard Purchases.isConfigured else { return }
 
         isLoading = true
         defer { isLoading = false }
 
         do {
-            async let customerInfo = Purchases.shared.customerInfo()
+            async let customerInfo = Purchases.shared.customerInfo(
+                fetchPolicy: force ? .fetchCurrent : .default
+            )
             async let offerings = Purchases.shared.offerings()
 
             let (latestCustomerInfo, latestOfferings) = try await (customerInfo, offerings)
@@ -387,6 +411,18 @@ final class SubscriptionStore {
         lastErrorMessage = nil
     }
 
+    /// Flags that Pro was just granted (e.g. a Stripe checkout completed) so
+    /// `RootView` can surface the upgrade confirmation overlay.
+    @MainActor
+    func markJustUpgradedToPro() {
+        didJustUpgradeToPro = true
+    }
+
+    @MainActor
+    func clearJustUpgradedToPro() {
+        didJustUpgradeToPro = false
+    }
+
     @MainActor
     func recordErrorMessage(_ message: String) {
         lastErrorMessage = message
@@ -394,10 +430,17 @@ final class SubscriptionStore {
 
     func checkoutURL(for package: Package) -> URL? {
         guard let purchaseUID else { return nil }
+        // Resolve the Stripe price from the stable RevenueCat package identifier
+        // ($rc_annual, etc.) and signal the trial separately. A/B-test offerings
+        // (trial vs no-trial annual) share the same package identifier, so the
+        // free-trial intro offer on the served product is what distinguishes the
+        // variants for web checkout.
+        let offersTrial = package.storeProduct.introductoryDiscount?.paymentMode == .freeTrial
         return BillingPolicy.checkoutURL(
             baseURLString: APIClient.baseURLString,
             purchaseUID: purchaseUID,
-            packageIdentifier: package.identifier
+            packageIdentifier: package.identifier,
+            offersTrial: offersTrial
         )
     }
 
