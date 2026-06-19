@@ -175,6 +175,29 @@ enum GrocerProPaywallContext {
     }
 }
 
+/// A subscription plan length, matched against a product's actual billing
+/// period rather than its package identifier — so plan resolution survives
+/// offerings whose products use non-standard identifiers or differing product
+/// ids across A/B-test variants.
+private enum PlanDuration {
+    case annual
+    case threeMonth
+    case monthly
+
+    func matches(_ product: StoreProduct) -> Bool {
+        guard let period = product.subscriptionPeriod else { return false }
+        switch self {
+        case .annual:
+            return (period.unit == .year && period.value == 1)
+                || (period.unit == .month && period.value == 12)
+        case .threeMonth:
+            return period.unit == .month && period.value == 3
+        case .monthly:
+            return period.unit == .month && period.value == 1
+        }
+    }
+}
+
 @Observable
 final class SubscriptionStore {
     static let shared = SubscriptionStore()
@@ -469,22 +492,35 @@ final class SubscriptionStore {
         offering.annual
             ?? offering.package(identifier: RevenueCatConfig.yearlyProductID)
             ?? package(in: offering, productID: RevenueCatConfig.yearlyProductID)
+            ?? package(in: offering, matching: .annual)
     }
 
     private func quarterlyPackage(in offering: Offering) -> Package? {
         offering.threeMonth
             ?? offering.package(identifier: RevenueCatConfig.quarterlyProductID)
             ?? package(in: offering, productID: RevenueCatConfig.quarterlyProductID)
+            ?? package(in: offering, matching: .threeMonth)
     }
 
     private func monthlyPackage(in offering: Offering) -> Package? {
         offering.monthly
             ?? offering.package(identifier: RevenueCatConfig.monthlyProductID)
             ?? package(in: offering, productID: RevenueCatConfig.monthlyProductID)
+            ?? package(in: offering, matching: .monthly)
     }
 
     private func package(in offering: Offering, productID: String) -> Package? {
         offering.availablePackages.first { $0.storeProduct.productIdentifier == productID }
+    }
+
+    /// Resolves a plan by its actual subscription duration. This is the final
+    /// fallback so an A/B-test offering whose annual product id differs from the
+    /// control's (e.g. `..._annual_trial`) — or a package set up with a
+    /// non-standard / `.custom` package identifier, where `offering.annual` and
+    /// the product-id lookups all miss — still surfaces in the plan picker
+    /// instead of silently disappearing.
+    private func package(in offering: Offering, matching duration: PlanDuration) -> Package? {
+        offering.availablePackages.first { duration.matches($0.storeProduct) }
     }
 
     private func uniquePackages(_ packages: [Package?]) -> [Package] {
