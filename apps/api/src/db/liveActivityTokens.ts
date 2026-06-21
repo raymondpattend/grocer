@@ -20,9 +20,18 @@ export interface DeviceTokenRow {
   last_opened_at: string | null;
   last_retention_push_at: string | null;
   tz_offset_minutes: number | null;
+  /** When this member was first observed missing from a household roster, used
+   *  by the grace-period reconcile. NULL when present / confirmed. */
+  roster_missing_since: string | null;
   created_at: string;
   updated_at: string;
 }
+
+/** How long a member must be continuously absent from a household's roster
+ *  before the reconcile disables their delivery rows. Absorbs transient CloudKit
+ *  roster lag so a not-yet-synced member is never wrongly cut off; a genuinely
+ *  removed member is disabled once they've been gone this long. */
+const ROSTER_RECONCILE_GRACE_MS = 48 * 60 * 60 * 1000;
 
 export interface ActivityTokenRow {
   device_id: string;
@@ -87,6 +96,9 @@ export async function upsertDeviceToken(
          token_valid = CASE WHEN ?4 IS NOT NULL THEN 1 ELSE device_tokens.token_valid END,
          notification_token_valid = CASE WHEN ?5 IS NOT NULL THEN 1 ELSE device_tokens.notification_token_valid END,
          tz_offset_minutes = COALESCE(?11, device_tokens.tz_offset_minutes),
+         -- A device registering for itself is authoritative proof the member is
+         -- present, so clear any pending grace-period stale marker.
+         roster_missing_since = NULL,
          updated_at = ?10`,
     )
     .bind(
@@ -270,13 +282,26 @@ export async function disableStaleDeviceRegistrations(
 }
 
 /**
- * Disables delivery rows for members who are no longer in a household's current
- * roster. Unlike device-scoped sync, this heals removed/left users even if
- * their own app never opens again.
+ * Reconciles a household's delivery rows against its current roster, disabling
+ * rows for members who have left. Unlike device-scoped sync, this heals
+ * removed/left users even if their own app never opens again.
+ *
+ * It is **grace-period based and non-destructive on the hot path**: the roster
+ * comes from a single shopper's device and can transiently miss a member whose
+ * CloudKit record hasn't synced yet. Disabling immediately on that snapshot is
+ * what cut legitimate members off from trips. Instead, on each reconcile we:
+ *   1. clear the stale marker for members present this round (they're confirmed),
+ *   2. stamp newly-absent members with "missing since now" WITHOUT disabling, and
+ *   3. disable only members who have stayed absent past the grace window.
+ * A member whose own device re-registers also clears the marker (see
+ * `upsertDeviceToken`), so only genuinely-gone members ever reach step 3.
  *
  * `activeMemberIds === undefined` means the caller did not provide an
  * authoritative roster, so no cleanup is attempted. An explicit empty array is
- * authoritative and disables every delivery row for the household.
+ * authoritative (no members) and runs the same grace-period flow for every row.
+ *
+ * Returns the number of rows actually disabled this call (0 while members are
+ * still inside the grace window).
  */
 export async function disableHouseholdRegistrationsExceptMembers(
   db: D1Database,
@@ -287,29 +312,57 @@ export async function disableHouseholdRegistrationsExceptMembers(
   if (active === undefined) return 0;
 
   const ts = now();
-  const setClause = `notifications_enabled = 0,
-        live_activities_enabled = 0,
-        token_valid = 0,
-        notification_token_valid = 0,
-        updated_at = ?`;
+  const graceCutoff = new Date(Date.now() - ROSTER_RECONCILE_GRACE_MS).toISOString();
+  const hasRoster = active.length > 0;
+  const placeholders = active.map(() => "?").join(", ");
+  // Scope clause shared by the stamp + disable steps. With a roster we target
+  // everyone NOT in it; with an empty roster every row in the household.
+  const absentClause = hasRoster
+    ? `household_id = ? AND member_id NOT IN (${placeholders})`
+    : `household_id = ?`;
 
-  if (active.length === 0) {
-    const result = await db
+  // 1. Members present this round → clear any pending marker so a momentary
+  //    absence never accumulates toward the grace deadline.
+  if (hasRoster) {
+    await db
       .prepare(
-        `UPDATE device_tokens SET ${setClause} WHERE household_id = ?`,
+        `UPDATE device_tokens
+            SET roster_missing_since = NULL, updated_at = ?
+          WHERE household_id = ?
+            AND member_id IN (${placeholders})
+            AND roster_missing_since IS NOT NULL`,
       )
-      .bind(ts, householdId)
+      .bind(ts, householdId, ...active)
       .run();
-    return result.meta.changes ?? 0;
   }
 
-  const placeholders = active.map(() => "?").join(", ");
+  // 2. Members newly absent → start the grace clock, but keep delivery on. Only
+  //    stamp rows that are still active and not already being tracked.
+  await db
+    .prepare(
+      `UPDATE device_tokens
+          SET roster_missing_since = ?, updated_at = ?
+        WHERE ${absentClause}
+          AND roster_missing_since IS NULL
+          AND (notifications_enabled = 1 OR live_activities_enabled = 1)`,
+    )
+    .bind(ts, ts, householdId, ...active)
+    .run();
+
+  // 3. Members absent past the grace window → now safe to disable.
   const result = await db
     .prepare(
-      `UPDATE device_tokens SET ${setClause}
-        WHERE household_id = ? AND member_id NOT IN (${placeholders})`,
+      `UPDATE device_tokens
+          SET notifications_enabled = 0,
+              live_activities_enabled = 0,
+              token_valid = 0,
+              notification_token_valid = 0,
+              updated_at = ?
+        WHERE ${absentClause}
+          AND roster_missing_since IS NOT NULL
+          AND roster_missing_since <= ?`,
     )
-    .bind(ts, householdId, ...active)
+    .bind(ts, householdId, ...active, graceCutoff)
     .run();
   return result.meta.changes ?? 0;
 }

@@ -20,9 +20,23 @@ const APNS_HOST: Record<Env["APNS_ENVIRONMENT"], string> = {
   sandbox: "https://api.sandbox.push.apple.com",
   production: "https://api.push.apple.com",
 };
+// Ordering contract (mirrors LiveActivityManager.swift): iOS stacks concurrent
+// Live Activities by relevance score, highest first. Active start/update pushes
+// carry the high score and end pushes the low one, so a newly started trip
+// always shows above completed/cancelled trips still lingering on screen.
 const ACTIVE_LIVE_ACTIVITY_RELEVANCE = 100;
 const ENDED_LIVE_ACTIVITY_RELEVANCE = 0;
-const DEFAULT_ACTIVITY_ATTRIBUTES_TYPE = "Grocer.GroceryActivityAttributes";
+// ActivityKit matches the `attributes-type` string in a push-to-start payload
+// against the *bare* name of the `ActivityAttributes` struct — NOT a
+// module-qualified name. A wrong value (e.g. "Grocer.GroceryActivityAttributes")
+// is still accepted by APNs (200 OK) but ActivityKit silently drops the start,
+// so the shopper's own device shows the Live Activity while family devices never
+// do. Must match `struct GroceryActivityAttributes` in the iOS app/widget.
+const DEFAULT_ACTIVITY_ATTRIBUTES_TYPE = "GroceryActivityAttributes";
+// How long a completed/cancelled Live Activity stays visible before iOS removes
+// it. Apple caps the post-end dismissal window at 4 hours; we use the max so the
+// finished-trip summary lingers for everyone, then auto-clears.
+const ENDED_ACTIVITY_LINGER_SECONDS = 4 * 60 * 60;
 
 export type ApnsEvent = "start" | "update" | "end";
 export type ShoppingTripNotificationEvent = "started" | "completed" | "cancelled";
@@ -366,9 +380,10 @@ export function sendEnd(
     event: "end",
     content,
     relevanceScore: ENDED_LIVE_ACTIVITY_RELEVANCE,
-    // Remove ended activities immediately so a new active trip is never stacked
-    // beneath stale completed/cancelled ones.
-    dismissalDate: Math.floor(Date.now() / 1000) - 1,
+    // Keep the finished-trip summary on screen for everyone for up to 4 hours
+    // (Apple's max), then let iOS auto-dismiss it. The relevance score of 0
+    // keeps it sorted beneath any newly started active trip in the meantime.
+    dismissalDate: Math.floor(Date.now() / 1000) + ENDED_ACTIVITY_LINGER_SECONDS,
   });
   return postToApns(env, updateToken, payload, { priority: 10 });
 }

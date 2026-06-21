@@ -81,6 +81,14 @@ struct RootView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: repo.isAcceptingInvite)
+        .alert("Invite Link Expired", isPresented: Binding(
+            get: { repo.inviteError != nil },
+            set: { if !$0 { repo.inviteError = nil } }
+        )) {
+            Button("OK", role: .cancel) { repo.inviteError = nil }
+        } message: {
+            Text(repo.inviteError ?? "")
+        }
         .overlay {
             // Brief celebratory confirmation after a checkout grants Pro. A
             // richer onboarding sheet for new Pro users will replace this later.

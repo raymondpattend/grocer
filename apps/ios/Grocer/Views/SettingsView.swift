@@ -373,26 +373,41 @@ struct SettingsView: View {
         NavigationLink {
             destination()
         } label: {
-            VStack(alignment: .leading, spacing: 0) {
-                Image(systemName: systemImage)
-                    .font(.title2)
-                    .foregroundStyle(tint)
-                Spacer(minLength: 10)
-                Text(title)
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(.primary)
-            }
-            .frame(maxWidth: .infinity, minHeight: 50, alignment: .leading)
-            .padding(16)
-            .background(Color(.secondarySystemGroupedBackground),
-                        in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .strokeBorder(Color(.separator).opacity(0.35), lineWidth: 1)
-            }
+            tileContent(title, systemImage: systemImage, tint: tint)
         }
         .buttonStyle(.plain)
         .simultaneousGesture(TapGesture().onEnded { Haptics.selection() })
+    }
+
+    /// Shared tile body: colored icon top-left, gray chevron top-right, and a
+    /// bold label below. Used by both `navTile` and the standalone store button
+    /// so they read as the same primary-action style.
+    private func tileContent(_ title: String,
+                             systemImage: String,
+                             tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: systemImage)
+                    .font(.title2)
+                    .foregroundStyle(tint)
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            Spacer(minLength: 10)
+            Text(title)
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.primary)
+        }
+        .frame(maxWidth: .infinity, minHeight: 50, alignment: .leading)
+        .padding(16)
+        .background(Color(.secondarySystemGroupedBackground),
+                    in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .strokeBorder(Color(.separator).opacity(0.35), lineWidth: 1)
+        }
     }
 
     // MARK: - Members
@@ -530,16 +545,15 @@ struct SettingsView: View {
                         }
                     )
                 } else {
-                    card {
-                        Button {
-                            Haptics.tap()
-                            storeLinkMode = .link
-                        } label: {
-                            rowLabel(String(localized: "Link a store"),
-                                     systemImage: "mappin.and.ellipse", chevron: true)
-                        }
-                        .buttonStyle(.plain)
+                    Button {
+                        Haptics.tap()
+                        storeLinkMode = .link
+                    } label: {
+                        tileContent(String(localized: "Link a store"),
+                                    systemImage: "mappin.and.ellipse",
+                                    tint: .accentColor)
                     }
+                    .buttonStyle(.plain)
                 }
             }
         }

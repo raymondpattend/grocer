@@ -39,6 +39,11 @@ settings:
     MARKETING_VERSION: "1.0.0"
     CURRENT_PROJECT_VERSION: "1"
     SWIFT_VERSION: "5.0"
+    # Full strict-concurrency checking. In Swift 5 language mode these surface as
+    # warnings (the build stays green) — the CloudKit subsystem is already clean;
+    # remaining warnings in other subsystems are a tracked backlog ahead of a
+    # future SWIFT_VERSION=6.0 flip that turns them into errors.
+    SWIFT_STRICT_CONCURRENCY: complete
     DEVELOPMENT_LANGUAGE: en
     SWIFT_EMIT_LOC_STRINGS: YES
     DEVELOPMENT_TEAM: "LNY6LA39SW" # Narro LLC

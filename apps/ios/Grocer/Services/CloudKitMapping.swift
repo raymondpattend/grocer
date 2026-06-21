@@ -16,16 +16,42 @@ private func assetData(_ r: CKRecord, _ key: String) -> Data? {
     return try? Data(contentsOf: url)
 }
 
+private let profileAssetDirectory = FileManager.default.temporaryDirectory
+    .appendingPathComponent("grocer-profile-assets", isDirectory: true)
+
 private func imageAsset(from data: Data?) -> CKAsset? {
     guard let data else { return nil }
-    let url = FileManager.default.temporaryDirectory
-        .appendingPathComponent("grocer-profile-\(UUID().uuidString).jpg")
+    let fm = FileManager.default
     do {
+        try fm.createDirectory(at: profileAssetDirectory, withIntermediateDirectories: true)
+        pruneStaleProfileAssets(in: profileAssetDirectory)
+        let url = profileAssetDirectory.appendingPathComponent("\(UUID().uuidString).jpg")
         try data.write(to: url, options: .atomic)
         return CKAsset(fileURL: url)
     } catch {
         print("[CloudKitMapping] failed to write profile image asset: \(error)")
         return nil
+    }
+}
+
+/// Best-effort cleanup of profile-image asset temp files from earlier saves.
+/// CloudKit copies a `CKAsset`'s file into its own store during the
+/// `modifyRecords` upload, so once a file is older than this window any save that
+/// referenced it has finished and it's safe to delete. Without this, every member
+/// save (including conflict re-saves) would leak a uniquely-named temp file.
+private func pruneStaleProfileAssets(in directory: URL, olderThan maxAge: TimeInterval = 3600) {
+    let fm = FileManager.default
+    guard let entries = try? fm.contentsOfDirectory(
+        at: directory,
+        includingPropertiesForKeys: [.contentModificationDateKey],
+        options: [.skipsHiddenFiles]
+    ) else { return }
+    let cutoff = Date().addingTimeInterval(-maxAge)
+    for entry in entries {
+        let modified = (try? entry.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+        if let modified, modified < cutoff {
+            try? fm.removeItem(at: entry)
+        }
     }
 }
 

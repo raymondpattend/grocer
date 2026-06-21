@@ -114,22 +114,50 @@ describe("fanout recipient filters", () => {
 });
 
 describe("household recipient cleanup", () => {
-  it("disables household delivery rows for members outside the roster", async () => {
-    const db = fakeDB(2);
+  type Call = { sql: string; args: unknown[] };
+  const callsOf = (db: unknown) => (db as { calls: Call[] }).calls;
+
+  it("does not disable members on the first miss — it only starts a grace clock", async () => {
+    // Nothing has been absent long enough yet, so the disable step changes 0 rows.
+    const db = fakeDB(0);
     const n = await disableHouseholdRegistrationsExceptMembers(db, "hh-1", [
       "member-a",
       "member-a",
       "member-b",
     ]);
 
+    expect(n).toBe(0);
+    const calls = callsOf(db);
+    // 1. Present members have any pending stale marker cleared.
+    expect(calls[0].sql).toContain("roster_missing_since = NULL");
+    expect(calls[0].sql).toContain("member_id IN (?, ?)");
+    expect(calls[0].args).toEqual([expect.any(String), "hh-1", "member-a", "member-b"]);
+    // 2. Newly-absent members are stamped, NOT disabled.
+    expect(calls[1].sql).toContain("roster_missing_since = ?");
+    expect(calls[1].sql).toContain("member_id NOT IN (?, ?)");
+    expect(calls[1].sql).not.toContain("notifications_enabled = 0");
+    // 3. Disable step is gated behind the grace cutoff.
+    expect(calls[2].sql).toContain("notifications_enabled = 0");
+    expect(calls[2].sql).toContain("roster_missing_since <= ?");
+    expect(calls[2].sql).toContain("member_id NOT IN (?, ?)");
+  });
+
+  it("disables members only once they have been absent past the grace window", async () => {
+    const db = fakeDB(2);
+    const n = await disableHouseholdRegistrationsExceptMembers(db, "hh-1", ["member-a", "member-b"]);
+
     expect(n).toBe(2);
-    const { sql, args } = (db as never as { calls: { sql: string; args: unknown[] }[] }).calls[0];
-    expect(sql).toContain("WHERE household_id = ? AND member_id NOT IN (?, ?)");
-    expect(sql).toContain("notifications_enabled = 0");
-    expect(sql).toContain("live_activities_enabled = 0");
-    expect(sql).toContain("token_valid = 0");
-    expect(sql).toContain("notification_token_valid = 0");
-    expect(args.slice(1)).toEqual(["hh-1", "member-a", "member-b"]);
+    const disable = callsOf(db)[2];
+    expect(disable.sql).toContain("token_valid = 0");
+    expect(disable.sql).toContain("notification_token_valid = 0");
+    // Bind order: updated_at, householdId, ...members, graceCutoff.
+    expect(disable.args).toEqual([
+      expect.any(String),
+      "hh-1",
+      "member-a",
+      "member-b",
+      expect.any(String),
+    ]);
   });
 
   it("skips household cleanup when no authoritative roster is supplied", async () => {
@@ -137,18 +165,23 @@ describe("household recipient cleanup", () => {
     const n = await disableHouseholdRegistrationsExceptMembers(db, "hh-1", undefined);
 
     expect(n).toBe(0);
-    expect((db as never as { calls: unknown[] }).calls).toEqual([]);
+    expect(callsOf(db)).toEqual([]);
   });
 
-  it("disables every household delivery row for an explicit empty roster", async () => {
+  it("runs the same grace-period flow for an explicit empty roster", async () => {
     const db = fakeDB(3);
     const n = await disableHouseholdRegistrationsExceptMembers(db, "hh-1", []);
 
     expect(n).toBe(3);
-    const { sql, args } = (db as never as { calls: { sql: string; args: unknown[] }[] }).calls[0];
-    expect(sql).toContain("WHERE household_id = ?");
-    expect(sql).not.toContain("NOT IN");
-    expect(args.slice(1)).toEqual(["hh-1"]);
+    const calls = callsOf(db);
+    // No "clear present members" step (there are none); stamp then disable.
+    expect(calls).toHaveLength(2);
+    expect(calls[0].sql).toContain("roster_missing_since = ?");
+    expect(calls[0].sql).not.toContain("NOT IN");
+    expect(calls[1].sql).toContain("notifications_enabled = 0");
+    expect(calls[1].sql).toContain("roster_missing_since <= ?");
+    expect(calls[1].sql).not.toContain("NOT IN");
+    expect(calls[1].args).toEqual([expect.any(String), "hh-1", expect.any(String)]);
   });
 
   it("invalidates session activity tokens outside the roster", async () => {

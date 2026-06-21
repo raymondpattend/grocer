@@ -38,8 +38,17 @@ final class LiveActivityManager {
 
     private var observationTasks: [Task<Void, Never>] = []
     private var observedActivityIds: Set<String> = []
+    // Ordering contract: when several Live Activities are on screen at once, iOS
+    // stacks them by relevance score (highest first). Active trips always use the
+    // high score and ended trips the low one, so a newly started trip is shown
+    // above any completed/cancelled trips still lingering toward their dismissal
+    // date. The push side mirrors these values in apns.ts; keep them in sync.
     private static let activeRelevanceScore = 100.0
     private static let endedRelevanceScore = 0.0
+    /// How long a completed/cancelled activity stays on screen before iOS removes
+    /// it. Apple caps the post-end dismissal window at 4 hours; we use the max so
+    /// the finished-trip summary lingers, matching the backend `sendEnd` push.
+    private static let endedActivityLinger: TimeInterval = 4 * 60 * 60
 
     func configure(householdId: String, memberId: String) {
         configure(householdMemberships: [householdId: memberId])
@@ -124,6 +133,10 @@ final class LiveActivityManager {
         let updates = Task { [weak self] in
             for await activity in Activity<GroceryActivityAttributes>.activityUpdates {
                 self?.observeUpdateToken(for: activity)
+                // A newly appeared activity can be a duplicate of one already
+                // running for the same trip (push-to-start vs the alert-push
+                // fallback). Collapse to one the moment the second shows up.
+                self?.dedupeRunningActivities(sessionId: activity.attributes.sessionId)
             }
         }
         observationTasks.append(updates)
@@ -346,13 +359,39 @@ final class LiveActivityManager {
         }
     }
 
+    /// Collapse duplicate running activities for a session down to one. A family
+    /// device can briefly hold two — the push-to-start activity and one created
+    /// by the alert-push fallback handler — when they race before ActivityKit
+    /// lists the first. We end the extras immediately so the Live Activity never
+    /// renders doubled-up or blank. Only ever touches active/stale activities, so
+    /// finished trips lingering toward their dismissal date are left alone.
+    private func dedupeRunningActivities(sessionId: String) {
+        let running = runningActivities(sessionId: sessionId)
+        guard running.count > 1 else { return }
+        // Prefer keeping the activity we already track locally; otherwise the first.
+        let keep = running.first { $0.id == currentActivity?.id } ?? running[0]
+        let extras = running.filter { $0.id != keep.id }
+        print("[LiveActivity] deduping \(extras.count) duplicate activity(s) for session \(sessionId)")
+        for activity in extras {
+            Task {
+                await activity.end(
+                    .init(state: activity.content.state,
+                          staleDate: nil,
+                          relevanceScore: Self.endedRelevanceScore),
+                    dismissalPolicy: .immediate
+                )
+            }
+        }
+    }
+
     private func end(_ activities: [Activity<GroceryActivityAttributes>],
                      content: GroceryActivityAttributes.ContentState) {
+        let dismissAfter = Date().addingTimeInterval(Self.endedActivityLinger)
         for activity in activities {
             Task {
                 await activity.end(
                     .init(state: content, staleDate: nil, relevanceScore: Self.endedRelevanceScore),
-                    dismissalPolicy: .immediate
+                    dismissalPolicy: .after(dismissAfter)
                 )
                 if currentActivity?.id == activity.id {
                     currentActivity = nil

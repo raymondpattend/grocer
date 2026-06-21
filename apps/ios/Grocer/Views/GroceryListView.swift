@@ -129,9 +129,6 @@ struct GroceryListView: View {
         .contentMargins(.top, 8, for: .scrollContent)
         .background(Color(.systemGroupedBackground))
         .refreshable { await repo.manualRefresh() }
-        .safeAreaInset(edge: .top, spacing: 0) {
-            CloudIssueChip(issue: repo.cloudIssue)
-        }
         .navigationTitle(repo.currentHousehold?.name ?? String(localized: "Grocer"))
         .navigationBarTitleDisplayMode(.large)
         .navigationBarBackButtonHidden(true)

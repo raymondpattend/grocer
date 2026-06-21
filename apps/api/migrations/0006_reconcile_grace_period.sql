@@ -1,0 +1,14 @@
+-- Grace period for household-roster reconciliation.
+--
+-- Every trip start/end reconciles a household's delivery rows against the roster
+-- reported by the shopper's device. That roster can transiently miss a member
+-- whose CloudKit record hasn't synced to the shopper's device yet, and the old
+-- logic disabled such members immediately — cutting off legitimate members until
+-- their own app happened to re-register.
+--
+-- This column records when a member was *first* observed missing from the
+-- roster. The reconcile now waits out a grace window before disabling, and
+-- clears the marker the moment the member reappears in a roster or re-registers
+-- from their own device. A genuinely-removed member still gets disabled once
+-- they've been absent for the whole window.
+ALTER TABLE device_tokens ADD COLUMN roster_missing_since TEXT;

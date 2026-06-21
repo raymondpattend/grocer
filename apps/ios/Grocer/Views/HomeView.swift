@@ -43,9 +43,6 @@ struct HomeView: View {
             }
             .background(Color(.systemGroupedBackground))
             .refreshable { await repo.manualRefresh() }
-            .safeAreaInset(edge: .top, spacing: 0) {
-                CloudIssueChip(issue: repo.cloudIssue)
-            }
             .navigationTitle("My Lists")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {

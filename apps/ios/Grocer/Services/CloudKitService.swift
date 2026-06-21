@@ -22,19 +22,28 @@ import UIKit
 /// (e.g. an unsigned build with no entitlements), build with
 /// `GR_CLOUDKIT_ENABLED=NO`; `container` is then nil and the repository falls
 /// back to the local empty onboarding state instead of crashing.
-final class CloudKitService {
+/// `actor` so the mutable fetch state below (`suspectedVanishedSharedZones` and
+/// the read-modify-write of the known-shared-zones list) can't be corrupted by
+/// two overlapping fetches — e.g. a background refresh racing a foreground poll.
+/// The reconciliation that touches that state is synchronous, so even with actor
+/// reentrancy it runs atomically. Pure I/O (save/modify/fetch) and the
+/// immutable/`UserDefaults`-only helpers are `nonisolated` so callers that used
+/// them synchronously keep working and so per-record CloudKit work isn't
+/// needlessly serialized on the actor.
+actor CloudKitService {
     static let shared = CloudKitService()
 
-    let container: CKContainer?
-    private let zoneID: CKRecordZone.ID
+    nonisolated let container: CKContainer?
+    nonisolated let zoneID: CKRecordZone.ID
 
-    var isAvailable: Bool { container != nil }
-    private var privateDB: CKDatabase? { container?.privateCloudDatabase }
-    private var sharedDB: CKDatabase? { container?.sharedCloudDatabase }
+    nonisolated var isAvailable: Bool { container != nil }
+    private nonisolated var privateDB: CKDatabase? { container?.privateCloudDatabase }
+    private nonisolated var sharedDB: CKDatabase? { container?.sharedCloudDatabase }
 
     /// Shared zones that were absent from `allRecordZones()` on the *previous*
     /// cycle but not yet confirmed gone. A zone is only pruned once it has been
     /// missing for two consecutive cycles — see `reconcileVanishedSharedZones`.
+    /// Actor-isolated: this is the state the actor exists to protect.
     private var suspectedVanishedSharedZones: Set<CloudZoneRef> = []
 
     init(containerIdentifier: String = CK.containerIdentifier) {
@@ -203,87 +212,82 @@ final class CloudKitService {
         for zone in zones {
             let zoneRef = CloudZoneRef(scope: label, zoneName: zone.zoneName, ownerName: zone.ownerName)
             do {
-                var changeToken = forceFull ? nil : changeToken(for: zoneRef)
-                var moreComing = true
-                var totalRecords = 0
-                if changeToken == nil {
-                    result.markFullZone(zoneRef)
-                }
-                while moreComing {
-                    let changes = try await performWithRetry("fetch \(label) zone \(zone.zoneName)") {
-                        try await db.recordZoneChanges(inZoneWith: zone, since: changeToken)
-                    }
-                    for (recordID, modificationResult) in changes.modificationResultsByID {
-                        switch modificationResult {
-                        case .success(let modification):
-                            result.snapshot.absorb(modification.record)
-                            result.systemFields[modification.record.recordID.recordName] = modification.record.encodedSystemFields()
-                            totalRecords += 1
-                        case .failure(let error):
-                            print("[CK]   ⚠️ [\(label)] record \(recordID.recordName) change failed: \(error)")
-                        }
-                    }
-                    if !changes.deletions.isEmpty {
-                        print("[CK]   [\(label)] zone \(zone.zoneName): \(changes.deletions.count) deletions")
-                        for deletion in changes.deletions {
-                            result.deletions.append(CloudRecordDeletion(
-                                recordName: deletion.recordID.recordName,
-                                recordType: deletion.recordType,
-                                zone: zoneRef
-                            ))
-                        }
-                    }
-                    changeToken = changes.changeToken
-                    moreComing = changes.moreComing
-                }
-                if let changeToken {
-                    saveChangeToken(changeToken, for: zoneRef)
-                }
-                print("[CK]   [\(label)] zone \(zone.zoneName): fetched \(totalRecords) record(s)")
+                let startToken = forceFull ? nil : changeToken(for: zoneRef)
+                if startToken == nil { result.markFullZone(zoneRef) }
+                let count = try await drainZoneChanges(from: db, zone: zone, zoneRef: zoneRef,
+                                                       since: startToken, label: label, into: &result)
+                print("[CK]   [\(label)] zone \(zone.zoneName): fetched \(count) record(s)")
             } catch let error as CKError where error.code == .zoneNotFound || error.code == .userDeletedZone {
                 print("[CK]   [\(label)] zone \(zone.zoneName): not found (empty, continuing)")
                 clearChangeToken(for: zoneRef)
+                result.changeTokens.removeValue(forKey: zoneRef)
                 result.markFullZone(zoneRef)
                 continue
             } catch let error as CKError where error.code == .changeTokenExpired {
                 print("[CK]   [\(label)] zone \(zone.zoneName): change token expired, retrying from nil…")
                 clearChangeToken(for: zoneRef)
                 result.markFullZone(zoneRef)
-                var changeToken: CKServerChangeToken?
-                var moreComing = true
-                var totalRecords = 0
-                while moreComing {
-                    let changes = try await performWithRetry("refetch \(label) zone \(zone.zoneName)") {
-                        try await db.recordZoneChanges(inZoneWith: zone, since: changeToken)
-                    }
-                    for (_, modificationResult) in changes.modificationResultsByID {
-                        if case .success(let modification) = modificationResult {
-                            result.snapshot.absorb(modification.record)
-                            result.systemFields[modification.record.recordID.recordName] = modification.record.encodedSystemFields()
-                            totalRecords += 1
-                        }
-                    }
-                    if !changes.deletions.isEmpty {
-                        for deletion in changes.deletions {
-                            result.deletions.append(CloudRecordDeletion(
-                                recordName: deletion.recordID.recordName,
-                                recordType: deletion.recordType,
-                                zone: zoneRef
-                            ))
-                        }
-                    }
-                    changeToken = changes.changeToken
-                    moreComing = changes.moreComing
-                }
-                if let changeToken {
-                    saveChangeToken(changeToken, for: zoneRef)
-                }
-                print("[CK]   [\(label)] zone \(zone.zoneName): refetched \(totalRecords) record(s)")
+                let count = try await drainZoneChanges(from: db, zone: zone, zoneRef: zoneRef,
+                                                       since: nil, label: label, into: &result)
+                print("[CK]   [\(label)] zone \(zone.zoneName): refetched \(count) record(s)")
             } catch {
                 print("[CK]   ❌ [\(label)] zone \(zone.zoneName) fetch error: \(error)")
                 throw error
             }
         }
+    }
+
+    /// Pages through one zone's changes from `since`, accumulating records and
+    /// deletions into `result` and recording the zone's final server change token
+    /// in `result.changeTokens` for deferred (post-persist) commit. Returns the
+    /// number of records absorbed. Shared by the normal and `changeTokenExpired`
+    /// fetch paths so the pagination loop lives in exactly one place.
+    @discardableResult
+    private func drainZoneChanges(
+        from db: CKDatabase,
+        zone: CKRecordZone.ID,
+        zoneRef: CloudZoneRef,
+        since startToken: CKServerChangeToken?,
+        label: String,
+        into result: inout CloudSyncResult
+    ) async throws -> Int {
+        var changeToken = startToken
+        var moreComing = true
+        var totalRecords = 0
+        while moreComing {
+            let changes = try await performWithRetry("fetch \(label) zone \(zone.zoneName)") {
+                try await db.recordZoneChanges(inZoneWith: zone, since: changeToken)
+            }
+            for (recordID, modificationResult) in changes.modificationResultsByID {
+                switch modificationResult {
+                case .success(let modification):
+                    result.snapshot.absorb(modification.record)
+                    result.systemFields[modification.record.recordID.recordName] = modification.record.encodedSystemFields()
+                    totalRecords += 1
+                case .failure(let error):
+                    print("[CK]   ⚠️ [\(label)] record \(recordID.recordName) change failed: \(error)")
+                }
+            }
+            if !changes.deletions.isEmpty {
+                print("[CK]   [\(label)] zone \(zone.zoneName): \(changes.deletions.count) deletions")
+                for deletion in changes.deletions {
+                    result.deletions.append(CloudRecordDeletion(
+                        recordName: deletion.recordID.recordName,
+                        recordType: deletion.recordType,
+                        zone: zoneRef
+                    ))
+                }
+            }
+            changeToken = changes.changeToken
+            moreComing = changes.moreComing
+        }
+        // Only the final token matters: the whole drain is applied atomically by
+        // the repository, so we advance the token to the end once, and only after
+        // that snapshot is persisted (see commitChangeTokens).
+        if let changeToken, let data = archivedChangeToken(changeToken) {
+            result.changeTokens[zoneRef] = data
+        }
+        return totalRecords
     }
 
     // MARK: - Save / delete
@@ -434,14 +438,14 @@ final class CloudKitService {
         zoneID.ownerName == CKCurrentUserDefaultName ? privateDB : sharedDB
     }
 
-    func makeRecordID(_ name: String = UUID().uuidString) -> CKRecord.ID {
+    nonisolated func makeRecordID(_ name: String = UUID().uuidString) -> CKRecord.ID {
         CKRecord.ID(recordName: name, zoneID: zoneID)
     }
 
     /// The local (owned) household zone in this user's private database. Records
     /// for groups the user owns live here; records for groups they joined live
     /// in the owner's zone, accessed via the shared database.
-    var localZoneID: CKRecordZone.ID { zoneID }
+    nonisolated var localZoneID: CKRecordZone.ID { zoneID }
 
     func privateRecord(id: CKRecord.ID) async throws -> CKRecord {
         guard let privateDB else { throw CloudKitUnavailable() }
@@ -568,6 +572,26 @@ final class CloudKitService {
         return true
     }
 
+    /// Closes the public link on a household's share — sets `publicPermission`
+    /// to `.none` — without touching already-joined participants. Used by
+    /// owner-side invite-link rotation so a leaked or forwarded public link stops
+    /// working once it's stale. Returns true if a public share existed and was
+    /// closed; false if the household has no share or the link was already
+    /// private.
+    func closePublicShare(for householdRecordID: CKRecord.ID) async throws -> Bool {
+        guard let privateDB else { throw CloudKitUnavailable() }
+        let householdRecord = try await privateDB.record(for: householdRecordID)
+        guard let shareRef = householdRecord.share,
+              let share = try await privateDB.record(for: shareRef.recordID) as? CKShare else {
+            return false
+        }
+        guard share.publicPermission != .none else { return false }
+        share.publicPermission = .none
+        _ = try await saveShare(share)
+        print("[CK] 🔒 closed public link for share \(share.recordID.recordName)")
+        return true
+    }
+
     @discardableResult
     private func saveShare(_ share: CKShare) async throws -> CKShare {
         guard let privateDB else { throw CloudKitUnavailable() }
@@ -598,8 +622,18 @@ final class CloudKitService {
     private static let subscriptionRegistrationVersion = 2
     private static let privateZoneSubscriptionID = "grocer-household-zone-sub"
     private static let sharedDatabaseSubscriptionID = "grocer-shared-db-sub"
-    private static let subscriptionsRegisteredKey = "grocer.cloudkit.subscriptionsRegistered"
-    private static let subscriptionsRegisteredVersionKey = "grocer.cloudkit.subscriptionsRegisteredVersion"
+    // Scoped by CloudKit environment for the same reason as the change tokens:
+    // a Release-config build signed with a Development profile talks to CloudKit
+    // Development but shares `UserDefaults.standard` with the Production App Store
+    // build. Without the scope, one build marks subscriptions "registered" and
+    // the other then skips registering against its own environment — silently
+    // disabling realtime push. See `changeTokenKey` / `knownSharedZonesKey`.
+    private static var subscriptionsRegisteredKey: String {
+        ["grocer.cloudkit.subscriptionsRegistered", CloudKitEnvironment.current].joined(separator: ".")
+    }
+    private static var subscriptionsRegisteredVersionKey: String {
+        ["grocer.cloudkit.subscriptionsRegisteredVersion", CloudKitEnvironment.current].joined(separator: ".")
+    }
 
     /// Registers CloudKit push subscriptions so record changes wake the app for a refresh.
     /// Idempotent — skips only after this version has registered both scopes successfully.
@@ -675,7 +709,7 @@ final class CloudKitService {
         )
     }
 
-    func clearSubscriptionRegistrationFlag() {
+    nonisolated func clearSubscriptionRegistrationFlag() {
         GrocerAppGroup.defaults.set(false, forKey: Self.subscriptionsRegisteredKey)
         GrocerAppGroup.defaults.removeObject(forKey: Self.subscriptionsRegisteredVersionKey)
         clearAllChangeTokens()
@@ -730,19 +764,31 @@ final class CloudKitService {
         return try? NSKeyedUnarchiver.unarchivedObject(ofClass: CKServerChangeToken.self, from: data)
     }
 
-    private func saveChangeToken(_ token: CKServerChangeToken, for zone: CloudZoneRef) {
+    /// Archives a change token for deferred persistence. Returns nil (and logs)
+    /// if archiving fails, in which case the token is simply not advanced and the
+    /// next fetch re-pulls from the previous one — safe, just redundant.
+    private func archivedChangeToken(_ token: CKServerChangeToken) -> Data? {
         guard let data = try? NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: true) else {
-            print("[CK] ⚠️ failed to archive change token for \(zone.zoneName)")
-            return
+            print("[CK] ⚠️ failed to archive change token")
+            return nil
         }
-        GrocerAppGroup.defaults.set(data, forKey: changeTokenKey(for: zone))
+        return data
     }
 
-    private func clearChangeToken(for zone: CloudZoneRef) {
+    /// Persists the per-zone change tokens accumulated during a fetch. Must be
+    /// called **after** the fetched snapshot has been durably saved, so the token
+    /// never advances past records that weren't persisted.
+    nonisolated func commitChangeTokens(_ tokens: [CloudZoneRef: Data]) {
+        for (zone, data) in tokens {
+            GrocerAppGroup.defaults.set(data, forKey: changeTokenKey(for: zone))
+        }
+    }
+
+    private nonisolated func clearChangeToken(for zone: CloudZoneRef) {
         GrocerAppGroup.defaults.removeObject(forKey: changeTokenKey(for: zone))
     }
 
-    private func clearAllChangeTokens() {
+    private nonisolated func clearAllChangeTokens() {
         for key in GrocerAppGroup.defaults.dictionaryRepresentation().keys
             where key.hasPrefix(Self.changeTokenKeyPrefix) {
             GrocerAppGroup.defaults.removeObject(forKey: key)
@@ -752,7 +798,7 @@ final class CloudKitService {
 
     // MARK: - Known shared zones (for removed-from-share detection)
 
-    private var knownSharedZonesKey: String {
+    private nonisolated var knownSharedZonesKey: String {
         ["grocer.cloudkit.knownSharedZones", CloudKitEnvironment.current].joined(separator: ".")
     }
 
@@ -774,7 +820,7 @@ final class CloudKitService {
         saveKnownSharedZones(loadKnownSharedZones().subtracting([zone]))
     }
 
-    private func changeTokenKey(for zone: CloudZoneRef) -> String {
+    private nonisolated func changeTokenKey(for zone: CloudZoneRef) -> String {
         // Scoped by CloudKit environment so a Production token is never replayed
         // by a Development (Debug) build, and vice versa.
         [Self.changeTokenKeyPrefix, CloudKitEnvironment.current, zone.scope, zone.ownerName, zone.zoneName]
@@ -907,6 +953,11 @@ struct CloudSyncResult {
     /// would have to re-fetch each record before every save just to obtain a
     /// valid change tag.
     var systemFields: [String: Data] = [:]
+    /// Archived per-zone server change tokens accumulated this cycle. These are
+    /// committed (via `CloudKitService.commitChangeTokens`) only after the
+    /// fetched snapshot is durably saved, so a crash between fetch and persist
+    /// re-delivers the delta instead of silently skipping it.
+    var changeTokens: [CloudZoneRef: Data] = [:]
 
     var hasRecordChanges: Bool {
         !snapshot.isEmpty || !deletions.isEmpty || !fullZones.isEmpty || !vanishedZones.isEmpty

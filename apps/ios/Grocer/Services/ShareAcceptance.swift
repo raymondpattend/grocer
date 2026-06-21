@@ -24,6 +24,12 @@ final class ShareCoordinator {
     /// Holds metadata that arrived before a handler was registered (cold launch).
     private var pending: CKShare.Metadata?
 
+    /// Set by the repository to surface an expired-link message.
+    private var expiredHandler: (@MainActor () -> Void)?
+
+    /// True if an expired link was tapped before the handler was registered.
+    private var pendingExpired = false
+
     func handle(_ metadata: CKShare.Metadata) {
         if let handler {
             Task { await handler(metadata) }
@@ -37,6 +43,23 @@ final class ShareCoordinator {
         if let pending {
             self.pending = nil
             Task { await handler(pending) }
+        }
+    }
+
+    func setExpiredInviteHandler(_ handler: @escaping @MainActor () -> Void) {
+        expiredHandler = handler
+        if pendingExpired {
+            pendingExpired = false
+            handler()
+        }
+    }
+
+    /// Invoked when a branded invite link is opened but its `exp` has passed.
+    func handleExpiredInviteLink() {
+        if let expiredHandler {
+            expiredHandler()
+        } else {
+            pendingExpired = true
         }
     }
 
@@ -576,6 +599,14 @@ final class ShareSceneDelegate: NSObject, UIWindowSceneDelegate {
         guard userActivity.activityType == NSUserActivityTypeBrowsingWeb,
               let url = userActivity.webpageURL,
               let shareURL = ShareInviteLink.shareURL(from: url) else { return }
+        // Client-side TTL: refuse a link whose `exp` has passed. Not a security
+        // control (the param is plaintext) — it just stops casual reuse of a
+        // long-stale link and tells the tapper to ask for a fresh one.
+        if ShareInviteLink.isExpired(url) {
+            print("[ShareSceneDelegate] invite link expired; refusing")
+            Task { @MainActor in ShareCoordinator.shared.handleExpiredInviteLink() }
+            return
+        }
         Task { @MainActor in
             await ShareCoordinator.shared.acceptShareURL(shareURL)
         }

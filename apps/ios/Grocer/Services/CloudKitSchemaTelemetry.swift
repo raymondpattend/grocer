@@ -72,7 +72,10 @@ enum CloudKitSchemaTelemetry {
 
     // MARK: - Private
 
-    private static var reportedFingerprintKeys: Set<String> = []
+    // Guarded by `lock` (see `markReported`), so the mutation is already
+    // serialized; `nonisolated(unsafe)` tells the compiler the safety is handled
+    // manually rather than by the type system.
+    private nonisolated(unsafe) static var reportedFingerprintKeys: Set<String> = []
     private static let lock = NSLock()
 
     private static func markReported(_ key: String) -> Bool {

@@ -229,6 +229,13 @@ private final class LocalSyncStore {
         }
     }
 
+    /// Runs `work` on the persistence queue *after* every write enqueued so far
+    /// has completed (the queue is serial/FIFO). Used to advance CloudKit change
+    /// tokens only once the matching snapshot is durably on disk.
+    func runAfterPendingWrites(_ work: @escaping @Sendable () -> Void) {
+        queue.async(execute: work)
+    }
+
     func reset() {
         queue.sync {
             try? fileManager.removeItem(at: snapshotURL)
@@ -327,6 +334,10 @@ final class GroceryRepository {
     /// True while a CloudKit share invite is being accepted. The UI shows a
     /// loading indicator until the joined-group sheet is ready to present.
     private(set) var isAcceptingInvite = false
+
+    /// User-facing message for an invite that couldn't be accepted (currently
+    /// only an expired link). Presented as an alert and cleared on dismiss.
+    var inviteError: String?
 
     enum SyncState: Equatable { case idle, syncing, offline, error(String) }
     private(set) var syncState: SyncState = .idle
@@ -1023,6 +1034,9 @@ final class GroceryRepository {
         ShareCoordinator.shared.setHandler { [weak self] metadata in
             await self?.acceptShare(metadata)
         }
+        ShareCoordinator.shared.setExpiredInviteHandler { [weak self] in
+            self?.inviteError = String(localized: "This invite link has expired. Ask the group owner to send a new one.")
+        }
 
         selectedHouseholdId = settings.selectedHouseholdId.nilIfBlank
         print("[Repo] restored selectedHouseholdId: \(selectedHouseholdId ?? "nil")")
@@ -1110,6 +1124,22 @@ final class GroceryRepository {
         } else {
             print("[Repo] fetch → no CloudKit record changes")
         }
+        // Advance the per-zone change tokens only once the fetched snapshot is
+        // durably on disk. The local store persists asynchronously on a serial
+        // queue, so we hand the commit to that queue: it runs strictly after the
+        // snapshot/outbox/system-field writes above. If the app is killed before
+        // then, the tokens stay put and the next fetch re-delivers the delta
+        // instead of silently skipping it.
+        let tokens = changes.changeTokens
+        if tokens.isEmpty {
+            // Nothing fetched (or nothing to advance) — no ordering needed.
+        } else if changes.hasRecordChanges {
+            localStore.runAfterPendingWrites { CloudKitService.shared.commitChangeTokens(tokens) }
+        } else {
+            // No records were applied, so there is no pending write to order
+            // after; commit immediately to avoid re-fetching the same empty delta.
+            cloud.commitChangeTokens(tokens)
+        }
         print("[Repo] fetch → \(households.count) households, \(members.count) members, \(lists.count) lists, \(items.count) items, \(events.count) events")
         ensureValidSelection()
         // Cheap (filters sessions by time) and acts only on genuinely stale
@@ -1130,6 +1160,7 @@ final class GroceryRepository {
         pruneHistoricalRecords()
         syncPersonalProfileCache()
         await backfillParentReferencesIfNeeded()
+        await rotateStaleInviteLinks()
         await configureLiveActivity()
     }
 
@@ -1696,7 +1727,7 @@ final class GroceryRepository {
         Task {
             do {
                 try await cloud.leaveShare(rootRecordID: rootRecordID)
-                cloud.clearCachedSharedZone(rootRecordID.zoneID)
+                await cloud.clearCachedSharedZone(rootRecordID.zoneID)
                 try? await refresh()
             } catch {
                 print("[Repo] ❌ leave shared group failed: \(error)")
@@ -1710,13 +1741,12 @@ final class GroceryRepository {
     /// `.none`), so each is deleted explicitly; deleting the household root
     /// also removes the `CKShare`, revoking every participant's access.
     private func deleteGroupAsOwner(_ house: Household) {
-        guard usingCloudKit else {
-            discardLocalGroup(house)
-            saveLocalSnapshot()
-            return
-        }
-        // Enqueue while the household is still in local state so child record
-        // IDs resolve to the correct zone, then drop it locally.
+        // Enqueue the deletes while the household is still in local state so child
+        // record IDs resolve to the correct zone, then drop it locally. We enqueue
+        // even when offline: the outbox is durable and flushes when CloudKit next
+        // comes up, so the server records are removed rather than orphaned — and
+        // the group can't resurrect on a later full refetch. Records that were
+        // never uploaded resolve to `.unknownItem` on flush and drop harmlessly.
         items.filter { $0.householdId == house.id }.forEach { enqueueDelete(.item($0)) }
         sessions.filter { $0.householdId == house.id }.forEach { enqueueDelete(.session($0)) }
         tripItems.filter { $0.householdId == house.id }.forEach { enqueueDelete(.tripItem($0)) }
@@ -2365,11 +2395,19 @@ final class GroceryRepository {
             shareURL = try await prepareOneTimeInviteURL()
         } else {
             shareURL = try await prepareInviteLink()
+            // Reusable public link: (re)start the owner-side rotation clock so a
+            // freshly shared link gets the full validity window and a stale one
+            // is auto-closed on a later app open. One-time (iOS 26) links are
+            // single-use server-side, so they don't need rotation tracking.
+            if let householdId = currentHousehold?.id {
+                recordInvitePublicized(householdId: householdId, at: Date())
+            }
         }
         return ShareInviteLink.url(
             shareURL: shareURL,
             groupName: currentHousehold?.name,
-            inviterName: displayName
+            inviterName: displayName,
+            expiresAt: Date().addingTimeInterval(ShareInviteLink.defaultValidity)
         ) ?? shareURL
     }
 
@@ -2394,6 +2432,67 @@ final class GroceryRepository {
 
     func dismissJoinedHousehold() {
         joinedHouseholdId = nil
+    }
+
+    // MARK: - Invite link rotation (owner-side)
+
+    /// App-Group-scoped, environment-suffixed record of when each owned group's
+    /// reusable public invite link was last generated. Drives `rotateStaleInviteLinks`.
+    private var invitePublicizedKey: String {
+        ["grocer.cloudkit.invitePublicizedAt", CloudKitEnvironment.current].joined(separator: ".")
+    }
+
+    private func loadInvitePublicizedDates() -> [String: Date] {
+        guard let data = GrocerAppGroup.defaults.data(forKey: invitePublicizedKey),
+              let map = try? JSONDecoder().decode([String: Date].self, from: data) else { return [:] }
+        return map
+    }
+
+    private func saveInvitePublicizedDates(_ map: [String: Date]) {
+        guard let data = try? JSONEncoder().encode(map) else { return }
+        GrocerAppGroup.defaults.set(data, forKey: invitePublicizedKey)
+    }
+
+    private func recordInvitePublicized(householdId: String, at date: Date) {
+        var map = loadInvitePublicizedDates()
+        map[householdId] = date
+        saveInvitePublicizedDates(map)
+    }
+
+    /// Owner-side rotation of public invite links. A reusable invite flips the
+    /// household's `CKShare` to public read-write; left alone, that link works
+    /// forever. Here the owner closes any public share older than the validity
+    /// window the next time they open the app, so a leaked or forwarded link
+    /// stops working. Existing members keep their access — only the public link
+    /// is revoked. Pairs with the client-side `exp` link param, which expires at
+    /// the same point. Each entry is processed at most once (cleared after a
+    /// successful close), so this costs one round trip per stale link, not per pass.
+    private func rotateStaleInviteLinks(now: Date = Date()) async {
+        guard usingCloudKit else { return }
+        let dates = loadInvitePublicizedDates()
+        guard !dates.isEmpty else { return }
+
+        var remaining = dates
+        for (householdId, publicizedAt) in dates {
+            guard now.timeIntervalSince(publicizedAt) >= ShareInviteLink.defaultValidity else { continue }
+            // Only the owner can close the share; drop tracking for groups we no
+            // longer own or that have gone away.
+            guard let household = households.first(where: { $0.id == householdId }),
+                  household.ownerMemberId == currentMemberId,
+                  (household.recordOwnerName ?? CKCurrentUserDefaultName) == CKCurrentUserDefaultName else {
+                remaining.removeValue(forKey: householdId)
+                continue
+            }
+            do {
+                let closed = try await cloud.closePublicShare(for: householdRecordID(household))
+                remaining.removeValue(forKey: householdId)
+                if closed { print("[Repo] 🔒 rotated stale public invite link for \(household.name)") }
+            } catch {
+                // Leave it in `remaining` so the next maintenance pass retries.
+                print("[Repo] ⚠️ couldn't rotate invite link for \(householdId): \(error)")
+            }
+        }
+        if remaining != dates { saveInvitePublicizedDates(remaining) }
     }
 
     func acceptShare(_ metadata: CKShare.Metadata) async {
@@ -2990,6 +3089,21 @@ final class GroceryRepository {
             }
             print("[Repo] 🗑️ discarded \(writes.count) write(s) — zone \(zone.zoneName) gone")
             return outcome
+        } catch let error as CKError where error.code == .limitExceeded && writes.count > 1 {
+            // CloudKit rejected the whole batch as too large (operation count or
+            // total payload size — e.g. many member records each carrying an
+            // avatar asset). Halve it and retry each half so the burst still
+            // drains, instead of deferring the same oversized batch forever.
+            let mid = writes.count / 2
+            print("[Repo] ✂️ batch too large for zone \(zone.zoneName) (\(writes.count) writes); splitting at \(mid)")
+            var outcome = BatchOutcome()
+            for half in [Array(writes[..<mid]), Array(writes[mid...])] where !half.isEmpty {
+                let halfOutcome = await flushBatch(half, in: zone)
+                outcome.removedAny = outcome.removedAny || halfOutcome.removedAny
+                outcome.systemFieldsChanged = outcome.systemFieldsChanged || halfOutcome.systemFieldsChanged
+                outcome.serverWon = outcome.serverWon || halfOutcome.serverWon
+            }
+            return outcome
         } catch {
             print("[Repo] ⚠️ batch deferred for zone \(zone.zoneName): \(error)")
             var outcome = BatchOutcome()
@@ -3292,20 +3406,11 @@ final class GroceryRepository {
         // Adopt the server's change tag either way so the next attempt is valid.
         recordSystemFields[recordName] = serverRecord.encodedSystemFields()
 
-        if write.operation == .delete {
-            // Our intent is removal; the server's concurrent edit doesn't change
-            // that. Re-issue the delete now that we hold the latest tag.
-            do {
-                let results = try await cloud.modify(saving: [], deleting: [rid], in: zone)
-                if let deleteResult = results.delete[rid], case .success = deleteResult {
-                    recordSystemFields.removeValue(forKey: recordName)
-                    return ConflictResolution(resolved: true, serverWon: false)
-                }
-            } catch {
-                print("[Repo] ⚠️ conflict delete retry failed for \(recordName): \(error)")
-            }
-            return ConflictResolution(resolved: false, serverWon: false)
-        }
+        // Only `.save` writes reach here: this is called from `handleSaveFailure`,
+        // which runs solely for entries in the batch's *save* results. Deletes are
+        // reconciled in `flushBatch`'s delete-results loop and never surface a
+        // `.serverRecordChanged` (deletes ignore the save policy), so there is no
+        // delete branch to handle.
 
         let localCompletedBeatsStaleCancellation = shouldKeepLocalCompletedSession(write: write, over: serverRecord)
         let localDate = updatedAt(of: write.record)

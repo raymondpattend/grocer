@@ -24,6 +24,20 @@ function clean(value: string | string[] | undefined): string {
   return (raw ?? "").trim().slice(0, 80);
 }
 
+// Client-side invite TTL. The app stamps links with an `exp` query item (Unix
+// seconds); we mirror its check here so an expired link shows an "expired" state
+// instead of the join CTA. Not a security boundary — the param is plaintext and
+// strippable — it just turns away people who open a stale link. Links without
+// `exp` (older builds) are treated as valid. Kept in sync with
+// `ShareInviteLink.isExpired` in the iOS app.
+function isExpired(value: string | string[] | undefined, now: number = Date.now()): boolean {
+  const raw = Array.isArray(value) ? value[0] : value;
+  if (!raw) return false;
+  const seconds = Number(raw);
+  if (!Number.isFinite(seconds) || seconds <= 0) return false;
+  return seconds * 1000 < now;
+}
+
 function headline(inviter: string, group: string): string {
   if (inviter && group) return `${inviter} invited you to join "${group}" on Grocer`;
   if (inviter) return `${inviter} invited you to Grocer`;
@@ -44,7 +58,7 @@ export async function generateMetadata({ searchParams }: InvitePageProps): Promi
   const sp = await searchParams;
   const inviter = clean(sp.inviter);
   const group = clean(sp.group);
-  const title = headline(inviter, group);
+  const title = isExpired(sp.exp) ? "This Grocer invite has expired" : headline(inviter, group);
   const description =
     "Add items together, check things off in real time, and keep everyone synced.";
   return {
@@ -79,6 +93,7 @@ export default async function InvitePage({ params, searchParams }: InvitePagePro
   const sp = await searchParams;
   const inviter = clean(sp.inviter);
   const group = clean(sp.group);
+  const expired = isExpired(sp.exp);
 
   return (
     <main
@@ -129,29 +144,49 @@ export default async function InvitePage({ params, searchParams }: InvitePagePro
 
         {/* Invite copy + CTA */}
         <div className="px-6 pt-5 pb-2">
-          <h1 className="text-[26px] font-extrabold leading-tight">
-            {headline(inviter, group)}
-          </h1>
+          {expired ? (
+            <>
+              <h1 className="text-[26px] font-extrabold leading-tight">
+                This invite link has expired
+              </h1>
+              <p className="mt-4 text-[14px] leading-relaxed text-[#6b7280] dark:text-[#a1a1aa]">
+                Ask {inviter || "the group owner"} to send you a new invite link
+                {group ? ` for "${group}"` : ""}.
+              </p>
+              <a
+                href={MARKETING_URL}
+                className="mt-6 flex min-h-[52px] items-center justify-center rounded-[14px] bg-[#18181b] text-base font-bold text-white no-underline transition-opacity hover:opacity-90 dark:bg-[#f4f4f5] dark:text-[#0b0b0c]"
+              >
+                Learn about Grocer
+              </a>
+            </>
+          ) : (
+            <>
+              <h1 className="text-[26px] font-extrabold leading-tight">
+                {headline(inviter, group)}
+              </h1>
 
-          <div className="mt-4 space-y-2">
-            <p className="text-[12px] font-semibold uppercase tracking-wide text-[#6b7280] dark:text-[#a1a1aa]">
-              To accept this invite
-            </p>
-            <div className="flex items-start gap-3 text-[13px] text-[#6b7280] dark:text-[#a1a1aa]">
-              <span className="mt-px grid h-5 w-5 shrink-0 place-items-center rounded-full bg-[#f0f0f0] text-[11px] font-bold text-[#18181b] dark:bg-[#2a2a2a] dark:text-[#f4f4f5]">
-                1
-              </span>
-              <span>Download or update Grocer from the App Store</span>
-            </div>
-            <div className="flex items-start gap-3 text-[13px] text-[#6b7280] dark:text-[#a1a1aa]">
-              <span className="mt-px grid h-5 w-5 shrink-0 place-items-center rounded-full bg-[#f0f0f0] text-[11px] font-bold text-[#18181b] dark:bg-[#2a2a2a] dark:text-[#f4f4f5]">
-                2
-              </span>
-              <span>Open this invite link again to join the group</span>
-            </div>
-          </div>
+              <div className="mt-4 space-y-2">
+                <p className="text-[12px] font-semibold uppercase tracking-wide text-[#6b7280] dark:text-[#a1a1aa]">
+                  To accept this invite
+                </p>
+                <div className="flex items-start gap-3 text-[13px] text-[#6b7280] dark:text-[#a1a1aa]">
+                  <span className="mt-px grid h-5 w-5 shrink-0 place-items-center rounded-full bg-[#f0f0f0] text-[11px] font-bold text-[#18181b] dark:bg-[#2a2a2a] dark:text-[#f4f4f5]">
+                    1
+                  </span>
+                  <span>Download or update Grocer from the App Store</span>
+                </div>
+                <div className="flex items-start gap-3 text-[13px] text-[#6b7280] dark:text-[#a1a1aa]">
+                  <span className="mt-px grid h-5 w-5 shrink-0 place-items-center rounded-full bg-[#f0f0f0] text-[11px] font-bold text-[#18181b] dark:bg-[#2a2a2a] dark:text-[#f4f4f5]">
+                    2
+                  </span>
+                  <span>Open this invite link again to join the group</span>
+                </div>
+              </div>
 
-          <AcceptButton token={token} />
+              <AcceptButton token={token} />
+            </>
+          )}
         </div>
 
         <footer className="px-6 pb-5 text-center text-[11px] text-[#6b7280] opacity-60 dark:text-[#a1a1aa]">

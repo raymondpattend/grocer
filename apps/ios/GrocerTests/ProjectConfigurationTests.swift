@@ -38,6 +38,10 @@ final class ProjectConfigurationTests: XCTestCase {
         XCTAssertTrue(repo.contains("root.appendingPathComponent(CloudKitEnvironment.current"))
         XCTAssertTrue(cloud.contains("[Self.changeTokenKeyPrefix, CloudKitEnvironment.current"))
         XCTAssertTrue(cloud.contains("[\"grocer.cloudkit.knownSharedZones\", CloudKitEnvironment.current]"))
+        // The subscription-registered flags must be environment-scoped too, or a
+        // dev-profiled Release build can suppress the prod build's registration.
+        XCTAssertTrue(cloud.contains("[\"grocer.cloudkit.subscriptionsRegistered\", CloudKitEnvironment.current]"))
+        XCTAssertTrue(cloud.contains("[\"grocer.cloudkit.subscriptionsRegisteredVersion\", CloudKitEnvironment.current]"))
         XCTAssertTrue(sharedData.contains("environmentSuffix"))
     }
 

@@ -20,14 +20,11 @@ struct SessionSummaryView: View {
         repo.households.first { $0.id == session.householdId }?.tint ?? .green
     }
 
-    /// Items the shopper got — found outright or via a replacement.
     private var foundItems: [GroceryItem] {
         repo.handledItems(session: session)
             .filter { $0.status == .found || $0.status == .replaced }
     }
 
-    /// Everything that didn't make it into the cart: out-of-stock, skipped, and
-    /// whatever was still on the list when the trip ended.
     private var notFoundItems: [GroceryItem] {
         let misses = repo.handledItems(session: session)
             .filter { $0.status == .outOfStock || $0.status == .skipped }
@@ -40,30 +37,42 @@ struct SessionSummaryView: View {
     }
 
     var body: some View {
-        List {
-            headerSection
+        ScrollView {
+            VStack(spacing: 16) {
+                heroSection
 
-            if !foundItems.isEmpty {
-                Section {
-                    ForEach(foundItems) { itemRow($0) }
-                } header: {
-                    sectionHeader(String(localized: "Found"), count: foundItems.count,
-                                  systemImage: "checkmark.circle.fill", tint: .green)
+                if !foundItems.isEmpty {
+                    itemCard(
+                        title: String(localized: "Found"),
+                        systemImage: "checkmark.circle.fill",
+                        iconColor: .grocerGreen,
+                        items: foundItems
+                    )
+                }
+
+                if !notFoundItems.isEmpty {
+                    itemCard(
+                        title: String(localized: "Not Found"),
+                        systemImage: "xmark.circle.fill",
+                        iconColor: .secondary,
+                        items: notFoundItems
+                    )
+                }
+
+                if !foundItems.isEmpty || hasOutOfStock {
+                    cleanupCard
                 }
             }
-
-            if !notFoundItems.isEmpty {
-                Section {
-                    ForEach(notFoundItems) { itemRow($0) }
-                } header: {
-                    sectionHeader(String(localized: "Not found"), count: notFoundItems.count,
-                                  systemImage: "xmark.circle.fill", tint: .secondary)
-                }
-            }
-
-            optionsSection
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+            .padding(.bottom, 100)
         }
-        .navigationTitle("Trip Summary")
+        .background(Color(.systemGroupedBackground))
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                GrocerGlassTitle("Trip Summary")
+            }
+        }
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(true)
         .safeAreaInset(edge: .bottom) {
@@ -71,9 +80,7 @@ struct SessionSummaryView: View {
                 Task { await finishTrip() }
             } label: {
                 HStack(spacing: 8) {
-                    if isFinishing {
-                        ProgressView()
-                    }
+                    if isFinishing { ProgressView() }
                     Text(isFinishing ? "Finishing..." : "Done")
                         .font(.headline)
                 }
@@ -89,61 +96,91 @@ struct SessionSummaryView: View {
         .interactiveDismissDisabled(isFinishing)
     }
 
-    // MARK: - Sections
+    // MARK: - Hero
 
-    private var headerSection: some View {
-        Section {
-            VStack(spacing: 10) {
+    private var heroSection: some View {
+        VStack(spacing: 14) {
+            ZStack {
+                Circle()
+                    .fill(tint.opacity(0.12))
+                    .frame(width: 80, height: 80)
                 Image(systemName: "checkmark.seal.fill")
-                    .font(.system(size: 48))
+                    .font(.system(size: 38))
                     .foregroundStyle(tint)
-                    .accessibilityHidden(true)
+            }
+            .accessibilityHidden(true)
+
+            VStack(spacing: 4) {
                 Text("Shopping Complete")
                     .font(.title2.bold())
                 if let store = session.storeName {
-                    Text(store).foregroundStyle(.secondary)
+                    Text(store)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
                 }
-                Text("\(foundItems.count) found · \(notFoundItems.count) not found")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .padding(.top, 2)
             }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical)
-            .listRowBackground(Color.clear)
+
+            HStack(spacing: 8) {
+                statPill("\(foundItems.count)", label: String(localized: "found"), color: .grocerGreen)
+                if !notFoundItems.isEmpty {
+                    statPill("\(notFoundItems.count)", label: String(localized: "not found"), color: .grocerSlate)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 28)
+        .background(Color(.secondarySystemGroupedBackground),
+                    in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .strokeBorder(Color(.separator).opacity(0.5), lineWidth: 1)
         }
     }
 
-    @ViewBuilder
-    private var optionsSection: some View {
-        Section {
-            if !foundItems.isEmpty {
-                Toggle("Remove found items from the list", isOn: $clearFound)
-                    .onChange(of: clearFound) { _, _ in Haptics.selection() }
-            }
-            if hasOutOfStock {
-                Toggle("Keep out-of-stock items for next trip", isOn: $keepOutOfStock)
-                    .onChange(of: keepOutOfStock) { _, _ in Haptics.selection() }
-            }
-        } header: {
-            Text("Cleanup")
-        } footer: {
-            Text("Skipped and remaining items always stay on your list.")
+    private func statPill(_ value: String, label: String, color: Color) -> some View {
+        HStack(spacing: 4) {
+            Text(value)
+                .font(.subheadline.bold())
+                .foregroundStyle(color)
+            Text(label)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(color.opacity(0.1), in: Capsule())
     }
 
-    // MARK: - Rows
+    // MARK: - Item Cards
 
-    private func sectionHeader(_ title: String, count: Int, systemImage: String, tint: Color) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: systemImage).foregroundStyle(tint)
-            Text(title)
-            Text("•")
-            Text("\(count)")
+    private func itemCard(title: String, systemImage: String, iconColor: Color, items: [GroceryItem]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: systemImage).foregroundStyle(iconColor)
+                Text(title)
+                Text("·")
+                Text("\(items.count)")
+                Spacer()
+            }
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 14)
+
+            VStack(spacing: 0) {
+                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                    itemRow(item)
+                    if index < items.count - 1 {
+                        Divider().padding(.leading, 62)
+                    }
+                }
+            }
+            .background(Color(.secondarySystemGroupedBackground),
+                        in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(Color(.separator).opacity(0.5), lineWidth: 1)
+            }
         }
-        .font(.subheadline.weight(.semibold))
-        .foregroundStyle(.secondary)
-        .textCase(nil)
     }
 
     private func itemRow(_ item: GroceryItem) -> some View {
@@ -165,18 +202,19 @@ struct SessionSummaryView: View {
 
             statusBadge(item)
         }
-        .padding(.vertical, 2)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
     }
 
     @ViewBuilder
     private func statusBadge(_ item: GroceryItem) -> some View {
         let (label, color): (String, Color) = {
             switch item.status {
-            case .found: return (String(localized: "Found"), .green)
+            case .found: return (String(localized: "Found"), .grocerGreen)
             case .replaced:
                 let name = item.replacementItemName ?? String(localized: "alternative")
                 return (String(localized: "Replaced · \(name)"), .blue)
-            case .outOfStock: return (String(localized: "Out of stock"), .red)
+            case .outOfStock: return (String(localized: "Out of stock"), .grocerRed)
             case .skipped: return (String(localized: "Skipped"), .orange)
             default: return (String(localized: "Left on list"), .secondary)
             }
@@ -189,6 +227,54 @@ struct SessionSummaryView: View {
             .padding(.vertical, 3)
             .background(color.opacity(0.14), in: Capsule())
             .lineLimit(1)
+    }
+
+    // MARK: - Cleanup Card
+
+    private var cleanupCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "slider.horizontal.3").foregroundStyle(.secondary)
+                Text("Cleanup")
+                Spacer()
+            }
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 14)
+
+            VStack(spacing: 0) {
+                if !foundItems.isEmpty {
+                    Toggle("Remove found items from the list", isOn: $clearFound)
+                        .font(.subheadline)
+                        .tint(tint)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 13)
+                        .onChange(of: clearFound) { _, _ in Haptics.selection() }
+                    if hasOutOfStock {
+                        Divider().padding(.leading, 14)
+                    }
+                }
+                if hasOutOfStock {
+                    Toggle("Keep out-of-stock items for next trip", isOn: $keepOutOfStock)
+                        .font(.subheadline)
+                        .tint(tint)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 13)
+                        .onChange(of: keepOutOfStock) { _, _ in Haptics.selection() }
+                }
+            }
+            .background(Color(.secondarySystemGroupedBackground),
+                        in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(Color(.separator).opacity(0.5), lineWidth: 1)
+            }
+
+            Text("Skipped and remaining items always stay on your list.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 14)
+        }
     }
 
     // MARK: - Finish

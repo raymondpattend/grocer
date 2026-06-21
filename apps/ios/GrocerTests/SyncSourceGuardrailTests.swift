@@ -150,9 +150,12 @@ final class SyncSourceGuardrailTests: XCTestCase {
     }
 
     func testMainScreensExposeSyncStatus() throws {
-        XCTAssertTrue(try hasUncommentedLine(containing: "CloudIssueChip(issue: repo.cloudIssue)", in: "Grocer/Views/HomeView.swift"))
-        XCTAssertTrue(try hasUncommentedLine(containing: "CloudIssueChip(issue: repo.cloudIssue)", in: "Grocer/Views/GroceryListView.swift"))
+        // RootView wraps every screen and renders the chip as a global top
+        // safeAreaInset, so a single instance there covers all screens. Per-screen
+        // chips were removed to avoid rendering two chips at once when an issue is active.
         XCTAssertTrue(try hasUncommentedLine(containing: "CloudIssueChip(issue: repo.cloudIssue)", in: "Grocer/Views/RootView.swift"))
+        XCTAssertFalse(try hasUncommentedLine(containing: "CloudIssueChip(issue: repo.cloudIssue)", in: "Grocer/Views/HomeView.swift"))
+        XCTAssertFalse(try hasUncommentedLine(containing: "CloudIssueChip(issue: repo.cloudIssue)", in: "Grocer/Views/GroceryListView.swift"))
     }
 
     func testForegroundRefreshUsesFastAdaptiveRealtimeCadence() throws {
