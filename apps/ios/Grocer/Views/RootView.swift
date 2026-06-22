@@ -44,7 +44,10 @@ struct RootView: View {
         }
         .onOpenURL { url in
             if let householdId = GroupDeepLink.householdId(from: url) {
-                GroupNavigationCoordinator.shared.openGroup(householdId: householdId)
+                GroupNavigationCoordinator.shared.openGroup(
+                    householdId: householdId,
+                    showAdd: GroupDeepLink.wantsAddItem(from: url)
+                )
             } else if url.scheme == "grocer", url.host == "invite",
                       let token = url.pathComponents.dropFirst().first,
                       let shareURL = ShareInviteLink.decode(token) {

@@ -533,19 +533,89 @@ struct AddItemSearchView: View {
         }
     }
 
+    // Shown in place of the proposed list before anything is typed: a short,
+    // monochrome cheat-sheet of the things shoppers tend not to discover on their
+    // own (inline amounts, the "!" urgency marker, return-per-item, the camera).
     private var emptyProposed: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "text.append")
-                .font(.title)
-                .foregroundStyle(.tertiary)
-            Text("Start typing — items you add will appear here")
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 10) {
+                Label("Tips", systemImage: "lightbulb")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                SquigglyLine()
+                    .stroke(style: StrokeStyle(lineWidth: 1.75, lineCap: .round, lineJoin: .round))
+                    .foregroundStyle(.tertiary)
+                    .frame(height: 9)
+                    .frame(maxWidth: 130, alignment: .leading)
+                    .accessibilityHidden(true)
+            }
+
+            VStack(alignment: .leading, spacing: 14) {
+                ForEach(Self.composeTips) { tip in
+                    composeTipRow(tip)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 20)
+        .padding(.horizontal, 4)
+    }
+
+    private func composeTipRow(_ tip: ComposeTip) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Image(systemName: tip.icon)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
+                .frame(width: 20, alignment: .center)
+            Text(tip.text)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 28)
+        .accessibilityElement(children: .combine)
     }
+
+    private struct ComposeTip: Identifiable {
+        let id = UUID()
+        let icon: String
+        let text: LocalizedStringKey
+    }
+
+    /// A continuous, rounded sine wave used as a hand-drawn squiggly divider under
+    /// the Tips title. The amplitude is sized to fill the view's height (minus the
+    /// stroke inset) so the wave reads clearly rather than as a near-flat line.
+    private struct SquigglyLine: Shape {
+        /// Horizontal span of one full up-and-down crest.
+        var wavelength: CGFloat = 9
+
+        func path(in rect: CGRect) -> Path {
+            var path = Path()
+            // Leave ~1pt of headroom so the rounded stroke isn't clipped at the
+            // crest of each wave.
+            let amplitude = max(rect.height / 2 - 1, 0)
+            let midY = rect.midY
+            path.move(to: CGPoint(x: rect.minX, y: midY))
+            var x = rect.minX
+            while x <= rect.maxX {
+                let y = midY + sin(x / wavelength * 2 * .pi) * amplitude
+                path.addLine(to: CGPoint(x: x, y: y))
+                x += 1
+            }
+            return path
+        }
+    }
+
+    // Bold spans (markdown) only change weight, never colour, so the whole panel
+    // stays grayscale. The icons mirror what each tip refers to: the urgency mark
+    // uses the same "exclamationmark" symbol as the CRITICAL chip.
+    private static let composeTips: [ComposeTip] = [
+        ComposeTip(icon: "number", text: "Just say the amount, like **10 Potatoes**"),
+        ComposeTip(icon: "exclamationmark", text: "Mark an item as critical with **!**, like **Milk!**"),
+        ComposeTip(icon: "return", text: "Press **return** to start a new line"),
+        ComposeTip(icon: "camera", text: "Tap the **camera** to add items from a photo"),
+    ]
 
     private var bottomAction: some View {
         Button {

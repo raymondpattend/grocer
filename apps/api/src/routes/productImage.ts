@@ -38,6 +38,16 @@ const IMAGE_GENERATION_PRICES_USD: Record<string, Record<string, number>> = {
 };
 
 /**
+ * How long a background prewarm waits before claiming generation, giving any
+ * user-facing streaming view of the same item time to win the generation lock
+ * first (so it can show progressive partials instead of a blank wait). Prewarm
+ * runs in `waitUntil`, so this pause is invisible to users.
+ */
+const PREWARM_YIELD_MS = 1_200;
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/**
  * In-flight generation promises keyed by normalized item name.
  * Workers run in a single isolate per instance, so concurrent requests
  * within the same isolate coalesce here and share one OpenAI call.
@@ -181,16 +191,18 @@ function cacheAtEdge(
 }
 
 /**
- * Response for a name the classifier rejected as non-grocery. Non-200 so the iOS
- * client falls back to its placeholder icon, and `public` + `max-age` so the edge
- * negatively-caches it: repeated junk/abuse requests don't re-bill the classifier.
+ * Response for a name the classifier rejected as a non-product. Non-200 so the
+ * iOS client falls back to its placeholder icon, and `public` + `max-age` so the
+ * edge negatively-caches it: repeated junk/abuse requests don't re-bill the
+ * classifier. Kept short (1h) so the occasional false rejection self-heals
+ * quickly rather than sticking for a day — re-classifying junk hourly is ~free.
  */
 function rejectionResponse(): Response {
-  return new Response(JSON.stringify({ ok: false, error: "Not a grocery item" }), {
+  return new Response(JSON.stringify({ ok: false, error: "Not a recognizable item" }), {
     status: 422,
     headers: {
       "Content-Type": "application/json",
-      "Cache-Control": "public, max-age=86400",
+      "Cache-Control": "public, max-age=3600",
     },
   });
 }
@@ -268,7 +280,8 @@ productImageRoute.get("/product-image", async (c) => {
   }
 
   // 3. Cold path. Before paying for an image, run ONE cheap text call that both
-  // (a) rejects non-grocery/abuse names and (b) canonicalizes the name so
+  // (a) rejects non-product/abuse names (people, places, jokes, gibberish) while
+  // allowing any real shopping-list item, and (b) canonicalizes the name so
   // variants ("Whole Milk", "2% milk", "Organic Milk") collapse onto a single
   // generated image. This only runs on a full cache miss.
   const classification = await classifyGroceryName(c.env, name, {
@@ -295,21 +308,10 @@ productImageRoute.get("/product-image", async (c) => {
     }
   }
 
-  // Store the vector under the canonical name so the index stays canonical.
-  // Reuse the raw query vector when the name didn't change.
-  let canonicalVec = queryVec;
-  if (hasVectorize && canonical !== key) {
-    try {
-      canonicalVec = await embed(c.env, canonicalName, {
-        executionCtx: c.executionCtx,
-        traceId,
-        spanName: "product_image_canonical_embedding",
-      });
-    } catch (err) {
-      console.warn("Canonical embedding skipped:", err);
-      canonicalVec = undefined;
-    }
-  }
+  // Reuse the raw query vector when the name didn't change; otherwise leave it
+  // undefined so persistImage embeds the canonical name off the critical path
+  // (keeps the cold streaming path fast — no second embed before generation).
+  const canonicalVec = canonical === key ? queryVec : undefined;
 
   // Clients can opt into a Server-Sent Events stream (`?stream=1`) that relays
   // OpenAI's partial images so the UI renders a progressively-sharpening preview
@@ -426,6 +428,15 @@ async function ensureProductImage(
   const exactHit = await env.IMAGES.get(exactKey);
   if (exactHit) return;
 
+  // Yield to user-facing streams. Prewarm is background (waitUntil), but a
+  // *visible* item is also fetched by a streaming ProductImageView that shows
+  // progressive partials — but only if it wins the generation lock. Pause
+  // briefly so an imminent stream claims generation first; if it produces the
+  // image during the pause we're done, and otherwise we'll lose the lock below
+  // and simply await the stream's result instead of generating a duplicate.
+  await sleep(PREWARM_YIELD_MS);
+  if (await env.IMAGES.get(exactKey)) return;
+
   const hasVectorize = typeof env.IMAGE_INDEX?.query === "function";
   let queryVec: number[] | undefined;
 
@@ -460,19 +471,9 @@ async function ensureProductImage(
   const canonicalKey = r2Key(canonicalName);
   if (canonical !== key && (await env.IMAGES.get(canonicalKey))) return;
 
-  let canonicalVec = queryVec;
-  if (hasVectorize && canonical !== key) {
-    try {
-      canonicalVec = await embed(env, canonicalName, {
-        executionCtx,
-        traceId,
-        spanName: "product_image_canonical_embedding",
-      });
-    } catch (err) {
-      console.warn("Canonical prewarm embedding skipped:", err);
-      canonicalVec = undefined;
-    }
-  }
+  // Reuse the raw query vector when unchanged; otherwise persistImage embeds the
+  // canonical name itself (off the critical path).
+  const canonicalVec = canonical === key ? queryVec : undefined;
 
   const existing = inFlight.get(canonical);
   if (existing) {
@@ -596,7 +597,10 @@ export function parseOpenAIImageStreamFrames(
   return { events, rest };
 }
 
-/** Persists a finished image to R2 + Vectorize so future requests are cache hits. */
+/** Persists a finished image to R2 + Vectorize so future requests are cache hits.
+ *  Computes the embedding here (off the generation critical path) when the caller
+ *  doesn't supply one — e.g. for a canonicalized name whose vector we deliberately
+ *  didn't embed before generating, to keep the cold path fast. */
 async function persistImage(
   env: Env,
   name: string,
@@ -604,16 +608,30 @@ async function persistImage(
   raw: Uint8Array,
   queryVec: number[] | undefined,
   hasVectorize: boolean,
+  executionCtx?: ExecutionContext,
 ): Promise<void> {
   await env.IMAGES.put(exactKey, raw, {
     httpMetadata: { contentType: "image/png" },
   });
 
-  if (hasVectorize && queryVec) {
+  if (!hasVectorize) return;
+
+  let vec = queryVec;
+  if (!vec) {
+    try {
+      vec = await embed(env, name, {
+        executionCtx,
+        spanName: "product_image_persist_embedding",
+      });
+    } catch (err) {
+      console.warn("Persist embedding skipped:", err);
+    }
+  }
+  if (vec) {
     await env.IMAGE_INDEX.upsert([
       {
         id: normalize(name),
-        values: queryVec,
+        values: vec,
         metadata: { r2Key: exactKey, originalName: name },
       },
     ]);
@@ -754,7 +772,7 @@ async function generateAndCache(
     const raw = b64ToBytes(b64);
     // Persist before the finally-block releases the lock, so waiters in other
     // isolates find the finished image the moment the lock disappears.
-    await persistImage(env, name, exactKey, raw, queryVec, hasVectorize);
+    await persistImage(env, name, exactKey, raw, queryVec, hasVectorize, options.executionCtx);
     return raw;
   } catch (err) {
     if (!captured) {
@@ -1022,7 +1040,7 @@ function generateAndStream(
         const raw = b64ToBytes(finalB64);
         c.executionCtx.waitUntil(
           (async () => {
-            await persistImage(env, name, exactKey, raw, queryVec, hasVectorize);
+            await persistImage(env, name, exactKey, raw, queryVec, hasVectorize, c.executionCtx);
             await caches.default.put(cacheKey, imageResponse(raw)).catch(() => {});
             if (won) await releaseGenerationLock(env.IMAGES, canonical);
           })(),

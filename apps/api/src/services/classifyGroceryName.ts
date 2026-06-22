@@ -11,9 +11,11 @@ import {
  * One cheap text call that does two jobs before we ever pay ~$0.009 for an
  * image generation on the cold path:
  *
- *   1. Gate (#2) — reject names that aren't real grocery products, so abuse /
- *      junk inputs ("benjamin netanyahu", "fat person", which we saw being
- *      generated in production) never reach the image model.
+ *   1. Gate (#2) — reject names that aren't real buyable products (people,
+ *      places, jokes, insults, gibberish — e.g. "benjamin netanyahu", "fat
+ *      person", which we saw being generated in production) so abuse / junk
+ *      never reaches the image model. Grocer is a shopping-list app, so
+ *      legitimate non-food items (toys, household, electronics) are allowed.
  *   2. Canonicalize (#3) — collapse trivial variants ("Whole Milk", "2% milk",
  *      "Organic Milk", "milks") onto one canonical name so they share a single
  *      cached image instead of each generating their own.
@@ -26,22 +28,29 @@ const CLASSIFY_MODEL = "gpt-4.1-mini";
 const OPENAI_CHAT_COMPLETIONS_URL = "https://api.openai.com/v1/chat/completions";
 
 const SYSTEM_PROMPT =
-  "You normalize grocery item names for an image cache. Given a name a user " +
-  "typed or that was read off a shopping list, return JSON with two fields.\n\n" +
-  "is_grocery: true only if this is a real product someone buys at a grocery " +
-  "store — food, drink, produce, pantry, frozen, household, personal care, baby, " +
-  "or pet supplies. false for people, places, companies, jokes, insults, " +
-  "profanity, or anything you would not find on a store shelf.\n\n" +
-  "canonical_name: the simplest common grocery name for the SAME product, in " +
-  "lowercase. Remove brand names, quantities, sizes, and decorative qualifiers " +
-  "(organic, fresh, large, free-range), and singularize plurals. But PRESERVE " +
-  "genuinely different products — do not over-collapse. Examples: \"Organic " +
-  "Bananas\" -> \"bananas\"; \"loxs\" -> \"lox\"; \"2% Milk\" -> \"milk\"; " +
-  "\"Almond Milk\" -> \"almond milk\" (a different product, keep it); \"Honeycrisp " +
-  "Apples\" -> \"apples\". When is_grocery is false, set canonical_name to \"\".";
+  "A user added an item to their shopping list. Decide whether it's a real, " +
+  "buyable product and produce a canonical name for it. Return JSON.\n\n" +
+  "is_grocery: true for ANY physical item someone could buy at a store and put " +
+  "on a shopping list — food and groceries, but ALSO household goods, toys " +
+  "(e.g. \"Lego park sets\"), electronics, clothing, hardware, garden, office, " +
+  "baby, pet, and personal-care items. Set it false ONLY when the text is " +
+  "clearly NOT a buyable product: a specific person or public figure, a place, " +
+  "a joke, an insult, profanity, or gibberish. When unsure, prefer true.\n\n" +
+  "canonical_name: the simplest common name for the SAME product, in lowercase. " +
+  "Remove brand names, quantities, sizes, and decorative qualifiers (organic, " +
+  "fresh, large, free-range), and singularize plurals. But PRESERVE genuinely " +
+  "different products — do not over-collapse. Examples: \"Organic Bananas\" -> " +
+  "\"bananas\"; \"loxs\" -> \"lox\"; \"2% Milk\" -> \"milk\"; \"Almond Milk\" -> " +
+  "\"almond milk\" (a different product, keep it); \"Honeycrisp Apples\" -> " +
+  "\"apples\"; \"Lego Park Sets\" -> \"lego set\". When is_grocery is false, set " +
+  "canonical_name to \"\".";
 
 export interface GroceryClassification {
-  /** Whether the name is a real grocery product worth generating an image for. */
+  /**
+   * Whether the name is a real, buyable product (not necessarily food) worth
+   * generating an image for — false only for non-products like people, places,
+   * jokes, or gibberish.
+   */
   isGrocery: boolean;
   /**
    * Canonical product name to key the image cache on. Raw model string (caller

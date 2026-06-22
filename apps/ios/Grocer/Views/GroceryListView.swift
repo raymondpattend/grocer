@@ -187,7 +187,14 @@ struct GroceryListView: View {
         .sheet(isPresented: $showStoreLink) {
             StoreLinkSheet()
         }
-        .onChange(of: repo.currentHousehold?.id) { _, _ in storeBannerHidden = false }
+        .onChange(of: repo.currentHousehold?.id) { _, _ in
+            storeBannerHidden = false
+            openAddItemsIfRequested()
+        }
+        .onAppear { openAddItemsIfRequested() }
+        .onReceive(NotificationCenter.default.publisher(for: GroupNavigationCoordinator.openGroupNotification)) { _ in
+            openAddItemsIfRequested()
+        }
         .sheet(isPresented: $showStartTrip) {
             StartTripSheet(
                 groupName: repo.currentHousehold?.name ?? String(localized: "this list"),
@@ -255,6 +262,14 @@ struct GroceryListView: View {
                 Label("Remove", systemImage: "trash")
             }
         }
+    }
+
+    /// Opens the Add Items modal when this list was reached via the widget's Add
+    /// button (a `grocer://group/<id>?action=add` deep link). One-shot.
+    private func openAddItemsIfRequested() {
+        guard let id = repo.currentHousehold?.id,
+              GroupNavigationCoordinator.shared.consumePendingAdd(for: id) else { return }
+        showingAddSearch = true
     }
 
     private func removeItem(_ item: GroceryItem) {
