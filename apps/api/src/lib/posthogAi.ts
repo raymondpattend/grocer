@@ -54,6 +54,18 @@ export function createAiSpanId(prefix: string): string {
   return `${prefix}:${crypto.randomUUID()}`;
 }
 
+/**
+ * Whether to create/update a PostHog person profile for this AI event. We do so
+ * only when the event is keyed to a real caller (a member/device distinct id),
+ * so per-user AI usage attaches to that person's profile — the same identity the
+ * iOS client uses for `PostHogSDK.identify`. Shared, background generations
+ * (e.g. product-image cache warms) have no caller and stay anonymous, so they
+ * don't all collapse onto a single "anonymous" profile.
+ */
+export function shouldProcessPersonProfile(distinctId: string | undefined): boolean {
+  return !!distinctId && distinctId !== "anonymous";
+}
+
 export function captureAiGeneration(args: AiGenerationCapture): void {
   void captureAiEvent(args, "$ai_generation", {
     "$ai_trace_id": args.traceId ?? createAiTraceId(args.spanName),
@@ -110,7 +122,7 @@ async function captureAiEvent(
   const compactProperties = Object.fromEntries(
     Object.entries({
       ...properties,
-      "$process_person_profile": false,
+      "$process_person_profile": shouldProcessPersonProfile(args.distinctId),
     }).filter(([, value]) => value !== undefined),
   );
 

@@ -104,6 +104,14 @@ A group *is* the grocery list — it carries the store, icon, and color theme.
 | `replacementItemName` | String |
 | `createdAt` / `updatedAt` / `completedAt` / `deletedAt` | Date/Time |
 | `activeSessionId` | String (Queryable) |
+| `photo` | Asset (optional user-taken item photo, shared with the group) |
+
+> **`photo` schema deploy:** like `ShoppingTripItem.replacementItemName`, the
+> `photo` field auto-creates in **Development** on first write but must be added
+> to **Production** before release (Console → `GroceryItem` → **Add Field** →
+> `photo`, type **Asset**, not queryable). Until it exists, the app omits the
+> photo on item saves so the rest of the item still syncs (see
+> `supportsItemPhotoField` in `GroceryRepository`).
 
 ### ShoppingSession
 | Field | Type |

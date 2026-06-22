@@ -94,6 +94,37 @@ export const ParseListResponseSchema = z.object({
 export type ParseListResponse = z.infer<typeof ParseListResponseSchema>;
 
 // ---------------------------------------------------------------------------
+// Identify item from a photo (vision)
+// ---------------------------------------------------------------------------
+
+export const IdentifyItemRequestSchema = z.object({
+  /** Base64-encoded image bytes (no data: URL prefix). Capped to keep the
+   *  Worker request bounded — clients downscale before sending. */
+  image: z.string().min(1).max(12_000_000),
+  /** MIME type of the image, e.g. "image/jpeg". Defaults to JPEG. */
+  mimeType: z.string().max(60).optional(),
+});
+export type IdentifyItemRequest = z.infer<typeof IdentifyItemRequestSchema>;
+
+export const IdentifiedItemSchema = z.object({
+  name: z.string(),
+  category: z.enum(GROCERY_CATEGORIES),
+  /** Model's confidence in [0, 1], when available. */
+  confidence: z.number().min(0).max(1).optional(),
+});
+export type IdentifiedItem = z.infer<typeof IdentifiedItemSchema>;
+
+export const IdentifyItemResponseSchema = z.object({
+  /** Null when the photo isn't a single recognizable grocery item. */
+  item: IdentifiedItemSchema.nullable(),
+  /** Populated when the photo is a written/printed list of grocery items (e.g.
+   *  a handwritten shopping list) rather than a single product — each detected
+   *  line as a parsed item. Empty/absent for single-product photos. */
+  items: z.array(ParsedItemSchema).optional(),
+});
+export type IdentifyItemResponse = z.infer<typeof IdentifyItemResponseSchema>;
+
+// ---------------------------------------------------------------------------
 // Live Activity — token registration
 // ---------------------------------------------------------------------------
 

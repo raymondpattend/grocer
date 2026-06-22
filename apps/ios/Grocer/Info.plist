@@ -96,6 +96,15 @@
 	<string>Grocer uses your location to remind you to start a shopping trip when you arrive at a list's store. Your location stays on your device.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
 	<string>Grocer uses your location in the background to remind you to start a shopping trip when you arrive at a list's store. Your location stays on your device.</string>
+	<!-- Shown when taking a photo of an item to identify it. The photo is sent
+	     once to identify the item, then stored with the item in your shared
+	     iCloud list. -->
+	<key>NSCameraUsageDescription</key>
+	<string>Grocer uses your camera to take a photo of a grocery item and identify it. The photo is saved with the item in your shared list.</string>
+	<!-- Shown when picking an item photo from your library (e.g. on devices
+	     without a camera). -->
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Grocer lets you choose a photo of a grocery item to identify it and save it with the item in your shared list.</string>
 	<!-- App Store export compliance: only exempt encryption (HTTPS, etc.). -->
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>

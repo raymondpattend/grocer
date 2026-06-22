@@ -47,13 +47,18 @@ struct HomeView: View {
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button {
-                        Haptics.selection()
-                        withAnimation(reduceMotion ? nil : .snappy) { separateShared.toggle() }
-                    } label: {
-                        Image(systemName: separateShared ? "person.2.fill" : "person.2")
+                    // Only worth offering the "Separate shared lists" toggle when
+                    // the account actually has groups shared into it (where it
+                    // isn't the owner) — otherwise there's nothing to separate.
+                    if !sharedHouseholds.isEmpty {
+                        Button {
+                            Haptics.selection()
+                            withAnimation(reduceMotion ? nil : .snappy) { separateShared.toggle() }
+                        } label: {
+                            Image(systemName: separateShared ? "person.2.fill" : "person.2")
+                        }
+                        .accessibilityLabel("Separate shared lists")
                     }
-                    .accessibilityLabel("Separate shared lists")
 
                     Button {
                         addGroupTapped()

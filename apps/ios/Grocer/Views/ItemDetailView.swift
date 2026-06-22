@@ -8,6 +8,8 @@ struct ItemDetailView: View {
     @State var item: GroceryItem
     @State private var editing = false
     @State private var showRemoveConfirm = false
+    /// Drives the full-screen preview of the member's own attached photo.
+    @State private var showPhotoPreview = false
 
     /// The member who requested the item, for their avatar in "Requested".
     private var requestedByMember: HouseholdMember? {
@@ -18,7 +20,7 @@ struct ItemDetailView: View {
         Form {
             Section {
                 VStack(spacing: 10) {
-                    ProductImageView(itemName: item.name, size: 160)
+                    itemImage
                     VStack(spacing: 2) {
                         Text(item.name)
                             .font(.title2.weight(.bold))
@@ -27,11 +29,13 @@ struct ItemDetailView: View {
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
+                    // The name and category are already the navigation title — keep
+                    // them out of VoiceOver here so the only stop is the photo.
+                    .accessibilityHidden(true)
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 8)
                 .listRowBackground(Color.clear)
-                .accessibilityHidden(true)
             }
 
             Section {
@@ -116,6 +120,42 @@ struct ItemDetailView: View {
         }
     }
 
+    /// The AI-generated product image (shown everywhere), with the member's own
+    /// photo — when one was attached — tucked in small in the corner. This is the
+    /// only screen that surfaces the user-taken photo; tapping it opens a
+    /// full-screen preview.
+    @ViewBuilder
+    private var itemImage: some View {
+        ZStack(alignment: .bottomTrailing) {
+            ProductImageView(itemName: item.name, size: 160)
+                .accessibilityHidden(true)
+            if let photoData = item.photoData, let image = UIImage(data: photoData) {
+                Button {
+                    Haptics.tap()
+                    showPhotoPreview = true
+                } label: {
+                    Image(uiImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: 60, height: 60)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .strokeBorder(Color(.systemBackground), lineWidth: 3)
+                        }
+                        .shadow(color: .black.opacity(0.2), radius: 4, y: 2)
+                        .padding(8)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("View your photo")
+                .accessibilityAddTraits(.isImage)
+                .fullScreenCover(isPresented: $showPhotoPreview) {
+                    FullScreenPhotoView(image: image)
+                }
+            }
+        }
+    }
+
     // MARK: - Quantity stepper
 
     /// Items always represent at least one of something, so an absent quantity
@@ -187,11 +227,10 @@ struct EditItemView: View {
                 Picker("Category", selection: $item.category) {
                     ForEach(GroceryCategory.ordered) { Text($0.localizedName).tag($0) }
                 }
-                Picker("Priority", selection: $item.priority) {
-                    ForEach(ItemPriority.allCases) { p in
-                        Text(p.localizedName).tag(p)
-                    }
-                }
+                Toggle("Critical", isOn: Binding(
+                    get: { item.priority == .critical },
+                    set: { item.priority = $0 ? .critical : .normal }
+                ))
             }
             Section("Notes") {
                 TextField("Notes", text: Binding($item.notes, default: ""), axis: .vertical)
@@ -211,6 +250,72 @@ struct EditItemView: View {
                     dismiss()
                 }.bold()
             }
+        }
+    }
+}
+
+/// Full-screen viewer for the member's own attached photo. Fits the image to the
+/// screen on a black backdrop, supports pinch-to-zoom, and dismisses on a tap (or
+/// the close button) when not zoomed in.
+private struct FullScreenPhotoView: View {
+    let image: UIImage
+
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// Committed zoom scale; `1` is fit-to-screen.
+    @State private var scale: CGFloat = 1
+    /// Live pinch delta layered on top of `scale` while the gesture is active.
+    @GestureState private var pinch: CGFloat = 1
+
+    private var currentScale: CGFloat { scale * pinch }
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFit()
+                .scaleEffect(currentScale)
+                .gesture(magnification)
+                .onTapGesture(count: 2) { toggleZoom() }
+                // A single tap dismisses, but only at rest so it doesn't fight the
+                // pinch/double-tap-to-zoom interactions.
+                .onTapGesture { if currentScale <= 1.01 { dismiss() } }
+                .accessibilityLabel("Your photo")
+        }
+        .overlay(alignment: .topTrailing) { closeButton }
+        .statusBarHidden()
+    }
+
+    private var closeButton: some View {
+        Button {
+            Haptics.tap()
+            dismiss()
+        } label: {
+            Image(systemName: "xmark")
+                .font(.headline.weight(.semibold))
+                .foregroundStyle(.white)
+                .frame(width: 36, height: 36)
+                .background(.ultraThinMaterial, in: Circle())
+        }
+        .padding(16)
+        .accessibilityLabel("Close")
+    }
+
+    private var magnification: some Gesture {
+        MagnificationGesture()
+            .updating($pinch) { value, state, _ in state = value }
+            .onEnded { value in
+                // Clamp to a sensible range, snapping back to fit when pinched out.
+                scale = min(max(scale * value, 1), 5)
+            }
+    }
+
+    private func toggleZoom() {
+        withAnimation(reduceMotion ? nil : .snappy(duration: 0.25)) {
+            scale = scale > 1 ? 1 : 2.5
         }
     }
 }

@@ -4,4 +4,15 @@ html,
 body {
   margin: 0;
   min-height: 100%;
+  /* Paint the full viewport (incl. Safari's rubber-band overscroll area) with
+     the invite page background so it matches the themeColor toolbar instead of
+     showing the browser's default white at the edges. */
+  background-color: #f6f6f7;
+}
+
+@media (prefers-color-scheme: dark) {
+  html,
+  body {
+    background-color: #0b0b0c;
+  }
 }

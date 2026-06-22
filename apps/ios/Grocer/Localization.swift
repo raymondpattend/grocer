@@ -22,9 +22,8 @@ extension GroceryCategory {
 extension ItemPriority {
     var localizedName: String {
         switch self {
-        case .low: return String(localized: "Low")
         case .normal: return String(localized: "Normal")
-        case .high: return String(localized: "High")
+        case .critical: return String(localized: "Critical")
         }
     }
 }

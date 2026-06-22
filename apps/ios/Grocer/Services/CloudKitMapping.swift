@@ -194,18 +194,28 @@ extension GroceryItem: CloudKitApplicable {
             requestedByMemberId: string(r, CK.Field.requestedByMemberId) ?? "",
             requestedByDisplayName: string(r, CK.Field.requestedByDisplayName) ?? "",
             status: status,
-            priority: string(r, CK.Field.priority).flatMap(ItemPriority.init(rawValue:)) ?? .normal,
+            priority: ItemPriority(storedValue: string(r, CK.Field.priority)),
             replacementPreference: string(r, CK.Field.replacementPreference),
             replacementItemName: string(r, CK.Field.replacementItemName),
             createdAt: date(r, CK.Field.createdAt) ?? Date(),
             updatedAt: date(r, CK.Field.updatedAt) ?? Date(),
             completedAt: date(r, CK.Field.completedAt),
             deletedAt: date(r, CK.Field.deletedAt),
-            activeSessionId: string(r, CK.Field.activeSessionId)
+            activeSessionId: string(r, CK.Field.activeSessionId),
+            photoData: assetData(r, CK.Field.photo)
         )
     }
 
     func apply(to r: CKRecord) {
+        applyMetadata(to: r)
+        applyPhoto(to: r)
+    }
+
+    /// Every item field *except* the photo asset. The outbox sets the asset
+    /// separately so it can skip re-uploading an unchanged photo on routine item
+    /// saves (status/quantity changes), since a CKAsset re-uploads in full on
+    /// every save that includes its key.
+    func applyMetadata(to r: CKRecord) {
         r[CK.Field.householdId] = householdId as CKRecordValue
         r[CK.Field.listId] = listId as CKRecordValue
         r[CK.Field.itemName] = name as CKRecordValue
@@ -223,6 +233,12 @@ extension GroceryItem: CloudKitApplicable {
         r[CK.Field.completedAt] = completedAt as CKRecordValue?
         r[CK.Field.deletedAt] = deletedAt as CKRecordValue?
         r[CK.Field.activeSessionId] = activeSessionId as CKRecordValue?
+    }
+
+    /// Writes (or clears) the photo asset. Kept separate from `applyMetadata` so
+    /// the outbox can conditionally skip re-uploading an unchanged photo.
+    func applyPhoto(to r: CKRecord) {
+        r[CK.Field.photo] = imageAsset(from: photoData)
     }
 }
 

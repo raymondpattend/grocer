@@ -73,6 +73,8 @@ enum CK {
         static let completedAt = "completedAt"
         static let deletedAt = "deletedAt"
         static let activeSessionId = "activeSessionId"
+        /// Optional user-taken item photo (CKAsset). Shared with the group.
+        static let photo = "photo"
 
         // Session
         static let startedByMemberId = "startedByMemberId"

@@ -6,6 +6,12 @@ import {
   createAiSpanId,
   createAiTraceId,
 } from "../lib/posthogAi.js";
+import {
+  acquireGenerationLock,
+  awaitGeneratedImage,
+  releaseGenerationLock,
+} from "../lib/imageLock.js";
+import { classifyGroceryName } from "../services/classifyGroceryName.js";
 
 export const productImageRoute = new Hono<{ Bindings: Env }>();
 
@@ -168,8 +174,25 @@ function cacheAtEdge(
   cacheKey: Request,
   response: Response,
 ): Response {
-  c.executionCtx.waitUntil(cache.put(cacheKey, response.clone()));
+  // Swallow put errors (e.g. an uncacheable status) so a caching hiccup never
+  // surfaces as an unhandled rejection — the response to the caller is unaffected.
+  c.executionCtx.waitUntil(cache.put(cacheKey, response.clone()).catch(() => {}));
   return response;
+}
+
+/**
+ * Response for a name the classifier rejected as non-grocery. Non-200 so the iOS
+ * client falls back to its placeholder icon, and `public` + `max-age` so the edge
+ * negatively-caches it: repeated junk/abuse requests don't re-bill the classifier.
+ */
+function rejectionResponse(): Response {
+  return new Response(JSON.stringify({ ok: false, error: "Not a grocery item" }), {
+    status: 422,
+    headers: {
+      "Content-Type": "application/json",
+      "Cache-Control": "public, max-age=86400",
+    },
+  });
 }
 
 /**
@@ -244,19 +267,64 @@ productImageRoute.get("/product-image", async (c) => {
     }
   }
 
-  // 3. Cold path — the image must be generated. Clients can opt into a
-  // Server-Sent Events stream (`?stream=1`) that relays OpenAI's partial images
-  // so the UI renders a progressively-sharpening preview instead of waiting
-  // ~10s for the finished PNG. Cache/R2/vector hits above always return a plain
-  // `image/png`, so a streaming client must branch on the response Content-Type.
-  if (c.req.query("stream") === "1") {
-    return generateAndStream(c, c.env, name, exactKey, cacheKey, queryVec, hasVectorize, traceId);
+  // 3. Cold path. Before paying for an image, run ONE cheap text call that both
+  // (a) rejects non-grocery/abuse names and (b) canonicalizes the name so
+  // variants ("Whole Milk", "2% milk", "Organic Milk") collapse onto a single
+  // generated image. This only runs on a full cache miss.
+  const classification = await classifyGroceryName(c.env, name, {
+    executionCtx: c.executionCtx,
+    traceId,
+  });
+  if (!classification.isGrocery) {
+    console.log(`Rejected non-grocery image request: "${name}"`);
+    return cacheAtEdge(c, cache, cacheKey, rejectionResponse());
   }
 
-  // Non-stream path: coalesce concurrent generation requests for the same key.
-  const existing = inFlight.get(key);
+  // Key the generation on the canonical name. Fall back to the raw name if the
+  // canonical normalizes to nothing.
+  const canonicalName = normalize(classification.canonicalName) ? classification.canonicalName : name;
+  const canonical = normalize(canonicalName);
+  const canonicalKey = r2Key(canonicalName);
+
+  // The canonical image may already exist even though the raw name missed every
+  // cache above (e.g. "2% milk" canonicalizes to an already-generated "milk").
+  if (canonical !== key) {
+    const canonicalHit = await c.env.IMAGES.get(canonicalKey);
+    if (canonicalHit) {
+      return cacheAtEdge(c, cache, cacheKey, imageResponse(canonicalHit.body));
+    }
+  }
+
+  // Store the vector under the canonical name so the index stays canonical.
+  // Reuse the raw query vector when the name didn't change.
+  let canonicalVec = queryVec;
+  if (hasVectorize && canonical !== key) {
+    try {
+      canonicalVec = await embed(c.env, canonicalName, {
+        executionCtx: c.executionCtx,
+        traceId,
+        spanName: "product_image_canonical_embedding",
+      });
+    } catch (err) {
+      console.warn("Canonical embedding skipped:", err);
+      canonicalVec = undefined;
+    }
+  }
+
+  // Clients can opt into a Server-Sent Events stream (`?stream=1`) that relays
+  // OpenAI's partial images so the UI renders a progressively-sharpening preview
+  // instead of waiting ~10s for the finished PNG. Cache/R2/vector hits above
+  // always return a plain `image/png`, so a streaming client must branch on the
+  // response Content-Type.
+  if (c.req.query("stream") === "1") {
+    return generateAndStream(c, c.env, canonicalName, canonicalKey, cacheKey, canonicalVec, hasVectorize, traceId, name);
+  }
+
+  // Non-stream path: coalesce concurrent generation requests for the same
+  // canonical key within this isolate (the R2 lock handles cross-isolate).
+  const existing = inFlight.get(canonical);
   if (existing) {
-    console.log(`Coalescing duplicate request for "${name}"`);
+    console.log(`Coalescing duplicate request for "${canonicalName}"`);
     const bytes = await existing;
     if (bytes) {
       return cacheAtEdge(c, cache, cacheKey, imageResponse(new Uint8Array(bytes)));
@@ -266,16 +334,17 @@ productImageRoute.get("/product-image", async (c) => {
 
   const generation = generateAndCache(
     c.env,
-    name,
-    exactKey,
-    queryVec,
+    canonicalName,
+    canonicalKey,
+    canonicalVec,
     hasVectorize,
     {
       executionCtx: c.executionCtx,
       traceId,
+      requestedName: name,
     },
   );
-  inFlight.set(key, generation);
+  inFlight.set(canonical, generation);
 
   try {
     const bytes = await generation;
@@ -284,7 +353,7 @@ productImageRoute.get("/product-image", async (c) => {
     }
     return cacheAtEdge(c, cache, cacheKey, imageResponse(bytes));
   } finally {
-    inFlight.delete(key);
+    inFlight.delete(canonical);
   }
 });
 
@@ -382,21 +451,45 @@ async function ensureProductImage(
     }
   }
 
-  const existing = inFlight.get(key);
+  // Canonicalize so prewarm/seed shares cached images with the live path. This
+  // is a trusted path (names come from the seed list or vision identify), so we
+  // ignore the grocery gate and only use the canonical name.
+  const classification = await classifyGroceryName(env, name, { executionCtx, traceId });
+  const canonicalName = normalize(classification.canonicalName) ? classification.canonicalName : name;
+  const canonical = normalize(canonicalName);
+  const canonicalKey = r2Key(canonicalName);
+  if (canonical !== key && (await env.IMAGES.get(canonicalKey))) return;
+
+  let canonicalVec = queryVec;
+  if (hasVectorize && canonical !== key) {
+    try {
+      canonicalVec = await embed(env, canonicalName, {
+        executionCtx,
+        traceId,
+        spanName: "product_image_canonical_embedding",
+      });
+    } catch (err) {
+      console.warn("Canonical prewarm embedding skipped:", err);
+      canonicalVec = undefined;
+    }
+  }
+
+  const existing = inFlight.get(canonical);
   if (existing) {
     await existing;
     return;
   }
 
-  const generation = generateAndCache(env, name, exactKey, queryVec, hasVectorize, {
+  const generation = generateAndCache(env, canonicalName, canonicalKey, canonicalVec, hasVectorize, {
     executionCtx,
     traceId,
+    requestedName: name,
   });
-  inFlight.set(key, generation);
+  inFlight.set(canonical, generation);
   try {
     await generation;
   } finally {
-    inFlight.delete(key);
+    inFlight.delete(canonical);
   }
 }
 
@@ -417,6 +510,18 @@ function buildPrompt(name: string): string {
 
 function b64ToBytes(b64: string): Uint8Array {
   return Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0));
+}
+
+/** Encodes raw PNG bytes back to base64 for the SSE `complete` payload (used when
+ *  a streaming request loses the generation lock and relays another isolate's
+ *  finished image). Chunked to avoid blowing the call stack on large images. */
+function bytesToB64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
 }
 
 export function imageGenerationCostProperties(
@@ -524,8 +629,20 @@ async function generateAndCache(
   options: {
     executionCtx?: ExecutionContext;
     traceId?: string;
+    /** Original requested name, when it differs from the canonical `name`. */
+    requestedName?: string;
   } = {},
 ): Promise<Uint8Array | null> {
+  // Cross-isolate single-flight: if another isolate is already generating this
+  // canonical item, wait for its result instead of paying for a duplicate.
+  const canonical = normalize(name);
+  const won = await acquireGenerationLock(env.IMAGES, canonical);
+  if (!won) {
+    const shared = await awaitGeneratedImage(env.IMAGES, canonical, exactKey);
+    if (shared) return shared;
+    // The holder failed or we timed out — fall through and generate ourselves.
+  }
+
   const prompt = buildPrompt(name);
   const traceId = options.traceId ?? createAiTraceId("product-image");
   const spanId = createAiSpanId("product-image-generation");
@@ -576,6 +693,7 @@ async function generateAndCache(
             false,
           ),
           grocer_item_name: name,
+          grocer_requested_name: options.requestedName,
           grocer_image_key: exactKey,
         },
       });
@@ -623,6 +741,7 @@ async function generateAndCache(
           Boolean(b64),
         ),
         grocer_item_name: name,
+        grocer_requested_name: options.requestedName,
         grocer_image_key: exactKey,
       },
     });
@@ -633,6 +752,8 @@ async function generateAndCache(
     }
 
     const raw = b64ToBytes(b64);
+    // Persist before the finally-block releases the lock, so waiters in other
+    // isolates find the finished image the moment the lock disappears.
     await persistImage(env, name, exactKey, raw, queryVec, hasVectorize);
     return raw;
   } catch (err) {
@@ -659,11 +780,14 @@ async function generateAndCache(
             false,
           ),
           grocer_item_name: name,
+          grocer_requested_name: options.requestedName,
           grocer_image_key: exactKey,
         },
       });
     }
     throw err;
+  } finally {
+    if (won) await releaseGenerationLock(env.IMAGES, canonical);
   }
 }
 
@@ -691,12 +815,31 @@ function generateAndStream(
   queryVec: number[] | undefined,
   hasVectorize: boolean,
   traceId: string = createAiTraceId("product-image"),
+  requestedName?: string,
 ): Response {
   const sse = (event: string, data: unknown) =>
     new TextEncoder().encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
+      // Cross-isolate single-flight. If another isolate is already generating
+      // this canonical item, relay its finished image instead of paying for a
+      // duplicate — we just can't show progressive partials in that case.
+      const canonical = normalize(name);
+      const won = await acquireGenerationLock(env.IMAGES, canonical);
+      if (!won) {
+        const shared = await awaitGeneratedImage(env.IMAGES, canonical, exactKey);
+        if (shared) {
+          controller.enqueue(sse("complete", { b64_json: bytesToB64(shared) }));
+          controller.close();
+          c.executionCtx.waitUntil(
+            caches.default.put(cacheKey, imageResponse(shared)).catch(() => {}),
+          );
+          return;
+        }
+        // The holder failed or we timed out — generate ourselves below.
+      }
+
       const prompt = buildPrompt(name);
       const spanId = createAiSpanId("product-image-stream");
       const started = performance.now();
@@ -749,6 +892,7 @@ function generateAndStream(
                 false,
               ),
               grocer_item_name: name,
+              grocer_requested_name: requestedName,
               grocer_image_key: exactKey,
             },
           });
@@ -827,6 +971,7 @@ function generateAndStream(
               Boolean(finalB64),
             ),
             grocer_item_name: name,
+            grocer_requested_name: requestedName,
             grocer_image_key: exactKey,
             grocer_time_to_first_image_seconds: firstImageMs === undefined
               ? undefined
@@ -859,6 +1004,7 @@ function generateAndStream(
                 false,
               ),
               grocer_item_name: name,
+              grocer_requested_name: requestedName,
               grocer_image_key: exactKey,
             },
           });
@@ -869,15 +1015,20 @@ function generateAndStream(
         controller.close();
       }
 
-      // Persist + warm the edge cache off the critical path.
+      // Persist + warm the edge cache off the critical path, then release the
+      // lock — ordering matters so cross-isolate waiters find the image the
+      // moment the lock disappears.
       if (finalB64) {
         const raw = b64ToBytes(finalB64);
         c.executionCtx.waitUntil(
           (async () => {
             await persistImage(env, name, exactKey, raw, queryVec, hasVectorize);
-            await caches.default.put(cacheKey, imageResponse(raw));
+            await caches.default.put(cacheKey, imageResponse(raw)).catch(() => {});
+            if (won) await releaseGenerationLock(env.IMAGES, canonical);
           })(),
         );
+      } else if (won) {
+        c.executionCtx.waitUntil(releaseGenerationLock(env.IMAGES, canonical));
       }
     },
   });

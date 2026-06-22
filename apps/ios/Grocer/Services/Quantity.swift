@@ -215,25 +215,38 @@ struct QuantityStepperControl: View {
     let amount: String
     /// Spoken value for VoiceOver; defaults to `amount` when omitted.
     var accessibilityValue: String? = nil
+    /// Larger type and tap targets for prominent placements (e.g. the photo
+    /// confirm card), where the stepper is the focal control rather than a row.
+    var large: Bool = false
+    /// Spread to fill the available width (minus pinned leading, plus trailing)
+    /// and drop the capsule background. For placements that already sit on a
+    /// surface — e.g. a form row — so the stepper doesn't read as a background
+    /// floating inside another background.
+    var fill: Bool = false
     var onDecrement: () -> Void
     var onIncrement: () -> Void
 
     var body: some View {
         HStack(spacing: 0) {
             stepButton(systemImage: "minus", action: onDecrement)
+            if fill { Spacer(minLength: 12) }
             Text(amount)
-                .font(.subheadline.weight(.semibold).monospacedDigit())
+                .font((large ? Font.title3 : Font.subheadline).weight(.semibold).monospacedDigit())
                 .contentTransition(.numericText())
                 // Self-animate on value change so the rolling-digit transition
                 // fires regardless of whether the caller wrapped the mutation in
                 // `withAnimation` (and survives an interleaved non-animated
                 // observation, e.g. the item-detail repo write).
                 .animation(.snappy(duration: 0.22), value: amount)
-                .frame(minWidth: 30)
+                .frame(minWidth: large ? 44 : 30)
+            if fill { Spacer(minLength: 12) }
             stepButton(systemImage: "plus", action: onIncrement)
         }
-        .padding(.vertical, 4)
-        .background(.quaternary.opacity(0.6), in: Capsule())
+        .padding(.vertical, large ? 8 : 4)
+        .padding(.horizontal, large ? 4 : 0)
+        // `fill` placements ride on the host surface's own background, so they
+        // drop the capsule to avoid a background-inside-a-background look.
+        .background(fill ? AnyShapeStyle(.clear) : AnyShapeStyle(.quaternary.opacity(0.6)), in: Capsule())
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Quantity")
         .accessibilityValue(accessibilityValue ?? amount)
@@ -249,8 +262,8 @@ struct QuantityStepperControl: View {
     private func stepButton(systemImage: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemImage)
-                .font(.footnote.weight(.bold))
-                .frame(width: 30, height: 24)
+                .font((large ? Font.body : Font.footnote).weight(.bold))
+                .frame(width: large ? 44 : 30, height: large ? 34 : 24)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -267,6 +280,13 @@ struct QuantityStepperField: View {
     @Binding var quantity: String
     var proposedUnit: String? = nil
     var tint: Color = .accentColor
+    /// Larger type and tap targets for prominent placements (e.g. the photo
+    /// confirm card). Passed through to the underlying `QuantityStepperControl`.
+    var large: Bool = false
+    /// Spread the stepper to fill the row and drop its capsule background — for
+    /// placements that already sit on a surface (e.g. a form row). Passed through
+    /// to the underlying `QuantityStepperControl`.
+    var fill: Bool = false
 
     @State private var showingCustomUnit = false
     @State private var customUnit = ""
@@ -293,6 +313,7 @@ struct QuantityStepperField: View {
     var body: some View {
         HStack(spacing: 12) {
             stepperControl
+                .frame(maxWidth: fill ? .infinity : nil)
             unitMenu
         }
         .alert("Custom unit", isPresented: $showingCustomUnit) {
@@ -309,6 +330,8 @@ struct QuantityStepperField: View {
         QuantityStepperControl(
             amount: amountLabel,
             accessibilityValue: "\(amountLabel) \(displayUnit)",
+            large: large,
+            fill: fill,
             onDecrement: { adjust(-1) },
             onIncrement: { adjust(1) }
         )
@@ -343,7 +366,7 @@ struct QuantityStepperField: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
-            .font(.subheadline)
+            .font(large ? .body : .subheadline)
             // Never wrap or get squeezed — the label keeps its intrinsic width.
             .fixedSize()
         }

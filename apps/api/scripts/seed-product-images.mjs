@@ -13,11 +13,12 @@
 //
 // Safe to re-run: already-cached items return immediately and cost nothing.
 
-const DEFAULT_BASE = "https://api.trygrocer.com";
+const DEFAULT_BASE = "https://api.grocer.sh";
 
-// Curated staples — broad coverage of a typical grocery list. The Worker's
-// vector similarity collapses plurals/variants ("tomato" ↔ "tomatoes"), so we
-// only need one canonical spelling per item.
+// Curated staples — broad coverage of a typical grocery list. The Worker now
+// canonicalizes names server-side (e.g. "Whole milk"/"Skim milk" → "milk"), and
+// its vector similarity collapses plurals/variants ("tomato" ↔ "tomatoes"), so
+// overlapping entries here just resolve to the same cached image — no waste.
 const ITEMS = [
   // Produce
   "Bananas", "Apples", "Oranges", "Lemons", "Limes", "Strawberries", "Blueberries",

@@ -1,5 +1,6 @@
 import PhotosUI
 import PostHog
+import StoreKit
 import SwiftUI
 import UIKit
 
@@ -287,18 +288,53 @@ struct SettingsView: View {
     }
 
     private func openManageSubscription() {
+        // Stripe (web) subscriptions are managed through our own billing portal,
+        // so keep the user in-app with a sheet.
+        if subscriptions.isWebSubscription {
+            guard let url = subscriptions.managementURL else {
+                subscriptions.recordErrorMessage(String(localized: "Subscription management is not available yet."))
+                return
+            }
+            billingPortal = BillingPortalPresentation(url: url)
+            return
+        }
+
+        // App Store subscriptions can only be managed by Apple. Present the
+        // native StoreKit management sheet in-app rather than bouncing the user
+        // out to the App Store / Settings app.
+        Task { await presentAppStoreManagement() }
+    }
+
+    @MainActor
+    private func presentAppStoreManagement() async {
+        let scene = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive }
+            ?? UIApplication.shared.connectedScenes
+                .compactMap { $0 as? UIWindowScene }
+                .first
+
+        guard let scene else {
+            // No window scene to present from — fall back to the system URL.
+            openManagementURLFallback()
+            return
+        }
+
+        do {
+            try await AppStore.showManageSubscriptions(in: scene)
+        } catch {
+            // The sheet can fail to present (e.g. simulator/sandbox); fall back
+            // to opening the management URL so the user is never stuck.
+            openManagementURLFallback()
+        }
+    }
+
+    private func openManagementURLFallback() {
         guard let url = subscriptions.managementURL else {
             subscriptions.recordErrorMessage(String(localized: "Subscription management is not available yet."))
             return
         }
-        // Stripe (web) subscriptions are managed through our own billing portal,
-        // so keep the user in-app with a sheet. App Store subscriptions can only
-        // be managed by Apple, so hand those off to the system subscription UI.
-        if subscriptions.isWebSubscription {
-            billingPortal = BillingPortalPresentation(url: url)
-        } else {
-            openURL(url)
-        }
+        openURL(url)
     }
 
     // MARK: - General
@@ -447,6 +483,9 @@ struct SettingsView: View {
                 .font(.body.weight(.semibold))
                 .foregroundStyle(enabled ? .primary : .secondary)
             Spacer(minLength: 8)
+            if showsInviteLimitChip {
+                inviteLimitChip
+            }
             Image(systemName: "chevron.right")
                 .font(.footnote.weight(.semibold))
                 .foregroundStyle(.tertiary)
@@ -454,6 +493,33 @@ struct SettingsView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
         .contentShape(Rectangle())
+    }
+
+    /// Free list owners get a couple of invites before they hit the cap, so we
+    /// surface their remaining allowance right on the invite row as an upsell.
+    /// Pro members and non-owners (who can't invite) don't need the nudge.
+    private var showsInviteLimitChip: Bool {
+        !subscriptions.hasGrocerPro && repo.isOwnerOfCurrentGroup
+    }
+
+    /// "1/2 · Upgrade" capsule. Pro-yellow to read as an upgrade affordance; the
+    /// row itself opens the invite sheet, which presents the paywall at the cap.
+    private var inviteLimitChip: some View {
+        let count = repo.invitedMemberCount
+        let limit = GroceryRepository.freeInviteLimit
+        return HStack(spacing: 5) {
+            Text(verbatim: "\(count)/\(limit)")
+                .font(.caption.weight(.bold))
+                .monospacedDigit()
+            Text("Upgrade")
+                .font(.caption2.weight(.semibold))
+        }
+        .foregroundStyle(.black)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 4)
+        .background(Color.yellow, in: Capsule())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text("\(count) of \(limit) members invited. Upgrade to Grocer Pro to invite more."))
     }
 
     private var membersFooter: String? {

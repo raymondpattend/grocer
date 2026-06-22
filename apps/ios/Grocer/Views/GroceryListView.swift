@@ -165,8 +165,10 @@ struct GroceryListView: View {
                     Button { Haptics.tap(); showingInvite = true } label: { Image(systemName: "person.crop.circle.badge.plus") }
                         .accessibilityLabel("Invite to list")
                 }
-                Button { Haptics.tap(); showingHistory = true } label: { Image(systemName: "clock.arrow.circlepath") }
-                    .accessibilityLabel("Trip history")
+                if !repo.currentCompletedTrips.isEmpty {
+                    Button { Haptics.tap(); showingHistory = true } label: { Image(systemName: "clock.arrow.circlepath") }
+                        .accessibilityLabel("Trip history")
+                }
                 Button { Haptics.tap(); showingSettings = true } label: { Image(systemName: "gearshape") }
                     .accessibilityLabel("Settings")
             }

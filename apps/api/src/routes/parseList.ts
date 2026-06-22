@@ -5,7 +5,7 @@ import { parseBody } from "../lib/validate.js";
 import { parseListWithAI } from "../services/aiParseList.js";
 import { parseList } from "../services/categorize.js";
 import { prewarmProductImages } from "./productImage.js";
-import { createPostHogClient } from "../lib/posthog.js";
+import { callerDistinctId, createPostHogClient } from "../lib/posthog.js";
 
 export const parseListRoute = new Hono<{ Bindings: Env }>();
 
@@ -13,11 +13,12 @@ parseListRoute.post("/parse-list", async (c) => {
   const parsed = await parseBody(c, ParseListRequestSchema);
   if ("error" in parsed) return parsed.error;
 
+  const distinctId = callerDistinctId(c);
   let aiItems: ParsedItem[] | null = null;
   try {
     aiItems = await parseListWithAI(c.env, parsed.data.text, {
       executionCtx: c.executionCtx,
-      distinctId: "anonymous",
+      distinctId,
     });
   } catch (err) {
     console.warn("AI list parsing failed; using deterministic fallback:", err);
@@ -30,13 +31,13 @@ parseListRoute.post("/parse-list", async (c) => {
 
   const posthog = createPostHogClient(c.env);
   posthog.capture({
-    distinctId: "anonymous",
+    distinctId: distinctId ?? "anonymous",
     event: "list parsed",
     properties: {
       item_count: items.length,
       method: usedAI ? "ai" : "fallback",
       input_length: parsed.data.text.length,
-      $process_person_profile: false,
+      $process_person_profile: distinctId !== undefined,
     },
   });
   c.executionCtx.waitUntil(posthog.shutdown());

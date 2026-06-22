@@ -62,18 +62,36 @@ enum GroceryCategory: String, CaseIterable, Codable, Identifiable, Hashable {
 }
 
 enum ItemPriority: String, CaseIterable, Codable, Hashable, Identifiable {
-    case low = "Low"
     case normal = "Normal"
-    case high = "High"
+    case critical = "Critical"
 
     var id: String { rawValue }
 
     var sortOrder: Int {
         switch self {
-        case .high: return 0
+        case .critical: return 0
         case .normal: return 1
-        case .low: return 2
         }
+    }
+
+    /// Maps a stored priority string onto a case, tolerating values written by
+    /// older builds: the former "High" becomes `.critical`, and the removed
+    /// "Low" collapses to `.normal`.
+    init(storedValue raw: String?) {
+        switch raw {
+        case "Critical", "High": self = .critical
+        default: self = .normal
+        }
+    }
+
+    init(from decoder: any Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = ItemPriority(storedValue: raw)
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
     }
 }
 
@@ -172,6 +190,11 @@ struct GroceryItem: Identifiable, Codable, Hashable {
     var completedAt: Date?
     var deletedAt: Date?
     var activeSessionId: String?
+    /// Optional user-taken photo of the item, stored as a CloudKit asset in the
+    /// shared zone so every group member sees it on the item's detail screen.
+    /// Defaulted (and decoded as absent → nil) so older snapshots and existing
+    /// call sites stay source- and wire-compatible.
+    var photoData: Data? = nil
 }
 
 struct GroceryItemSuggestion: Identifiable, Hashable {

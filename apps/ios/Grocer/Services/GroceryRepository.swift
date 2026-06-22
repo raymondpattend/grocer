@@ -112,6 +112,8 @@ struct GroceryItemInput {
     var notes: String?
     var priority: ItemPriority = .normal
     var replacementPreference: String?
+    /// Optional user-taken photo to attach to the item (shared via CloudKit).
+    var photoData: Data? = nil
 }
 
 /// Which CloudKit environment this build talks to. CloudKit picks this from the
@@ -421,6 +423,15 @@ final class GroceryRepository {
     /// Hash of the profile image last uploaded for each member record this
     /// session. Lets member saves skip re-uploading an unchanged avatar asset.
     private var lastUploadedMemberAvatarHash: [String: Int] = [:]
+    /// Hash of the photo last uploaded for each item record this session. Lets
+    /// routine item saves (status/quantity edits during shopping) skip
+    /// re-uploading an unchanged photo asset.
+    private var lastUploadedItemPhotoHash: [String: Int] = [:]
+    /// Whether the CloudKit `GroceryItem.photo` field exists in the deployed
+    /// schema. Flipped off (for the session) if a save fails with a schema
+    /// mismatch on that field, so items still sync without the photo until the
+    /// production schema catches up. Mirrors `supportsTripItemReplacementNameField`.
+    private var supportsItemPhotoField = true
     /// Set when a refresh is requested while one is already in flight, so the
     /// in-flight pass re-runs once more instead of silently dropping the request.
     private var refreshRequestedWhileInFlight = false
@@ -1451,14 +1462,46 @@ final class GroceryRepository {
         // registration. The empty-membership case (user genuinely left all
         // groups) is already covered by the per-removal diff in the managers'
         // `configure`, so skipping it here is safe.
+        //
+        // This runs on the steady foreground poll (via `fetchAndApplyChanges`),
+        // so it must not POST on every tick. The reconcile only matters when the
+        // membership set actually changes, so we diff against a durably persisted
+        // set and skip the network call when nothing moved. The set is derived
+        // from CloudKit-synced state, so a real join/leave flips it within a poll
+        // and reconciles promptly; the steady state is silent.
         if hasCompletedInitialLoad && !memberships.isEmpty {
-            await api.syncRegistrations(
-                SyncRegistrationsPayload(
-                    deviceId: settings.deviceId,
-                    householdIds: Array(memberships.keys)
+            let householdIds = Set(memberships.keys)
+            if householdIds != Self.loadSyncedRegistrationHouseholds() {
+                await api.syncRegistrations(
+                    SyncRegistrationsPayload(
+                        deviceId: settings.deviceId,
+                        householdIds: Array(householdIds)
+                    )
                 )
-            )
+                // Persist only after the POST so a failed reconcile is retried on
+                // the next change (or relaunch) instead of being silently dropped.
+                Self.persistSyncedRegistrationHouseholds(householdIds)
+            }
         }
+    }
+
+    /// App-Group-scoped record of the household set this device last reconciled
+    /// with the backend via `/live-activity/sync-registrations`. Lets the steady
+    /// foreground poll skip the network call until membership genuinely changes.
+    /// Environment-suffixed so Debug and Release builds don't clobber each other.
+    private static let syncedRegistrationHouseholdsKey =
+        GrocerAppGroup.scopedName("grocer.liveActivity.syncedRegistrationHouseholds")
+
+    private static func loadSyncedRegistrationHouseholds() -> Set<String> {
+        guard let data = GrocerAppGroup.defaults.data(forKey: syncedRegistrationHouseholdsKey),
+              let ids = try? JSONDecoder().decode([String].self, from: data)
+        else { return [] }
+        return Set(ids)
+    }
+
+    private static func persistSyncedRegistrationHouseholds(_ householdIds: Set<String>) {
+        guard let data = try? JSONEncoder().encode(Array(householdIds)) else { return }
+        GrocerAppGroup.defaults.set(data, forKey: syncedRegistrationHouseholdsKey)
     }
 
     private func householdMembershipsForPushRegistration() -> [String: String] {
@@ -1820,6 +1863,9 @@ final class GroceryRepository {
 
             if var existing = byName[key] {
                 existing.quantity = Quantity.merged(existing.quantity, input.quantity)
+                // A photo provided with this add wins over an absent one; never
+                // clobber an existing photo with nil.
+                if let photo = input.photoData { existing.photoData = photo }
                 existing.updatedAt = now
                 byName[key] = existing
             } else {
@@ -1840,7 +1886,8 @@ final class GroceryRepository {
                     updatedAt: now,
                     completedAt: nil,
                     deletedAt: nil,
-                    activeSessionId: session?.id
+                    activeSessionId: session?.id,
+                    photoData: input.photoData
                 )
             }
             if !touchedKeys.contains(key) { touchedKeys.append(key) }
@@ -2810,6 +2857,7 @@ final class GroceryRepository {
         valid.formUnion(events.map(\.id))
         recordSystemFields = recordSystemFields.filter { valid.contains($0.key) }
         lastUploadedMemberAvatarHash = lastUploadedMemberAvatarHash.filter { valid.contains($0.key) }
+        lastUploadedItemPhotoHash = lastUploadedItemPhotoHash.filter { valid.contains($0.key) }
     }
 
     private func applyPendingWrites(to snapshot: inout CloudSnapshot) {
@@ -3125,7 +3173,7 @@ final class GroceryRepository {
             switch saveResult {
             case .success(let saved):
                 recordSystemFields[rid.recordName] = saved.encodedSystemFields()
-                rememberMemberAvatar(for: write.record)
+                rememberUploadedAsset(for: write.record)
                 outcome.systemFieldsChanged = true
                 if removeIfCurrent(write) { outcome.removedAny = true }
             case .failure(let error):
@@ -3135,6 +3183,15 @@ final class GroceryRepository {
                 }
                 if Self.isTripItemReplacementNameSchemaError(error), case .tripItem = write.record {
                     let resolution = await retryTripItemWithoutReplacementName(
+                        write: write, rid: rid, zone: zone, schemaError: error
+                    )
+                    outcome.removedAny = outcome.removedAny || resolution.removedAny
+                    outcome.systemFieldsChanged = outcome.systemFieldsChanged || resolution.systemFieldsChanged
+                    outcome.serverWon = outcome.serverWon || resolution.serverWon
+                    continue
+                }
+                if Self.isItemPhotoSchemaError(error), case .item = write.record {
+                    let resolution = await retryItemWithoutPhoto(
                         write: write, rid: rid, zone: zone, schemaError: error
                     )
                     outcome.removedAny = outcome.removedAny || resolution.removedAny
@@ -3228,6 +3285,11 @@ final class GroceryRepository {
                 write: write, rid: rid, zone: zone, schemaError: error
             )
         }
+        if Self.isItemPhotoSchemaError(error), case .item = write.record {
+            return await retryItemWithoutPhoto(
+                write: write, rid: rid, zone: zone, schemaError: error
+            )
+        }
         if CloudKitSchemaTelemetry.parseMismatch(from: error) != nil {
             reportSchemaMismatch(
                 error,
@@ -3287,6 +3349,18 @@ final class GroceryRepository {
             if !serverHasRecord || lastUploadedMemberAvatarHash[recordName] != newHash {
                 member.applyProfileImage(to: record)
             }
+        case .item(let item):
+            item.applyMetadata(to: record)
+            // Upload the photo asset only when it changed since our last upload
+            // (or on the first save of this record), and only while the schema is
+            // known to support it.
+            guard supportsItemPhotoField else { break }
+            let recordName = pending.recordName
+            let newHash = item.photoData?.hashValue ?? 0
+            let serverHasRecord = recordSystemFields[recordName] != nil
+            if !serverHasRecord || lastUploadedItemPhotoHash[recordName] != newHash {
+                item.applyPhoto(to: record)
+            }
         case .tripItem(let tripItem):
             tripItem.apply(to: record, includeReplacementItemName: supportsTripItemReplacementNameField)
         default:
@@ -3339,6 +3413,55 @@ final class GroceryRepository {
         return SaveFailureResolution()
     }
 
+    /// Re-saves a `GroceryItem` without its photo asset after a schema mismatch
+    /// on the `photo` field (production CloudKit not yet deployed with it).
+    /// Disables the photo field for the session so the item — and every later
+    /// item — still syncs; the photo uploads once the schema catches up.
+    private func retryItemWithoutPhoto(
+        write: PendingCloudWrite,
+        rid: CKRecord.ID,
+        zone: CKRecordZone.ID,
+        schemaError: Error
+    ) async -> SaveFailureResolution {
+        if supportsItemPhotoField {
+            supportsItemPhotoField = false
+            print("[Repo] ⚠️ GroceryItem.photo missing in CloudKit schema; omitting photo on item saves")
+            reportSchemaMismatch(
+                schemaError,
+                recordName: rid.recordName,
+                context: "item_omit_photo_field",
+                recovered: true
+            )
+        }
+
+        guard case .item = write.record else {
+            return SaveFailureResolution()
+        }
+
+        let record = buildRecord(for: write.record, recordID: rid)
+
+        do {
+            let results = try await cloud.modify(saving: [record], deleting: [], in: zone)
+            if let saveResult = results.save[rid], case .success(let saved) = saveResult {
+                recordSystemFields[rid.recordName] = saved.encodedSystemFields()
+                if removeIfCurrent(write) {
+                    return SaveFailureResolution(removedAny: true, systemFieldsChanged: true, serverWon: false)
+                }
+            }
+        } catch {
+            print("[Repo] ⚠️ item retry without photo failed for \(rid.recordName): \(error)")
+            reportSchemaMismatch(
+                error,
+                recordName: rid.recordName,
+                context: "item_omit_photo_field_retry_failed",
+                recovered: false
+            )
+            _ = markWriteDeferred(write, error: error)
+            recordSyncFailure(error, context: "iCloud save failed")
+        }
+        return SaveFailureResolution()
+    }
+
     private func reportSchemaMismatch(
         _ error: Error,
         recordName: String?,
@@ -3368,9 +3491,23 @@ final class GroceryRepository {
             && mismatch.fieldName == CK.Field.replacementItemName
     }
 
-    private func rememberMemberAvatar(for pending: PendingCloudRecord) {
-        guard case .member(let member) = pending else { return }
-        lastUploadedMemberAvatarHash[pending.recordName] = member.profileImageData?.hashValue ?? 0
+    private static func isItemPhotoSchemaError(_ error: Error) -> Bool {
+        guard let mismatch = CloudKitSchemaTelemetry.parseMismatch(from: error) else { return false }
+        return mismatch.recordType.caseInsensitiveCompare(CK.RecordType.item) == .orderedSame
+            && mismatch.fieldName == CK.Field.photo
+    }
+
+    /// Records the hash of the asset we just uploaded for a record so subsequent
+    /// metadata-only saves can skip re-uploading an unchanged avatar/photo.
+    private func rememberUploadedAsset(for pending: PendingCloudRecord) {
+        switch pending {
+        case .member(let member):
+            lastUploadedMemberAvatarHash[pending.recordName] = member.profileImageData?.hashValue ?? 0
+        case .item(let item):
+            lastUploadedItemPhotoHash[pending.recordName] = item.photoData?.hashValue ?? 0
+        default:
+            break
+        }
     }
 
     /// The logical last-modified time used for conflict resolution. Immutable or
@@ -3433,7 +3570,7 @@ final class GroceryRepository {
             let results = try await cloud.modify(saving: [serverRecord], deleting: [], in: zone)
             if let saveResult = results.save[rid], case .success(let saved) = saveResult {
                 recordSystemFields[recordName] = saved.encodedSystemFields()
-                rememberMemberAvatar(for: write.record)
+                rememberUploadedAsset(for: write.record)
                 print("[Repo] ↻ conflict resolved (local kept) for \(serverRecord.recordType) \(recordName)")
                 return ConflictResolution(resolved: true, serverWon: false)
             }
@@ -3567,6 +3704,7 @@ final class GroceryRepository {
         nextCloudWriteRevision = 0
         recordSystemFields.removeAll()
         lastUploadedMemberAvatarHash.removeAll()
+        lastUploadedItemPhotoHash.removeAll()
         localPersistenceBatchDepth = 0
         hasDeferredLocalSnapshotSave = false
         hasDeferredOutboxFlushSchedule = false

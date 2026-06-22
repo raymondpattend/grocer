@@ -98,6 +98,27 @@ final class CloudKitMappingTests: XCTestCase {
         XCTAssertEqual(decoded.activeSessionId, "trip")
     }
 
+    func testGroceryItemMigratesLegacyPriorityValues() throws {
+        let record = CKRecord(recordType: CK.RecordType.item, recordID: recordID("item"))
+        record[CK.Field.householdId] = "home" as CKRecordValue
+        record[CK.Field.listId] = "list" as CKRecordValue
+        record[CK.Field.itemName] = "Milk" as CKRecordValue
+        record[CK.Field.category] = GroceryCategory.dairy.rawValue as CKRecordValue
+        record[CK.Field.status] = ItemStatus.needed.rawValue as CKRecordValue
+        record[CK.Field.requestedByMemberId] = "member" as CKRecordValue
+        record[CK.Field.requestedByDisplayName] = "Ray" as CKRecordValue
+        record[CK.Field.createdAt] = date as CKRecordValue
+        record[CK.Field.updatedAt] = date as CKRecordValue
+
+        // The former "High" level is now surfaced as `.critical`.
+        record[CK.Field.priority] = "High" as CKRecordValue
+        XCTAssertEqual(try XCTUnwrap(GroceryItem(record: record)).priority, .critical)
+
+        // The removed "Low" level collapses onto `.normal`.
+        record[CK.Field.priority] = "Low" as CKRecordValue
+        XCTAssertEqual(try XCTUnwrap(GroceryItem(record: record)).priority, .normal)
+    }
+
     func testShoppingTripItemApplyCanOmitReplacementItemName() throws {
         let record = CKRecord(recordType: CK.RecordType.tripItem, recordID: recordID("trip_item"))
         let tripItem = ShoppingTripItem(
@@ -134,7 +155,7 @@ final class CloudKitMappingTests: XCTestCase {
             requestedByMemberId: "member",
             requestedByDisplayName: "Ray",
             status: .replaced,
-            priority: .high,
+            priority: .critical,
             replacementPreference: "Any dark roast",
             replacementItemName: "Espresso roast",
             createdAt: date,
@@ -150,12 +171,60 @@ final class CloudKitMappingTests: XCTestCase {
         XCTAssertEqual(record[CK.Field.quantity] as? String, "1 bag")
         XCTAssertEqual(record[CK.Field.category] as? String, GroceryCategory.drinks.rawValue)
         XCTAssertEqual(record[CK.Field.status] as? String, ItemStatus.replaced.rawValue)
-        XCTAssertEqual(record[CK.Field.priority] as? String, ItemPriority.high.rawValue)
+        XCTAssertEqual(record[CK.Field.priority] as? String, ItemPriority.critical.rawValue)
         XCTAssertEqual(record[CK.Field.replacementPreference] as? String, "Any dark roast")
         XCTAssertEqual(record[CK.Field.replacementItemName] as? String, "Espresso roast")
         XCTAssertEqual(record[CK.Field.completedAt] as? Date, date)
         XCTAssertNil(record[CK.Field.deletedAt])
         XCTAssertEqual(record[CK.Field.activeSessionId] as? String, "trip")
+    }
+
+    func testGroceryItemRoundTripsPhotoAsset() throws {
+        let record = CKRecord(recordType: CK.RecordType.item, recordID: recordID("item"))
+        let photo = Data([0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03])
+        var item = makeItem()
+        item.photoData = photo
+
+        item.apply(to: record)
+        XCTAssertNotNil(record[CK.Field.photo] as? CKAsset)
+
+        let decoded = try XCTUnwrap(GroceryItem(record: record))
+        XCTAssertEqual(decoded.photoData, photo)
+    }
+
+    func testGroceryItemWithoutPhotoDecodesNil() throws {
+        let record = CKRecord(recordType: CK.RecordType.item, recordID: recordID("item"))
+        let item = makeItem() // photoData defaults to nil
+
+        item.apply(to: record)
+        XCTAssertNil(record[CK.Field.photo])
+
+        let decoded = try XCTUnwrap(GroceryItem(record: record))
+        XCTAssertNil(decoded.photoData)
+    }
+
+    /// Minimal valid item for mapping tests.
+    private func makeItem() -> GroceryItem {
+        GroceryItem(
+            id: "item",
+            householdId: "home",
+            listId: "list",
+            name: "Milk",
+            quantity: "1",
+            category: .dairy,
+            notes: nil,
+            requestedByMemberId: "member",
+            requestedByDisplayName: "Ray",
+            status: .needed,
+            priority: .normal,
+            replacementPreference: nil,
+            replacementItemName: nil,
+            createdAt: date,
+            updatedAt: date,
+            completedAt: nil,
+            deletedAt: nil,
+            activeSessionId: nil
+        )
     }
 
     func testItemEventMetadataRoundTripsAsData() throws {

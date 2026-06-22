@@ -31,6 +31,15 @@ actor APIClient {
         return URLSession(configuration: config)
     }()
 
+    /// Slower session for AI calls that round-trip an image through a vision
+    /// model (item identification), which routinely exceeds the 8s default.
+    private let visionSession: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 25
+        config.waitsForConnectivity = false
+        return URLSession(configuration: config)
+    }()
+
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
@@ -69,6 +78,22 @@ actor APIClient {
         struct Res: Decodable { let items: [ParsedItem] }
         let res: Res? = await post("/parse-list", body: Req(text: text))
         return res?.items ?? []
+    }
+
+    // MARK: - Item identification (vision)
+
+    /// Best-effort: sends a photo to the Worker, which uses an AI vision model to
+    /// resolve it into either a single grocery product or a multi-item grocery
+    /// list (e.g. a photographed handwritten list). Returns an empty outcome on
+    /// any failure — offline, API down, or the photo isn't grocery-related. The
+    /// image is sent only to our Worker for identification; it is NOT persisted
+    /// server-side (the photo itself lives in CloudKit with the item).
+    func identifyItem(imageData: Data) async -> IdentifyOutcome {
+        struct Req: Encodable { let image: String; let mimeType: String }
+        struct Res: Decodable { let item: IdentifiedItem?; let items: [ParsedItem]? }
+        let body = Req(image: imageData.base64EncodedString(), mimeType: "image/jpeg")
+        let res: Res? = await post("/identify-item", body: body, session: visionSession)
+        return IdentifyOutcome(item: res?.item, items: res?.items ?? [])
     }
 
     // MARK: - Product images
@@ -160,13 +185,17 @@ actor APIClient {
         guard let url = components?.url else { return nil }
         var req = URLRequest(url: url)
         req.httpMethod = "GET"
+        req.setValue(SettingsStore.shared.memberIdOrDevice, forHTTPHeaderField: "x-grocer-distinct-id")
         return await perform(req)
     }
 
-    private func post<T: Decodable>(_ path: String, body: some Encodable) async -> T? {
+    private func post<T: Decodable>(_ path: String, body: some Encodable, session: URLSession? = nil) async -> T? {
         var req = URLRequest(url: baseURL.appendingPathComponent(path))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // Same identity the client uses for PostHogSDK.identify, so server-side
+        // events (notably AI usage) attach to this person's profile.
+        req.setValue(SettingsStore.shared.memberIdOrDevice, forHTTPHeaderField: "x-grocer-distinct-id")
         let bodyData: Data
         do {
             bodyData = try encoder.encode(body)
@@ -180,7 +209,7 @@ actor APIClient {
             print("[APIClient] signed request skipped: missing API signing secret")
             return nil
         }
-        return await perform(req)
+        return await perform(req, session: session)
     }
 
     private func signLiveActivityRequest(_ req: inout URLRequest, body: Data) -> Bool {
@@ -206,9 +235,9 @@ actor APIClient {
         return true
     }
 
-    private func perform<T: Decodable>(_ req: URLRequest) async -> T? {
+    private func perform<T: Decodable>(_ req: URLRequest, session: URLSession? = nil) async -> T? {
         do {
-            let (data, response) = try await session.data(for: req)
+            let (data, response) = try await (session ?? self.session).data(for: req)
             guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
                 print("[APIClient] non-2xx for \(req.url?.path ?? "")")
                 return nil
@@ -321,6 +350,28 @@ struct ParsedItem: Decodable {
     let category: String
     let quantity: String?
     let unit: String?
+}
+
+/// One grocery item identified from a photo by the Worker's vision model.
+struct IdentifiedItem: Decodable {
+    let name: String
+    let category: String
+    /// Model's confidence in [0, 1], when provided.
+    let confidence: Double?
+
+    /// The detected category mapped onto the app enum, falling back to an
+    /// on-device guess from the name when the server value is unrecognized.
+    var groceryCategory: GroceryCategory {
+        GroceryCategory(rawValue: category) ?? CategoryGuess.guess(for: name)
+    }
+}
+
+/// One photo resolved by the Worker's vision model: either a single product or a
+/// multi-item grocery list read off the photo. At most one side is populated;
+/// both are empty when nothing grocery-related was found.
+struct IdentifyOutcome {
+    let item: IdentifiedItem?
+    let items: [ParsedItem]
 }
 
 struct OkResponse: Decodable { let ok: Bool }

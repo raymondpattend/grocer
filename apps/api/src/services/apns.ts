@@ -480,12 +480,13 @@ export function sendHeadsUpNotification(
   },
 ): Promise<ApnsResult> {
   const shopper = args.shopperName?.trim() || "Someone";
-  const store = args.storeName?.trim() ? ` to ${args.storeName.trim()}` : "";
+  const store = args.storeName?.trim();
+  const listPart = store ? `the ${store} list` : "the list";
   const payload = {
     aps: {
       alert: {
         title: "Heads up — shopping soon",
-        body: `${shopper} is about to head${store ? store : " out"} shopping. Add anything you need now.`,
+        body: `${shopper} is about to shop ${listPart}. Add anything you need now.`,
       },
       sound: "default",
       "interruption-level": "time-sensitive",

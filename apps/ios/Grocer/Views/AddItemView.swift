@@ -1,5 +1,6 @@
 import PostHog
 import SwiftUI
+import UIKit
 
 struct AddItemView: View {
     @Environment(GroceryRepository.self) private var repo
@@ -45,11 +46,10 @@ struct AddItemView: View {
                     ForEach(GroceryCategory.ordered) { Text($0.localizedName).tag($0) }
                 }
                 .onChange(of: category) { _, _ in categoryEditedManually = true }
-                Picker("Priority", selection: $priority) {
-                    ForEach(ItemPriority.allCases) { p in
-                        Text(p.localizedName).tag(p)
-                    }
-                }
+                Toggle("Critical", isOn: Binding(
+                    get: { priority == .critical },
+                    set: { priority = $0 ? .critical : .normal }
+                ))
                 TextField("Notes", text: $notes, axis: .vertical)
             }
 
@@ -149,6 +149,31 @@ struct AddItemSearchView: View {
     /// Whether the software keyboard is currently up — hides the bottom action.
     @State private var keyboardVisible = false
 
+    // MARK: Photo capture → AI identify
+    /// Presents the custom in-app camera (captures with no Retake/Use Photo step).
+    @State private var showCamera = false
+    /// Presents the photo library — the fallback where no camera exists (Simulator).
+    @State private var showImagePicker = false
+    /// The user-taken photo, shown small in the confirm card and attached to the item.
+    @State private var captureImage: UIImage?
+    /// Downscaled JPEG attached to the item once confirmed.
+    @State private var capturePhotoData: Data?
+    /// Holds the just-captured photo between the camera/library cover dismissing
+    /// and the identify sheet presenting. Presenting the sheet while the cover is
+    /// still animating away is silently dropped by UIKit, so we stash the photo
+    /// and wait for the cover's `onDismiss` (fires once it's fully gone).
+    @State private var pendingCaptureImage: UIImage?
+    /// Drives the post-capture confirm card.
+    @State private var showIdentifyCard = false
+    /// True while the vision request is in flight.
+    @State private var isIdentifying = false
+    /// Whether the model returned a usable guess (for analytics).
+    @State private var didIdentify = false
+    @State private var identifiedName = ""
+    @State private var identifiedCategory: GroceryCategory = .other
+    @State private var identifiedQuantity = ""
+    @State private var identifiedNotes = ""
+
     /// Debounce handle for the AI parse; cancelled and rescheduled on each edit.
     @State private var parseTask: Task<Void, Never>?
     /// Last text we ran a parse for, so identical text doesn't re-parse.
@@ -157,7 +182,10 @@ struct AddItemSearchView: View {
     /// it doesn't trigger another parse, preventing a feedback loop.
     @State private var suppressParse = false
 
-    @FocusState private var inputFocused: Bool
+    // Drives the compose field's first-responder state. A plain `Bool` (not
+    // `@FocusState`) so it can bridge to the UIKit-backed `BulletListTextEditor`,
+    // which owns the caret to keep bullet formatting from teleporting it.
+    @State private var inputFocused = false
 
     private var trimmedInput: String {
         inputText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -185,9 +213,16 @@ struct AddItemSearchView: View {
             addFlowContent
                 .opacity(contentAppeared ? (showHistory ? 0 : 1) : 0)
                 .offset(y: contentAppeared ? 0 : 14)
-                .overlay(alignment: .bottomTrailing) {
-                    if !showHistory && !historySuggestions.isEmpty {
-                        historyButton
+                // The close button is sticky (added after the opacity/offset so it
+                // stays put as the title scrolls beneath it).
+                .overlay(alignment: .top) {
+                    if !showHistory {
+                        closeButton
+                    }
+                }
+                .overlay(alignment: .bottom) {
+                    if !showHistory {
+                        floatingControls
                     }
                 }
 
@@ -221,18 +256,18 @@ struct AddItemSearchView: View {
             }
             refocusInput(after: 0.24)
         }
-        .onChange(of: inputText) { _, newValue in
+        .onChange(of: inputText) { _, _ in
             if suppressParse {
                 suppressParse = false
                 return
             }
-            // Once the list spans more than one line (the user hit return), render
-            // it as a bullet list so each item reads as its own point.
-            let formatted = bulletified(newValue)
-            if formatted != newValue {
-                suppressParse = true
-                inputText = formatted
-            }
+            // Bullet formatting now happens inside `BulletListTextEditor` as the
+            // user types (so the caret can be kept on the edited line). Priority
+            // markers don't change *which* items are detected (they're stripped
+            // before parsing), so re-apply them to the existing rows immediately —
+            // a typed/removed "!" flips the CRITICAL chip without waiting on the
+            // debounced network parse. The parse still runs to pick up item edits.
+            applyPriorityFromText()
             scheduleParse(after: .milliseconds(500))
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -257,6 +292,67 @@ struct AddItemSearchView: View {
         } message: {
             Text("You have items ready to add. Close without adding them?")
         }
+        .fullScreenCover(isPresented: $showCamera, onDismiss: presentIdentifyIfPending) {
+            CameraCaptureView { image in
+                pendingCaptureImage = image
+                showCamera = false
+            }
+            .ignoresSafeArea()
+        }
+        .fullScreenCover(isPresented: $showImagePicker, onDismiss: presentIdentifyIfPending) {
+            ImagePicker { image in
+                pendingCaptureImage = image
+                showImagePicker = false
+            }
+            .ignoresSafeArea()
+        }
+        .sheet(isPresented: $showIdentifyCard) {
+            IdentifyItemCard(
+                userPhoto: $captureImage,
+                isIdentifying: $isIdentifying,
+                name: $identifiedName,
+                category: $identifiedCategory,
+                quantity: $identifiedQuantity,
+                notes: $identifiedNotes,
+                tint: tint,
+                onAdd: commitIdentifiedItem,
+                onRetake: retakePhoto
+            )
+        }
+    }
+
+    /// Bottom-floating row: the camera button is pinned to the leading edge and
+    /// the History pill (when there's history) to the trailing edge.
+    private var floatingControls: some View {
+        HStack(spacing: 12) {
+            cameraButton
+            Spacer(minLength: 0)
+            if !historySuggestions.isEmpty {
+                historyButton
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 16)
+        .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.86),
+                   value: historySuggestions.isEmpty)
+    }
+
+    /// Floating glass pill that opens the camera to photograph an item (or a
+    /// written list), then has the server identify it. Icon-only — no label.
+    private var cameraButton: some View {
+        Button {
+            startPhotoCapture()
+        } label: {
+            Image(systemName: "camera.fill")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.primary)
+                .frame(width: 44, height: 34)
+        }
+        .tint(.primary)
+        .grocerGlassButton()
+        .clipShape(Capsule())
+        .transition(.scale(scale: 0.85).combined(with: .opacity))
+        .accessibilityLabel("Take a photo to identify an item")
     }
 
     /// Floating glass pill that swaps the add flow for the group's item history.
@@ -277,33 +373,28 @@ struct AddItemSearchView: View {
         .tint(.primary)
         .grocerGlassButton()
         .clipShape(Capsule())
-        .padding(.trailing, 16)
-        .padding(.bottom, 16)
         .transition(.scale(scale: 0.85).combined(with: .opacity))
         .accessibilityLabel("Add from history")
     }
 
     private var addFlowContent: some View {
-        VStack(spacing: 0) {
-            header
-                .padding(.horizontal, 16)
-                .padding(.top, 12)
-                .padding(.bottom, 8)
-
-            ScrollView {
-                // The glass container lives inside the ScrollView so the cards'
-                // glass is rendered (and clipped) within the scroll bounds — otherwise
-                // it draws over the pinned header when the list scrolls up.
+        // No pinned header bar: the title chip scrolls with the content while only
+        // the close button stays put (a sticky overlay in `body`). The glass
+        // container lives inside the ScrollView so the cards' glass is rendered (and
+        // clipped) within the scroll bounds.
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                titleChip
                 scrollContent
-                    .padding(.horizontal, 16)
-                    .padding(.top, 8)
-                    // Reserve space for the floating History pill (height 34 + 16
-                    // bottom inset) so a long proposed list can scroll clear of it
-                    // instead of having its last rows overlapped.
-                    .padding(.bottom, historySuggestions.isEmpty ? 24 : 74)
             }
-            .scrollDismissesKeyboard(.interactively)
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            // Reserve space for the always-present floating controls row (pill
+            // height 34 + 16 bottom inset) so a long proposed list can scroll clear
+            // of it instead of having its last rows overlapped.
+            .padding(.bottom, 74)
         }
+        .scrollDismissesKeyboard(.interactively)
     }
 
     @ViewBuilder
@@ -321,25 +412,36 @@ struct AddItemSearchView: View {
         VStack(alignment: .leading, spacing: 16) {
             composePanel
             proposedPanel
+                // Tapping the proposed-items area (rows or the empty placeholder)
+                // dismisses the keyboard. Child controls (row text fields/buttons)
+                // take priority, and `dismissKeyboard()` no-ops when the keyboard
+                // is already down, so this only fires for genuine empty-area taps.
+                .contentShape(Rectangle())
+                .onTapGesture { dismissKeyboard() }
         }
     }
 
-    private var header: some View {
-        HStack(spacing: 12) {
-            Text("Add Items")
-                // ~10% larger than .headline (17pt).
-                .font(.system(size: 18.7, weight: .semibold))
-                .padding(.horizontal, 16)
-                .frame(height: 36)
-                .grocerLiquidGlass(in: Capsule())
-                // Purely a label — taps pass through to nothing.
-                .allowsHitTesting(false)
+    /// The page title as a Liquid Glass capsule chip. It scrolls with the content
+    /// (not pinned), sitting at the leading content edge.
+    private var titleChip: some View {
+        Text("Add Items")
+            // ~10% larger than .headline (17pt).
+            .font(.system(size: 18.7, weight: .semibold))
+            .padding(.horizontal, 16)
+            .frame(height: 36)
+            .grocerLiquidGlass(in: Capsule())
+            // Purely a label — taps pass through to nothing.
+            .allowsHitTesting(false)
+    }
 
-            Spacer()
-
+    /// The sticky close control, floated over the content at the top-trailing edge
+    /// (there's no header bar behind it). While typing it drops the keyboard;
+    /// otherwise it closes the flow.
+    private var closeButton: some View {
+        HStack(spacing: 0) {
+            Spacer(minLength: 0)
             Button {
                 Haptics.tap()
-                // While typing, the button drops the keyboard; otherwise it closes.
                 if keyboardVisible {
                     dismissKeyboard()
                 } else {
@@ -358,18 +460,26 @@ struct AddItemSearchView: View {
             .tint(.primary)
             .accessibilityLabel(keyboardVisible ? String(localized: "Dismiss keyboard") : String(localized: "Close"))
         }
+        .padding(.horizontal, 16)
+        .padding(.top, 12)
     }
 
     // MARK: - Top pane: input + autocomplete
 
     private var composePanel: some View {
-        TextField("Type your list freely — milk, eggs, bananas, etc.", text: $inputText, axis: .vertical)
-            .focused($inputFocused)
-            .font(.title3.weight(.medium))
-            .textInputAutocapitalization(.sentences)
-            .lineLimit(3...8)
-            .submitLabel(.done)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        BulletListTextEditor(text: $inputText, isFocused: $inputFocused)
+            .frame(maxWidth: .infinity, minHeight: 92, alignment: .topLeading)
+            .overlay(alignment: .topLeading) {
+                if inputText.isEmpty {
+                    // UITextView has no native placeholder; mirror the editor's
+                    // font and top inset so this sits exactly where the caret will.
+                    Text("Type your list freely — milk, eggs, bananas, etc.")
+                        .font(.title3.weight(.medium))
+                        .foregroundStyle(Color(.placeholderText))
+                        .padding(.top, 8)
+                        .allowsHitTesting(false)
+                }
+            }
     }
 
     // MARK: - Bottom pane: proposed items
@@ -479,11 +589,21 @@ struct AddItemSearchView: View {
         isParsing = true
         // The freeform field may carry bullet markers ("• "); feed clean lines to
         // both the AI parse and the offline fallback.
-        let cleaned = stripBullets(text)
-        let parsed = await APIClient.shared.parseList(cleaned)
+        let cleaned = Self.stripBullets(text)
+        // Names the shopper flagged urgent inline ("milk!", "eggs important"). The
+        // markers themselves are stripped before parsing so they never leak into an
+        // item's name; priority is reattached to the detected items afterward.
+        let urgentNames = highPriorityItemNames(in: cleaned)
+        let forParsing = Self.strippingPriorityMarkers(cleaned)
+        let parsed = await APIClient.shared.parseList(forParsing)
         guard !Task.isCancelled else { isParsing = false; return }
 
-        let detected = parsed.isEmpty ? localSplit(cleaned) : parsed.compactMap(DetectedItem.init(parsedItem:))
+        let detected = (parsed.isEmpty ? localSplit(forParsing) : parsed.compactMap(DetectedItem.init(parsedItem:)))
+            .map { item -> DetectedItem in
+                var item = item
+                if isHighPriority(item.name, among: urgentNames) { item.priority = .critical }
+                return item
+            }
         withAnimation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.86)) {
             drafts = merge(detected, into: drafts)
         }
@@ -501,6 +621,83 @@ struct AddItemSearchView: View {
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
             .map { DetectedItem(name: $0, quantity: "", unit: UnitGuess.guess(for: $0), category: CategoryGuess.guess(for: $0)) }
+    }
+
+    // MARK: - Priority markers
+    //
+    // A shopper can flag an item urgent inline while typing — a "!" anywhere on the
+    // line, or one of the words "critical", "important", or "high". Flagged items
+    // are staged at .critical priority (the CRITICAL chip); everything else stays .normal
+    // (no chip). The markers are stripped before the text is parsed so they never
+    // become part of an item's name.
+
+    /// Alternation of the urgency keywords, matched as whole words (so "thigh" or
+    /// "high chair" don't trip "high").
+    private static let highPriorityWords = "critical|important|high"
+
+    /// Whether a typed segment flags its item as urgent.
+    static func hasHighPriorityMarker(in text: String) -> Bool {
+        if text.contains("!") { return true }
+        return text.range(of: "\\b(\(highPriorityWords))\\b",
+                          options: [.regularExpression, .caseInsensitive]) != nil
+    }
+
+    /// Strips urgency markers ("!" and the keywords) from each line, recovering the
+    /// plain item text. Line breaks and commas are preserved so the structure the
+    /// parser and the offline split rely on survives.
+    static func strippingPriorityMarkers(_ text: String) -> String {
+        text
+            .components(separatedBy: "\n")
+            .map { line in
+                line
+                    .replacingOccurrences(of: "\\b(\(highPriorityWords))\\b", with: "",
+                                          options: [.regularExpression, .caseInsensitive])
+                    .replacingOccurrences(of: "!", with: " ")
+                    .replacingOccurrences(of: "[ \\t]+", with: " ", options: .regularExpression)
+                    .trimmingCharacters(in: .whitespaces)
+            }
+            .joined(separator: "\n")
+    }
+
+    /// Normalized item names (markers stripped, lowercased) the shopper flagged
+    /// urgent, keyed off the raw text's comma/newline-separated segments.
+    private func highPriorityItemNames(in text: String) -> Set<String> {
+        Set(
+            text
+                .components(separatedBy: CharacterSet(charactersIn: ",\n"))
+                .filter { Self.hasHighPriorityMarker(in: $0) }
+                .map { Self.strippingPriorityMarkers($0).lowercased() }
+                .filter { !$0.isEmpty }
+        )
+    }
+
+    /// Whether a detected item's name was among the urgent-flagged segments. The
+    /// parser may rename slightly (drop quantities, normalize case), so a loose
+    /// containment match in either direction is used.
+    private func isHighPriority(_ name: String, among urgentNames: Set<String>) -> Bool {
+        guard !urgentNames.isEmpty else { return false }
+        let lower = name.lowercased()
+        return urgentNames.contains { $0 == lower || $0.contains(lower) || lower.contains($0) }
+    }
+
+    /// Re-derives each existing draft's priority from the current text's inline
+    /// markers and applies it immediately — no debounce, no network round-trip.
+    /// Markers don't affect item detection (they're stripped before parsing), so
+    /// adding or removing a "!" can flip the CRITICAL chip instantly while the
+    /// debounced parse catches up with any item changes. The text is the source of
+    /// truth: a marker escalates to .critical, its removal drops back to .normal.
+    private func applyPriorityFromText() {
+        guard !drafts.isEmpty else { return }
+        let urgentNames = highPriorityItemNames(in: Self.stripBullets(inputText))
+        let updated = drafts.map { draft -> ParsedGroceryDraft in
+            var draft = draft
+            draft.priority = isHighPriority(draft.name, among: urgentNames) ? .critical : .normal
+            return draft
+        }
+        guard updated != drafts else { return }
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+            drafts = updated
+        }
     }
 
     /// Re-projects detected items onto the current drafts, reusing existing rows
@@ -526,26 +723,42 @@ struct AddItemSearchView: View {
                     match.unit = proposedUnit
                 }
                 match.category = item.category
+                // The text is the single source of truth for priority: an inline
+                // marker ("!", "important", …) escalates to .critical and its
+                // removal drops it back to .normal. `syncTextFromDrafts` re-emits the
+                // marker for critical rows, so a write-back never loses the flag.
+                match.priority = item.priority
                 return match
             }
 
-            var quantity = ""
-            if hasExplicitAmount {
-                quantity = explicitQuantity(for: item)
-            } else if let known = repo.currentItemSuggestion(named: item.name),
-                      let knownQuantity = known.quantity {
-                // Reuse the amount this household last bought.
-                quantity = knownQuantity
-            } else if !proposedUnit.isEmpty {
-                // Propose one of the natural unit, e.g. "1 dozen" for eggs.
-                quantity = "1 \(proposedUnit)"
-            } else {
-                // No amount, no known quantity, and no natural unit: default to a
-                // single item rather than leaving the stepper showing "0".
-                quantity = "1"
-            }
-            return ParsedGroceryDraft(name: item.name, quantity: quantity, unit: proposedUnit, category: item.category)
+            return makeDraft(from: item)
         }
+    }
+
+    /// Build a fresh draft for a newly-detected item, choosing a sensible non-zero
+    /// quantity: the user's explicit amount, else the household's last-used amount,
+    /// else one of the natural unit, else a plain "1".
+    private func makeDraft(from item: DetectedItem) -> ParsedGroceryDraft {
+        let proposedUnit = item.unit.isEmpty ? UnitGuess.guess(for: item.name) : item.unit
+        let hasExplicitAmount = !item.quantity.trimmingCharacters(in: .whitespaces).isEmpty
+
+        var quantity = ""
+        if hasExplicitAmount {
+            quantity = explicitQuantity(for: item)
+        } else if let known = repo.currentItemSuggestion(named: item.name),
+                  let knownQuantity = known.quantity {
+            // Reuse the amount this household last bought.
+            quantity = knownQuantity
+        } else if !proposedUnit.isEmpty {
+            // Propose one of the natural unit, e.g. "1 dozen" for eggs.
+            quantity = "1 \(proposedUnit)"
+        } else {
+            // No amount, no known quantity, and no natural unit: default to a
+            // single item rather than leaving the stepper showing "0".
+            quantity = "1"
+        }
+        return ParsedGroceryDraft(name: item.name, quantity: quantity, unit: proposedUnit,
+                                  category: item.category, priority: item.priority)
     }
 
     /// Combine an AI-detected amount and unit into a single quantity string,
@@ -587,7 +800,14 @@ struct AddItemSearchView: View {
     /// Rewrites the input text from the current drafts. Guarded so the resulting
     /// `inputText` change doesn't kick off another parse.
     private func syncTextFromDrafts() {
-        let parts = drafts.map { $0.quantity.isEmpty ? $0.name : "\($0.quantity) \($0.name)" }
+        let parts = drafts.map { draft -> String in
+            let base = draft.quantity.isEmpty ? draft.name : "\(draft.quantity) \(draft.name)"
+            // Re-emit the urgency marker so the text stays the source of truth for
+            // priority: a critical row keeps a trailing "!" across the write-back, so
+            // editing a quantity (or adding from history/photo) never silently drops
+            // the CRITICAL flag on a later re-parse.
+            return draft.priority == .critical ? "\(base)!" : base
+        }
         // Mirror the bullet-list presentation: a single item stays plain, several
         // become a bulleted, one-per-line list to match the typed input.
         let text = parts.count > 1
@@ -610,7 +830,7 @@ struct AddItemSearchView: View {
     /// Backspacing it removes the space, leaving a bare "•" — the signal that the
     /// user wants the bullet gone. That line is dropped so it collapses onto the
     /// previous item instead of being re-padded back to "• ".
-    private func bulletified(_ text: String) -> String {
+    fileprivate static func bulletified(_ text: String) -> String {
         var lines = text.components(separatedBy: "\n")
 
         if let idx = lines.firstIndex(where: { $0 == Self.bulletMarker }), lines.count > 1 {
@@ -631,13 +851,13 @@ struct AddItemSearchView: View {
 
     /// Drops a line's leading bullet marker and surrounding spaces, recovering the
     /// plain item text.
-    private func stripBulletPrefix(_ line: String) -> String {
+    private static func stripBulletPrefix(_ line: String) -> String {
         String(line.drop(while: { $0 == "•" || $0 == " " }))
     }
 
     /// Strips bullet markers and surrounding whitespace from each line, recovering
     /// the plain item text for parsing.
-    private func stripBullets(_ text: String) -> String {
+    private static func stripBullets(_ text: String) -> String {
         text
             .components(separatedBy: "\n")
             .map(stripBulletPrefix)
@@ -678,6 +898,188 @@ struct AddItemSearchView: View {
         syncTextFromDrafts()
     }
 
+    // MARK: - Photo capture → AI identify
+
+    /// Drop the keyboard and open the in-app camera (or the photo library where no
+    /// camera exists, e.g. the Simulator).
+    private func startPhotoCapture() {
+        Haptics.tap()
+        inputFocused = false
+        dismissKeyboard()
+        if CameraCaptureView.isAvailable {
+            showCamera = true
+        } else {
+            showImagePicker = true
+        }
+    }
+
+    /// Once the camera/library cover has fully dismissed, present the identify
+    /// sheet for the photo it produced (if any). Driving this off the cover's
+    /// `onDismiss` rather than a fixed delay guarantees the cover is gone before
+    /// we present, so the sheet — and its opening "thinking" animation — actually
+    /// shows instead of being silently dropped mid-dismiss.
+    private func presentIdentifyIfPending() {
+        guard let image = pendingCaptureImage else { return }
+        pendingCaptureImage = nil
+        handleCapturedImage(image)
+    }
+
+    /// Downscale the captured photo, show the confirm card immediately, and kick
+    /// off the vision request. The card opens in its "thinking" animation until
+    /// the model returns; if the photo turns out to be a written list rather than
+    /// a single product, the card is dropped and every detected item is staged
+    /// instead (skipping per-item confirmation).
+    private func handleCapturedImage(_ image: UIImage) {
+        let data = image.resizedItemPhotoData()
+        capturePhotoData = data
+        captureImage = data.flatMap(UIImage.init(data:)) ?? image
+        resetIdentifyDraft()
+        isIdentifying = true
+        // The camera/library cover is already fully gone (we run from its
+        // `onDismiss`), so the sheet can present right away — and opens in its
+        // "thinking" animation because `isIdentifying` is true.
+        showIdentifyCard = true
+
+        Task {
+            let startedAt = Date()
+            var outcome = IdentifyOutcome(item: nil, items: [])
+            if let data { outcome = await APIClient.shared.identifyItem(imageData: data) }
+            // Let the thinking animation read as intentional even when the model
+            // answers almost instantly (e.g. a cache hit) — hold it briefly so it
+            // doesn't flash past before the user registers it.
+            let minimumThinking: TimeInterval = 1.1
+            let elapsed = Date().timeIntervalSince(startedAt)
+            if elapsed < minimumThinking {
+                try? await Task.sleep(for: .seconds(minimumThinking - elapsed))
+            }
+            await MainActor.run { applyIdentifyOutcome(outcome) }
+        }
+    }
+
+    /// Resolve the vision result. A multi-item list bypasses the confirm card and
+    /// stages every item; a single product resolves the thinking animation into
+    /// the editable item card in place.
+    private func applyIdentifyOutcome(_ outcome: IdentifyOutcome) {
+        if !outcome.items.isEmpty {
+            // A photographed list: dismiss the card while it's still in its
+            // thinking state (so the item form never flashes) and stage every item
+            // for review, exactly like a typed list.
+            showIdentifyCard = false
+            isIdentifying = false
+            addParsedList(outcome.items)
+            PostHogSDK.shared.capture("item_photo_added", properties: [
+                "source": "camera_list",
+                "item_count": outcome.items.count,
+            ])
+            return
+        }
+
+        if let item = outcome.item {
+            didIdentify = true
+            identifiedName = item.name
+            identifiedCategory = item.groceryCategory
+            identifiedQuantity = defaultQuantity(for: item.name)
+            Haptics.success()
+        }
+        // Resolve the thinking animation into the editable item card — either the
+        // single identified product, or an empty form to fill when nothing was
+        // recognized. `IdentifyItemCard` animates the cross-dissolve.
+        isIdentifying = false
+    }
+
+    /// Confirm the identified item: stage it as a draft (with its photo and the
+    /// quantity/notes entered on the card) so it flows through the normal "Add to
+    /// List" path.
+    private func commitIdentifiedItem() {
+        let name = identifiedName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        showIdentifyCard = false
+        addFromPhoto(name: name, category: identifiedCategory,
+                     quantity: identifiedQuantity, notes: identifiedNotes,
+                     photoData: capturePhotoData)
+        PostHogSDK.shared.capture("item_photo_added", properties: [
+            "source": "camera_identify",
+            "ai_identified": didIdentify,
+        ])
+    }
+
+    /// Dismiss the card and re-open the camera to try another shot.
+    private func retakePhoto() {
+        showIdentifyCard = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            startPhotoCapture()
+        }
+    }
+
+    private func resetIdentifyDraft() {
+        identifiedName = ""
+        identifiedCategory = .other
+        identifiedQuantity = ""
+        identifiedNotes = ""
+        didIdentify = false
+    }
+
+    /// A sensible non-zero starting amount for an item: one of its natural unit
+    /// (e.g. "1 dozen" for eggs), else a plain "1".
+    private func defaultQuantity(for name: String) -> String {
+        let unit = UnitGuess.guess(for: name)
+        return unit.isEmpty ? "1" : "1 \(unit)"
+    }
+
+    /// Stage a photographed single item. Mirrors `addFromHistory`: it lands as a
+    /// draft (deduping by name) carrying the photo, quantity, and notes, and is
+    /// reflected back into the freeform text so the user can still review before
+    /// "Add to List".
+    private func addFromPhoto(name: String, category: GroceryCategory,
+                              quantity: String, notes: String, photoData: Data?) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let proposedUnit = UnitGuess.guess(for: trimmed)
+        let trimmedQuantity = quantity.trimmingCharacters(in: .whitespaces)
+        let resolvedQuantity = trimmedQuantity.isEmpty
+            ? (proposedUnit.isEmpty ? "1" : "1 \(proposedUnit)")
+            : trimmedQuantity
+        let trimmedNotes = notes.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedNotes = trimmedNotes.isEmpty ? nil : trimmedNotes
+
+        withAnimation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.86)) {
+            if let idx = drafts.firstIndex(where: { $0.name.lowercased() == trimmed.lowercased() }) {
+                drafts[idx].category = category
+                drafts[idx].quantity = resolvedQuantity
+                if let resolvedNotes { drafts[idx].notes = resolvedNotes }
+                if let photoData { drafts[idx].photoData = photoData }
+            } else {
+                drafts.append(ParsedGroceryDraft(name: trimmed.groceryTitleCased, quantity: resolvedQuantity,
+                                                 unit: proposedUnit, category: category,
+                                                 notes: resolvedNotes, photoData: photoData))
+            }
+        }
+        syncTextFromDrafts()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { Haptics.success() }
+        Task { await APIClient.shared.prewarmImages([trimmed]) }
+    }
+
+    /// Stage every item read off a photographed list. Additive (preserves any
+    /// already-typed drafts), deduping by name, and mirrored back into the text —
+    /// the same review path a typed list lands in.
+    private func addParsedList(_ items: [ParsedItem]) {
+        let detected = items.compactMap(DetectedItem.init(parsedItem:))
+        guard !detected.isEmpty else { return }
+
+        withAnimation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.86)) {
+            for item in detected {
+                if let idx = drafts.firstIndex(where: { $0.name.lowercased() == item.name.lowercased() }) {
+                    drafts[idx].category = item.category
+                } else {
+                    drafts.append(makeDraft(from: item))
+                }
+            }
+        }
+        syncTextFromDrafts()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { Haptics.success() }
+        Task { await APIClient.shared.prewarmImages(detected.map(\.name)) }
+    }
+
     // MARK: - Finalize
 
     private func attemptClose() {
@@ -702,8 +1104,10 @@ struct AddItemSearchView: View {
                 name: draft.name,
                 quantity: draft.quantity,
                 category: draft.category,
-                notes: nil,
-                replacementPreference: nil
+                notes: draft.notes,
+                priority: draft.priority,
+                replacementPreference: nil,
+                photoData: draft.photoData
             )
         })
         dismiss()
@@ -748,6 +1152,8 @@ private struct DetectedItem {
     /// Proposed natural unit (e.g. "dozen") even when no amount was stated.
     var unit: String
     var category: GroceryCategory
+    /// Urgency parsed from inline markers ("!", "important", …); .normal by default.
+    var priority: ItemPriority = .normal
 
     init(name: String, quantity: String, unit: String = "", category: GroceryCategory) {
         self.name = name.groceryTitleCased
@@ -773,12 +1179,25 @@ private struct ParsedGroceryDraft: Identifiable, Hashable {
     /// Proposed unit offered by the stepper when `quantity` carries no unit.
     var unit: String
     var category: GroceryCategory
+    /// Urgency derived from inline text markers; surfaced as a CRITICAL chip on the row
+    /// and carried to the saved item. .normal shows no chip.
+    var priority: ItemPriority
+    /// Optional notes entered on the photo-confirm card, carried to the saved item.
+    var notes: String?
+    /// Optional user-taken photo carried through to the saved item. Preserved
+    /// across re-parses because `merge` reuses the matching existing draft. Only
+    /// surfaced on the item's detail screen — rows everywhere use the AI image.
+    var photoData: Data?
 
-    init(name: String, quantity: String, unit: String = "", category: GroceryCategory) {
+    init(name: String, quantity: String, unit: String = "", category: GroceryCategory,
+         priority: ItemPriority = .normal, notes: String? = nil, photoData: Data? = nil) {
         self.name = name
         self.quantity = quantity
         self.unit = unit
         self.category = category
+        self.priority = priority
+        self.notes = notes
+        self.photoData = photoData
     }
 }
 
@@ -816,6 +1235,8 @@ private struct ParsedGroceryDraftRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
+            // Always the AI product image — the user-taken photo is reserved for
+            // the item's detail screen, never the list/draft rows.
             ProductImageView(itemName: draft.name, size: 44)
 
             VStack(alignment: .leading, spacing: 8) {
@@ -823,6 +1244,11 @@ private struct ParsedGroceryDraftRow: View {
                     TextField("Item", text: nameBinding)
                         .font(.headline)
                         .textInputAutocapitalization(.words)
+
+                    // Flagged-urgent drafts wear the CRITICAL chip (normal shows none).
+                    if draft.priority == .critical {
+                        PriorityLabel(priority: draft.priority)
+                    }
 
                     Spacer(minLength: 0)
 
@@ -872,6 +1298,411 @@ private struct ParsedGroceryDraftSkeletonRow: View {
         }
         .padding(14)
         .grocerLiquidGlass(in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+    }
+}
+
+// MARK: - Identify confirm card
+
+/// Post-capture sheet for a single photographed product. It opens in a playful
+/// "thinking" state — a circle of dots twinkling under a spinning gradient ring —
+/// while the vision request is in flight, then cross-dissolves into the editable item card
+/// once the model answers. The card leads with the AI-generated product image
+/// (the user's own photo tucked in small), and the shopper can adjust the name,
+/// category, a big quantity stepper, and notes before adding.
+private struct IdentifyItemCard: View {
+    /// The shopper's own photo, shown small — the saved item attaches this, but
+    /// only its detail screen ever surfaces it. A binding (not a plain value) so
+    /// the sheet content tracks it as a SwiftUI dependency and re-renders live.
+    @Binding var userPhoto: UIImage?
+    /// True while the vision request is in flight. Must be a binding: a plain
+    /// value isn't tracked as a sheet dependency, so the content wouldn't
+    /// re-render when it flips — the "thinking" animation would never appear and
+    /// the sheet would open straight to the empty result form.
+    @Binding var isIdentifying: Bool
+    @Binding var name: String
+    @Binding var category: GroceryCategory
+    @Binding var quantity: String
+    @Binding var notes: String
+    var tint: Color
+    var onAdd: () -> Void
+    var onRetake: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var trimmedName: String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Natural unit proposed for the current name, offered by the stepper.
+    private var proposedUnit: String? {
+        let unit = UnitGuess.guess(for: trimmedName)
+        return unit.isEmpty ? nil : unit
+    }
+
+    private var canAdd: Bool {
+        !trimmedName.isEmpty
+    }
+
+    var body: some View {
+        ZStack {
+            if isIdentifying {
+                IdentifyThinkingView(onRetake: onRetake)
+                    .transition(.asymmetric(
+                        insertion: .opacity,
+                        removal: .opacity.combined(with: .scale(scale: 1.05))
+                    ))
+            } else {
+                resultForm
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .scale(scale: 0.97)),
+                        removal: .opacity
+                    ))
+            }
+        }
+        .animation(reduceMotion ? nil : .spring(response: 0.45, dampingFraction: 0.86),
+                   value: isIdentifying)
+    }
+
+    /// The editable item card the thinking animation resolves into.
+    private var resultForm: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    heroImages
+                        .frame(maxWidth: .infinity)
+                        .listRowBackground(Color.clear)
+                }
+
+                Section("Item") {
+                    TextField("Item name", text: $name)
+                        .textInputAutocapitalization(.words)
+                        .autocorrectionDisabled()
+                    Picker("Category", selection: $category) {
+                        ForEach(GroceryCategory.ordered) { Text($0.localizedName).tag($0) }
+                    }
+                }
+
+                Section("Quantity") {
+                    QuantityStepperField(
+                        quantity: $quantity,
+                        proposedUnit: proposedUnit,
+                        tint: tint,
+                        large: true,
+                        fill: true
+                    )
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 4)
+                }
+
+                Section("Notes (optional)") {
+                    TextField("Notes", text: $notes, axis: .vertical)
+                }
+            }
+            .navigationTitle("Add Photo Item")
+            .navigationBarTitleDisplayMode(.inline)
+            .tint(tint)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Retake") {
+                        Haptics.tap()
+                        onRetake()
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Add") {
+                        Haptics.success()
+                        onAdd()
+                    }
+                    .bold()
+                    .disabled(!canAdd)
+                }
+            }
+        }
+    }
+
+    /// AI product image up top with the user's own photo overlaid small in the
+    /// corner.
+    private var heroImages: some View {
+        ZStack(alignment: .bottomTrailing) {
+            aiImage
+            if let userPhoto {
+                Image(uiImage: userPhoto)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 72, height: 72)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .strokeBorder(Color(.systemBackground), lineWidth: 3)
+                    }
+                    .shadow(color: .black.opacity(0.2), radius: 4, y: 2)
+                    .padding(10)
+                    .accessibilityHidden(true)
+            }
+        }
+    }
+
+    /// The AI-generated product image, or a placeholder until a name is known
+    /// (the image is keyed off the identified name).
+    @ViewBuilder
+    private var aiImage: some View {
+        if trimmedName.isEmpty {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color(.systemGray6))
+                .frame(width: 200, height: 200)
+                .overlay {
+                    Image(systemName: "photo")
+                        .font(.largeTitle)
+                        .foregroundStyle(.tertiary)
+                }
+                .accessibilityHidden(true)
+        } else {
+            ProductImageView(itemName: trimmedName, size: 200)
+        }
+    }
+}
+
+// MARK: - Identify thinking animation
+
+/// The "thinking" state shown while the vision model works out what was
+/// photographed. A dense field of monochrome dots (black in light mode, white in
+/// dark) is clipped to a circle and twinkles on and off, fading out toward the
+/// rim so the disc reads as a soft orb breathing in and out, with status copy
+/// blur-replacing beneath it. It fills the sheet until `isIdentifying` clears, at
+/// which point `IdentifyItemCard` cross-dissolves it into the editable item form.
+/// Honors Reduce Motion: the twinkle gives way to a static dot field and the
+/// status copy holds on its first line.
+private struct IdentifyThinkingView: View {
+    var onRetake: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// Flipped true on appear to start the halo's breathing.
+    @State private var animate = false
+    /// Index into `messages` for the cycling status line.
+    @State private var messageIndex = 0
+
+    /// Diameter of the twinkling dot circle; the spinner ring sweeps just outside it.
+    private let circleSize: CGFloat = 200
+
+    private let messages = [
+        String(localized: "Thinking…"),
+        String(localized: "Looking at your photo…"),
+        String(localized: "Spotting the product…"),
+        String(localized: "Reading the label…"),
+        String(localized: "Checking the details…"),
+        String(localized: "Matching it to groceries…"),
+        String(localized: "Sorting the shelves…"),
+        String(localized: "Picking a category…"),
+        String(localized: "Tidying things up…"),
+        String(localized: "Almost done…"),
+    ]
+
+    private var currentMessageIndex: Int { reduceMotion ? 0 : messageIndex }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            topBar
+            Spacer()
+            artwork
+            status
+                .padding(.top, 40)
+            Spacer()
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemGroupedBackground).ignoresSafeArea())
+        .onAppear { animate = true }
+        .task {
+            // Cycle the status line while the model thinks. Cancelled automatically
+            // when the view is removed for the transition to the item form.
+            guard !reduceMotion else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1.5))
+                guard !Task.isCancelled else { return }
+                messageIndex = (messageIndex + 1) % messages.count
+            }
+        }
+    }
+
+    private var topBar: some View {
+        HStack {
+            Button(String(localized: "Retake")) {
+                Haptics.tap()
+                onRetake()
+            }
+            .font(.body.weight(.medium))
+            .tint(.secondary)
+            Spacer()
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 20)
+    }
+
+    /// The twinkling dot circle behind a soft halo.
+    private var artwork: some View {
+        ZStack {
+            halo
+            TwinklingDotCircle(diameter: circleSize, reduceMotion: reduceMotion)
+        }
+        .frame(width: circleSize + 80, height: circleSize + 80)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(String(localized: "Identifying item from your photo"))
+    }
+
+    /// A soft monochrome glow that breathes behind the dot circle.
+    private var halo: some View {
+        Circle()
+            .fill(Color.primary.opacity(0.12))
+            .frame(width: circleSize, height: circleSize)
+            .blur(radius: 34)
+            .scaleEffect(reduceMotion ? 1 : (animate ? 1.06 : 0.9))
+            .opacity(reduceMotion ? 0.5 : (animate ? 0.85 : 0.4))
+            .animation(reduceMotion ? nil :
+                .easeInOut(duration: 2).repeatForever(autoreverses: true), value: animate)
+    }
+
+    private var status: some View {
+        // Each new line blur-replaces the previous one (the system text transition)
+        // rather than cross-fading in place. The `id` makes every message a fresh
+        // view so the transition fires; Reduce Motion swaps with no effect.
+        VStack {
+            Text(messages[currentMessageIndex])
+                .font(.headline)
+                .foregroundStyle(.primary)
+                .multilineTextAlignment(.center)
+                .id(currentMessageIndex)
+                .transition(reduceMotion ? .identity : AnyTransition(.blurReplace))
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 24)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.45), value: currentMessageIndex)
+        .accessibilityHidden(true)
+    }
+}
+
+/// A dense field of dots clipped to a circle, each fading in and out on its own
+/// rhythm so the whole disc reads as quietly "thinking". The field is drawn in a
+/// single `Canvas` (cheap even at a few hundred dots) and laid out from a seeded
+/// generator so it stays put across redraws. Under Reduce Motion it renders once,
+/// static.
+private struct TwinklingDotCircle: View {
+    var diameter: CGFloat
+    var reduceMotion: Bool
+
+    /// One dot in the field: where it sits, its size, the phase/speed of its
+    /// twinkle, and how much the rim falloff dims it.
+    private struct Dot {
+        let position: CGPoint
+        let radius: CGFloat
+        let phase: Double
+        let speed: Double
+        let baseOpacity: Double
+        /// 1 at the center, easing to 0 at the rim so the disc has no hard edge.
+        let edgeFade: Double
+    }
+
+    private let dots: [Dot]
+
+    init(diameter: CGFloat, reduceMotion: Bool) {
+        self.diameter = diameter
+        self.reduceMotion = reduceMotion
+
+        var generator = SeededGenerator(seed: 0x6D5A4C3B2A19)
+        var built: [Dot] = []
+        let spacing: CGFloat = 8
+        let center = CGPoint(x: diameter / 2, y: diameter / 2)
+        // Keep every dot (plus its radius) inside the circle's edge.
+        let limit = diameter / 2 - 3
+
+        var y = spacing / 2
+        while y <= diameter - spacing / 2 {
+            var x = spacing / 2
+            while x <= diameter - spacing / 2 {
+                // Jitter each dot off the lattice so the field reads organic rather
+                // than as a visible grid. RNG is consumed for every cell (even ones
+                // outside the circle) so the layout stays deterministic.
+                let jx = CGFloat(generator.nextUnit() - 0.5) * spacing * 0.7
+                let jy = CGFloat(generator.nextUnit() - 0.5) * spacing * 0.7
+                let radius = 1.1 + CGFloat(generator.nextUnit()) * 0.9
+                let phase = generator.nextUnit() * 2 * .pi
+                let speed = 0.8 + generator.nextUnit() * 2.2
+                let base = 0.05 + generator.nextUnit() * 0.12
+                let p = CGPoint(x: x + jx, y: y + jy)
+                let dx = p.x - center.x
+                let dy = p.y - center.y
+                let dist = (dx * dx + dy * dy).squareRoot()
+                if dist <= limit {
+                    // Fade dots out across the outer half of the radius so the disc
+                    // dissolves into the background instead of ending on a hard
+                    // circular edge — the whole orb then reads as softly breathing.
+                    let normalized = Double(dist / limit)
+                    let t = max(0, (normalized - 0.5) / 0.5)
+                    let edgeFade = 1 - (t * t * (3 - 2 * t))   // smoothstep falloff
+                    built.append(Dot(position: p, radius: radius, phase: phase,
+                                     speed: speed, baseOpacity: base, edgeFade: edgeFade))
+                }
+                x += spacing
+            }
+            y += spacing
+        }
+        dots = built
+    }
+
+    var body: some View {
+        Group {
+            if reduceMotion {
+                Canvas { context, _ in draw(in: context, time: nil) }
+            } else {
+                TimelineView(.animation) { timeline in
+                    Canvas { context, _ in
+                        draw(in: context, time: timeline.date.timeIntervalSinceReferenceDate)
+                    }
+                }
+            }
+        }
+        .frame(width: diameter, height: diameter)
+    }
+
+    /// Paint every dot. With `time == nil` (Reduce Motion) each dot is drawn once
+    /// at a steady mid brightness; otherwise its opacity rides a sharpened sine so
+    /// it spends most of its time dim and pops bright briefly — "on and off".
+    private func draw(in context: GraphicsContext, time: Double?) {
+        for dot in dots {
+            let twinkle: Double
+            if let time {
+                let wave = (sin(time * dot.speed + dot.phase) + 1) / 2
+                twinkle = min(dot.baseOpacity + pow(wave, 3) * 0.9, 1)
+            } else {
+                twinkle = dot.baseOpacity + 0.3
+            }
+            let opacity = twinkle * dot.edgeFade
+            let rect = CGRect(x: dot.position.x - dot.radius,
+                              y: dot.position.y - dot.radius,
+                              width: dot.radius * 2, height: dot.radius * 2)
+            // Black in light mode, white in dark — resolved from the environment.
+            context.fill(Path(ellipseIn: rect), with: .color(Color.primary.opacity(opacity)))
+        }
+    }
+}
+
+/// A tiny deterministic generator (xorshift64*) so the dot field lands in the
+/// same place on every redraw — the view is re-initialized whenever the status
+/// line cycles, and a fresh random layout each time would make the field jump.
+private struct SeededGenerator {
+    private var state: UInt64
+
+    init(seed: UInt64) {
+        state = seed == 0 ? 0x9E3779B97F4A7C15 : seed
+    }
+
+    /// Next value in [0, 1).
+    mutating func nextUnit() -> Double {
+        state ^= state >> 12
+        state ^= state << 25
+        state ^= state >> 27
+        let value = (state &* 0x2545F4914F6CDD1D) >> 11
+        return Double(value) / Double(UInt64(1) << 53)
     }
 }
 
@@ -1295,6 +2126,151 @@ private struct PastItemsSheet: View {
                     }
                 }
             }
+        }
+    }
+}
+
+// MARK: - Compose field
+
+/// A growing, bullet-aware text editor for the freeform compose field.
+///
+/// SwiftUI's `TextField` resets the caret to the *end* whenever its bound text is
+/// rewritten. The add flow re-applies bullet formatting on every keystroke, so
+/// with a `TextField` pressing return in the middle of the list teleported the
+/// caret to the bottom — and, racing UIKit's own newline insert, left a stray
+/// empty bullet there. Owning a `UITextView` lets us re-apply the formatting and
+/// then restore the caret to the line the user is actually editing.
+private struct BulletListTextEditor: UIViewRepresentable {
+    @Binding var text: String
+    /// Two-way bridge to the parent's first-responder state.
+    @Binding var isFocused: Bool
+
+    func makeUIView(context: Context) -> UITextView {
+        let textView = UITextView()
+        textView.delegate = context.coordinator
+        textView.backgroundColor = .clear
+        textView.textContainerInset = UIEdgeInsets(top: 8, left: 0, bottom: 8, right: 0)
+        textView.textContainer.lineFragmentPadding = 0
+        // Grow with content; the surrounding ScrollView handles any overflow.
+        textView.isScrollEnabled = false
+        textView.autocapitalizationType = .sentences
+        applyFont(textView)
+        textView.text = text
+        return textView
+    }
+
+    func updateUIView(_ textView: UITextView, context: Context) {
+        context.coordinator.parent = self
+        // External (mirror) writes — e.g. editing a proposed row rewrites the
+        // text — land here. They happen while the field isn't being typed in, so
+        // parking the caret at the end is fine.
+        if textView.text != text {
+            textView.text = text
+            let end = (text as NSString).length
+            textView.selectedRange = NSRange(location: end, length: 0)
+        }
+        if isFocused, !textView.isFirstResponder {
+            textView.becomeFirstResponder()
+        } else if !isFocused, textView.isFirstResponder {
+            textView.resignFirstResponder()
+        }
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
+        let width = proposal.width ?? uiView.bounds.width
+        let fitted = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+        return CGSize(width: width, height: fitted.height)
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    private func applyFont(_ textView: UITextView) {
+        // Match the SwiftUI `.title3.weight(.medium)` the field used to carry, and
+        // keep it scaling with Dynamic Type.
+        let base = UIFont.preferredFont(forTextStyle: .title3)
+        let medium = UIFont.systemFont(ofSize: base.pointSize, weight: .medium)
+        textView.font = UIFontMetrics(forTextStyle: .title3).scaledFont(for: medium)
+        textView.adjustsFontForContentSizeCategory = true
+    }
+
+    final class Coordinator: NSObject, UITextViewDelegate {
+        var parent: BulletListTextEditor
+
+        init(_ parent: BulletListTextEditor) { self.parent = parent }
+
+        func textViewDidChange(_ textView: UITextView) {
+            let raw = textView.text ?? ""
+            let formatted = AddItemSearchView.bulletified(raw)
+            if formatted != raw {
+                let caret = caretLocation(movingFrom: raw, to: formatted,
+                                          caret: textView.selectedRange.location)
+                textView.text = formatted
+                textView.selectedRange = NSRange(location: caret, length: 0)
+            }
+            if parent.text != textView.text {
+                parent.text = textView.text
+            }
+        }
+
+        func textViewDidBeginEditing(_ textView: UITextView) {
+            if !parent.isFocused { parent.isFocused = true }
+        }
+
+        func textViewDidEndEditing(_ textView: UITextView) {
+            if parent.isFocused { parent.isFocused = false }
+        }
+
+        // MARK: Caret mapping
+
+        /// Maps the caret from the user's raw text onto the bullet-formatted text
+        /// so it stays on the line being edited instead of jumping to the end.
+        /// Works in UTF-16 units to match `UITextView.selectedRange`.
+        private func caretLocation(movingFrom raw: String, to formatted: String, caret: Int) -> Int {
+            let rawLines = raw.components(separatedBy: "\n")
+            let fmtLines = formatted.components(separatedBy: "\n")
+            let clamp: (Int) -> Int = { max(0, min($0, formatted.utf16.count)) }
+
+            // Find the caret's line and its column within that line.
+            var lineStart = 0
+            var lineIndex = max(0, rawLines.count - 1)
+            var column = rawLines.last?.utf16.count ?? 0
+            for (i, line) in rawLines.enumerated() {
+                let len = line.utf16.count
+                if caret <= lineStart + len {
+                    lineIndex = i
+                    column = caret - lineStart
+                    break
+                }
+                lineStart += len + 1   // + the "\n"
+            }
+
+            // A line was dropped (e.g. backspacing an empty bullet merges it
+            // upward): land at the end of the line it merged into.
+            guard fmtLines.count == rawLines.count, lineIndex < fmtLines.count else {
+                let target = max(0, min(lineIndex - 1, fmtLines.count - 1))
+                var start = 0
+                for j in 0..<target { start += fmtLines[j].utf16.count + 1 }
+                return clamp(start + fmtLines[target].utf16.count)
+            }
+
+            let rawPrefix = leadingBulletPrefixLength(rawLines[lineIndex])
+            let fmtLine = fmtLines[lineIndex]
+            let fmtPrefix = leadingBulletPrefixLength(fmtLine)
+            let contentColumn = max(0, column - rawPrefix)
+            let newColumn = min(fmtPrefix + contentColumn, fmtLine.utf16.count)
+
+            var start = 0
+            for j in 0..<lineIndex { start += fmtLines[j].utf16.count + 1 }
+            return clamp(start + newColumn)
+        }
+
+        /// UTF-16 length of a line's leading run of bullet markers and spaces.
+        private func leadingBulletPrefixLength(_ line: String) -> Int {
+            var count = 0
+            for ch in line {
+                if ch == "•" || ch == " " { count += ch.utf16.count } else { break }
+            }
+            return count
         }
     }
 }

@@ -195,9 +195,8 @@ extension Household {
 extension ItemPriority {
     var markerColor: Color {
         switch self {
-        case .low: return .grocerGreen
         case .normal: return Color(.systemGray4)
-        case .high: return .grocerRed
+        case .critical: return .grocerRed
         }
     }
 }
@@ -243,8 +242,7 @@ struct PriorityCircle: View {
 
     private var prioritySymbol: String? {
         switch priority {
-        case .high: return "exclamationmark"
-        case .low: return "arrow.down"
+        case .critical: return "exclamationmark"
         case .normal: return nil
         }
     }
@@ -257,9 +255,8 @@ struct PriorityLabel: View {
 
     private var chipColor: Color? {
         switch priority {
-        case .low: return Color(.systemGray)
         case .normal: return nil
-        case .high: return .grocerRed
+        case .critical: return .grocerRed
         }
     }
 
