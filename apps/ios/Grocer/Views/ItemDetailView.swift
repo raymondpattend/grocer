@@ -1,3 +1,4 @@
+import PostHog
 import SwiftUI
 
 struct ItemDetailView: View {
@@ -118,6 +119,7 @@ struct ItemDetailView: View {
         } message: {
             Text("Lowering the quantity to zero removes this item from your list.")
         }
+        .postHogScreenView("Item Detail")
     }
 
     /// The AI-generated product image (shown everywhere), with the member's own
@@ -251,6 +253,7 @@ struct EditItemView: View {
                 }.bold()
             }
         }
+        .postHogScreenView("Edit Item")
     }
 }
 

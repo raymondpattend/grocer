@@ -99,6 +99,7 @@ struct GrocerProPaywallView: View {
                 completedWebCheckout = completed
             }
         }
+        .postHogScreenView("Pro Paywall", ["context": context.metadataKey])
     }
 
     // MARK: - Subscribe options sheet

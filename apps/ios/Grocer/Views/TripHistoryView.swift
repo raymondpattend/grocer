@@ -1,3 +1,4 @@
+import PostHog
 import SwiftUI
 
 /// A browsable list of finished shopping trips for the current group. Each row
@@ -44,6 +45,7 @@ struct TripHistoryView: View {
                 GrocerGlassTitle("Trip History")
             }
         }
+        .postHogScreenView("Trip History")
     }
 
     // MARK: - Time grouping

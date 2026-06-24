@@ -96,6 +96,7 @@ struct SettingsView: View {
         } message: {
             Text(purchaseErrorMessage)
         }
+        .postHogScreenView("Settings")
     }
 
     private func canRemove(_ member: HouseholdMember) -> Bool {
@@ -887,6 +888,7 @@ struct InviteToGroupSheet: View {
         )) {
             Button("OK", role: .cancel) {}
         } message: { Text(shareError ?? "") }
+        .postHogScreenView("Invite to List")
     }
 
     /// Tilted preview of the group being shared — mirrors the card recipients
@@ -1119,6 +1121,7 @@ struct HeadsUpSheet: View {
         )) {
             Button("OK", role: .cancel) {}
         } message: { Text(sendError ?? "") }
+        .postHogScreenView("Heads-Up")
     }
 
     /// Bell glyph in the group's tint, ringing to signal the time-sensitive alert.

@@ -47,6 +47,7 @@ struct ShoppingSessionView: View {
         }
         .navigationTitle("Shopping")
         .navigationBarTitleDisplayMode(.inline)
+        .postHogScreenView("Shopping Session")
         .onChange(of: session?.status) { _, status in
             handleSessionEnded(status)
         }
@@ -560,6 +561,7 @@ struct ShoppingItemDetailView: View {
             }
         }
         .background(Color(.systemGroupedBackground))
+        .postHogScreenView("Shopping Item Detail")
     }
 
     // MARK: - Hero

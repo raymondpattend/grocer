@@ -94,6 +94,7 @@ struct SessionSummaryView: View {
             .disabled(isFinishing)
         }
         .interactiveDismissDisabled(isFinishing)
+        .postHogScreenView("Session Summary")
     }
 
     // MARK: - Hero

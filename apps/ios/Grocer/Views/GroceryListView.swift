@@ -134,6 +134,9 @@ struct GroceryListView: View {
         .navigationBarBackButtonHidden(true)
         .swipeBackEnabled()
         .tint(tint)
+        // Stable PostHog screen name (the nav title is the per-group name, which
+        // would be high-cardinality) so rage/dead clicks roll up per screen.
+        .postHogScreenView("Shopping List")
         .navigationDestination(item: $sessionForNav) { session in
             ShoppingSessionView(sessionId: session.id) { sessionForNav = nil }
         }
@@ -464,6 +467,7 @@ struct StartTripSheet: View {
                     }
                 }
             }
+            .postHogScreenView("Start Trip")
         }
     }
 }

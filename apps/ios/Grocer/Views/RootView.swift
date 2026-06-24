@@ -1,4 +1,5 @@
 import PhotosUI
+import PostHog
 import SwiftUI
 import UIKit
 
@@ -191,6 +192,7 @@ private struct RequiredAppUpdateView: View {
         .frame(maxWidth: 440)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(.systemBackground))
+        .postHogScreenView("App Update Required")
     }
 }
 
@@ -323,6 +325,7 @@ private struct JoinedGroupSheet: View {
             .padding(.bottom, 12)
         }
         .presentationDetents([.medium])
+        .postHogScreenView("Joined List")
     }
 
     private func groupIcon(_ household: Household) -> some View {
@@ -525,6 +528,7 @@ private struct OnboardingView: View {
                 JoinExistingGroupHelpView()
             }
         }
+        .postHogScreenView("Onboarding")
     }
 
     private var onboardingLogo: some View {
@@ -640,6 +644,7 @@ private struct OnboardingProfileSheet: View {
         .onChange(of: selectedProfilePhoto) { _, newItem in
             loadProfilePhoto(newItem)
         }
+        .postHogScreenView("Onboarding Profile")
     }
 
     private func loadProfile() {
@@ -724,6 +729,7 @@ private struct JoinExistingGroupHelpView: View {
                     }
                 }
             }
+            .postHogScreenView("Join List Help")
         }
     }
 }

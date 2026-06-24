@@ -1,3 +1,4 @@
+import PostHog
 import SwiftUI
 
 /// Quick actions when a shopper taps an item during a session.
@@ -84,6 +85,7 @@ struct ItemActionSheet: View {
                 }
                 Button("Cancel", role: .cancel) {}
             }
+            .postHogScreenView("Quick Actions")
         }
     }
 
@@ -165,6 +167,7 @@ struct ReplacementSheet: View {
                     }
                 }
             }
+            .postHogScreenView("Replacement")
         }
     }
 

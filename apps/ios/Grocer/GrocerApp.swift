@@ -19,6 +19,11 @@ enum PostHogConfiguration {
 
         let posthogConfig = PostHogConfig(apiKey: projectToken, host: host)
         posthogConfig.captureApplicationLifecycleEvents = true
+        // Automatic SwiftUI screen capture names screens by internal view
+        // identifiers, which makes dead/rage-click reports unreadable. We name
+        // every screen explicitly via `.postHogScreenView(...)` instead, so turn
+        // the automatic capture off to keep $screen events to those names only.
+        posthogConfig.captureScreenViews = false
         #if DEBUG
         posthogConfig.debug = true
         #endif

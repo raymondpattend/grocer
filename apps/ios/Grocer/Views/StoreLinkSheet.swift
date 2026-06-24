@@ -84,6 +84,7 @@ struct StoreLinkSheet: View {
                 requestingPermission = false
             }
         }
+        .postHogScreenView("Store Link")
     }
 
     // MARK: - Intro

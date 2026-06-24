@@ -1,3 +1,4 @@
+import PostHog
 import SwiftUI
 
 /// List customization (name, color, icon), reachable from Settings → Customize List.
@@ -52,6 +53,7 @@ struct CustomizeListView: View {
         } message: {
             Text(saveError ?? "")
         }
+        .postHogScreenView("Customize List")
     }
 
     // MARK: - Cards

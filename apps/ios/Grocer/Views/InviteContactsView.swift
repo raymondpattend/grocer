@@ -53,6 +53,7 @@ struct InviteContactsView: View {
         )) {
             Button("OK", role: .cancel) {}
         } message: { Text(errorMessage ?? "") }
+        .postHogScreenView("Invite Contacts")
     }
 
     @ViewBuilder

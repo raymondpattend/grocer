@@ -1,3 +1,4 @@
+import PostHog
 import SwiftUI
 
 /// Device-local app preferences, reachable from Settings → Preferences.
@@ -40,6 +41,7 @@ struct PreferencesView: View {
         .fullScreenCover(isPresented: $showProPaywall) {
             GrocerProPaywallView()
         }
+        .postHogScreenView("Preferences")
     }
 
     // MARK: - Cards

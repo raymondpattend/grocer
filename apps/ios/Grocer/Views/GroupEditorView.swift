@@ -104,6 +104,7 @@ struct GroupEditorView: View {
         } message: {
             Text(saveError ?? "")
         }
+        .postHogScreenView(isEditing ? "Edit List" : "New List")
     }
 
     private func load() {

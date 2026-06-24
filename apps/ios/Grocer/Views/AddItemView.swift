@@ -87,6 +87,7 @@ struct AddItemView: View {
                 }
             }
         }
+        .postHogScreenView("Add Item")
     }
 
     private var trimmedName: String {
@@ -195,6 +196,12 @@ struct AddItemSearchView: View {
         drafts.contains { !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
 
+    /// Drafts with a real name — the ones "Add" will actually save, and the count
+    /// shown on the bottom button.
+    private var addableDrafts: [ParsedGroceryDraft] {
+        drafts.filter { !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
+
     /// Distinct items anyone in the group has added before — the pool offered in
     /// the History pane, latest first. Items already on the list are kept (and
     /// flagged) so the button still appears for a brand-new group's first reuse.
@@ -271,9 +278,9 @@ struct AddItemSearchView: View {
             scheduleParse(after: .milliseconds(500))
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            // Hide the bottom action while the keyboard is up so it doesn't ride
-            // above the keyboard; it returns once typing dismisses.
-            if !showHistory && !keyboardVisible {
+            // Pinned to the bottom and kept visible while the keyboard is up (it
+            // rides just above it) so the running item count is always in reach.
+            if !showHistory {
                 bottomAction
             }
         }
@@ -319,6 +326,7 @@ struct AddItemSearchView: View {
                 onRetake: retakePhoto
             )
         }
+        .postHogScreenView("Add Item Search")
     }
 
     /// Bottom-floating row: the camera button is pinned to the leading edge and
@@ -412,12 +420,13 @@ struct AddItemSearchView: View {
         VStack(alignment: .leading, spacing: 16) {
             composePanel
             proposedPanel
-                // Tapping the proposed-items area (rows or the empty placeholder)
-                // dismisses the keyboard. Child controls (row text fields/buttons)
-                // take priority, and `dismissKeyboard()` no-ops when the keyboard
-                // is already down, so this only fires for genuine empty-area taps.
+                // Any tap in the proposed-items area drops the keyboard — including
+                // taps that land on a card or its controls. A *simultaneous* gesture
+                // fires alongside the row's buttons/steppers (so they still work),
+                // and `dismissKeyboard()` no-ops when the keyboard is already down,
+                // so it stays inert except while typing.
                 .contentShape(Rectangle())
-                .onTapGesture { dismissKeyboard() }
+                .simultaneousGesture(TapGesture().onEnded { dismissKeyboard() })
         }
     }
 
@@ -427,9 +436,9 @@ struct AddItemSearchView: View {
         Text("Add Items")
             // ~10% larger than .headline (17pt).
             .font(.system(size: 18.7, weight: .semibold))
-            .padding(.horizontal, 16)
+            .padding(.horizontal, 0)
             .frame(height: 36)
-            .grocerLiquidGlass(in: Capsule())
+//            .grocerLiquidGlass(in: Capsule())
             // Purely a label — taps pass through to nothing.
             .allowsHitTesting(false)
     }
@@ -588,7 +597,7 @@ struct AddItemSearchView: View {
     /// stroke inset) so the wave reads clearly rather than as a near-flat line.
     private struct SquigglyLine: Shape {
         /// Horizontal span of one full up-and-down crest.
-        var wavelength: CGFloat = 9
+        var wavelength: CGFloat = 27
 
         func path(in rect: CGRect) -> Path {
             var path = Path()
@@ -621,17 +630,17 @@ struct AddItemSearchView: View {
         Button {
             addItems()
         } label: {
-            Text("Add to List")
+            Text("Add ^[\(addableDrafts.count) item](inflect: true)")
                 .font(.headline)
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 6)
+                .padding(.vertical, 3)
         }
         .grocerGlassButton(prominent: true)
         .controlSize(.large)
         .padding(.horizontal, 16)
-        .padding(.top, 10)
-        .padding(.bottom, 12)
-        .disabled(drafts.isEmpty)
+        .padding(.top, 8)
+        .padding(.bottom, 10)
+        .disabled(addableDrafts.isEmpty)
     }
 
     // MARK: - Parse (text → rows)
@@ -1161,7 +1170,7 @@ struct AddItemSearchView: View {
     }
 
     private func addItems() {
-        let itemsToAdd = drafts.filter { !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        let itemsToAdd = addableDrafts
         guard !itemsToAdd.isEmpty else { return }
 
         Haptics.success()

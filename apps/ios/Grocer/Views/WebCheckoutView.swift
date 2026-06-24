@@ -1,3 +1,4 @@
+import PostHog
 import SwiftUI
 import WebKit
 
@@ -72,6 +73,7 @@ struct WebCheckoutView: View {
                 .padding(.leading, 16)
                 .padding(.top, 8)
         }
+        .postHogScreenView("Web Checkout")
     }
 
     /// Friendly fallback shown when the checkout page can't load — typically

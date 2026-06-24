@@ -1,3 +1,4 @@
+import PostHog
 import SwiftUI
 
 /// Detail of a single finished trip: when/where/who, outcome tallies, and the
@@ -70,6 +71,7 @@ struct TripDetailView: View {
         .toolbar {
             ToolbarItem(placement: .topBarLeading) { HapticBackButton() }
         }
+        .postHogScreenView("Trip Detail")
     }
 
     private var headerSection: some View {

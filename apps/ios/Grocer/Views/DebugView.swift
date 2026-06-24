@@ -1,4 +1,5 @@
 import CloudKit
+import PostHog
 import RevenueCat
 import SwiftUI
 import UIKit
@@ -82,6 +83,7 @@ struct DebugView: View {
                     ActivityView(items: [exportURL])
                 }
             }
+            .postHogScreenView("Debug")
         }
     }
 

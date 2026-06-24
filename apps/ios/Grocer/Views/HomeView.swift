@@ -124,6 +124,9 @@ struct HomeView: View {
             .fullScreenCover(isPresented: $showProPaywall) {
                 GrocerProPaywallView(context: .groupLimit)
             }
+            // Names this screen for PostHog so dead/rage-click reports group
+            // under "My Lists" instead of an opaque SwiftUI view identifier.
+            .postHogScreenView("My Lists")
         }
     }
 
