@@ -3,6 +3,8 @@ export interface Env {
   DB: D1Database;
   IMAGES: R2Bucket;
   IMAGE_INDEX: VectorizeIndex;
+  AI_RL_PER_10S: RateLimit;
+  AI_RL_PER_MIN: RateLimit;
 
   // APNs configuration
   APNS_ENVIRONMENT: "sandbox" | "production";

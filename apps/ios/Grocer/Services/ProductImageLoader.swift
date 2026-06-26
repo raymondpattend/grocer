@@ -429,9 +429,11 @@ struct ProductImageView: View {
             image = nil
             isLoading = true
             for await frame in ProductImageLoader.shared.imageStream(for: itemName, maxPixel: CGFloat(loadToken.maxPixel)) {
+                guard !Task.isCancelled else { return }
                 withAnimation(.easeIn(duration: 0.2)) { image = frame.image }
                 isLoading = !frame.isFinal
             }
+            guard !Task.isCancelled else { return }
             isLoading = false
         }
     }

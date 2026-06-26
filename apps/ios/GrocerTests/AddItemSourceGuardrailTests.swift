@@ -1,8 +1,9 @@
 import XCTest
 
 /// Guardrails for the Add Items flow wiring that's awkward to drive at runtime:
-/// the title's (removed) glass background, the keyboard-dismiss tap on the
-/// proposed area, and the camera → AI-identify path.
+/// the commit-per-line model (interpret only on commit, one line = one item), the
+/// thinking → resolved row states, the liquid-glass quantity button + popover, the
+/// title/close chrome, and the camera → AI-identify path.
 final class AddItemSourceGuardrailTests: XCTestCase {
     private func addItemSource() throws -> String {
         try source("Grocer/Views/AddItemView.swift")
@@ -11,25 +12,193 @@ final class AddItemSourceGuardrailTests: XCTestCase {
     func testTitleIsAScrollingGlassChipAndCloseButtonIsSticky() throws {
         let src = try addItemSource()
 
-        // The title is a Liquid Glass capsule chip again.
+        // The title is a Liquid Glass capsule chip.
         let title = try excerpt(src, from: "private var titleChip", to: "private var closeButton")
         XCTAssertTrue(title.contains("Text(\"Add Items\")"))
         XCTAssertTrue(title.contains("grocerLiquidGlass(in: Capsule())"),
-                      "The Add Items title should have its liquid-glass chip back")
+                      "The Add Items title should have its liquid-glass chip")
 
         // The title scrolls with the content (no pinned header bar)…
-        let content = try excerpt(src, from: "private var addFlowContent", to: "private var scrollContent")
+        let content = try excerpt(src, from: "private var addFlowContent", to: "private var itemsSection")
         XCTAssertTrue(content.contains("ScrollView {"))
         XCTAssertTrue(content.contains("titleChip"),
                       "The title should live inside the ScrollView so it scrolls")
         let searchView = try excerpt(src, from: "struct AddItemSearchView", to: "private struct DetectedItem")
         XCTAssertFalse(searchView.contains("private var header"),
-                       "The Add Items flow should no longer define a pinned header bar")
+                       "The Add Items flow should not define a pinned header bar")
 
         // …while only the close button is sticky (a top overlay over the content).
         let body = try excerpt(src, from: "var body: some View", to: "private var floatingControls")
         XCTAssertTrue(body.contains(".overlay(alignment: .top) {"))
         XCTAssertTrue(body.contains("closeButton"))
+    }
+
+    func testInterpretRunsOnlyOnCommitNotWhileTyping() throws {
+        let src = try addItemSource()
+
+        // The debounced, parse-while-typing pipeline (and its bullet text editor)
+        // is gone — interpretation only runs when a line is committed.
+        XCTAssertFalse(src.contains("scheduleParse"),
+                       "the debounced while-typing parse should be gone")
+        XCTAssertFalse(src.contains("BulletListTextEditor"),
+                       "the bullet-formatting text editor should be gone")
+
+        // A return / multi-line paste commits completed lines; losing focus commits
+        // the trailing line. Neither runs while typing within a line.
+        let draftChange = try excerpt(src, from: ".onChange(of: draftText)", to: ".onChange(of: draftFocused)")
+        XCTAssertTrue(draftChange.contains("commitCompletedLines()"))
+        let focusChange = try excerpt(src, from: ".onChange(of: draftFocused)", to: ".safeAreaInset")
+        XCTAssertTrue(focusChange.contains("commitActiveLine()"))
+
+        // The compose field is a UIKit-backed field (so it can detect backspace on
+        // empty), bound to the one active line and bridging focus via draftFocused.
+        let compose = try excerpt(src, from: "private var composeLine", to: "// Shown beneath the compose line")
+        XCTAssertTrue(compose.contains("ComposeTextField(text: $draftText"))
+        XCTAssertTrue(compose.contains("isFocused: $draftFocused"))
+    }
+
+    func testBackspaceOnEmptyComposeFocusesPreviousItem() throws {
+        let src = try addItemSource()
+        // The compose field reports a backspace pressed while empty…
+        XCTAssertTrue(src.contains("override func deleteBackward()"))
+        XCTAssertTrue(src.contains("onBackspaceWhenEmpty: editPreviousItem"))
+        // …which requests focus on the previous row.
+        XCTAssertTrue(src.contains("focusRequestItem = last.id"))
+        // The row consumes the request by focusing its own name field.
+        let row = try excerpt(src, from: "private struct LineItemRow", to: "private struct ThinkingPill")
+        XCTAssertTrue(row.contains(".onChange(of: focusRequest)"))
+        XCTAssertTrue(row.contains("editing = true"))
+    }
+
+    func testCommittedLinesLiftOutIntoRowsAboveTheComposeLine() throws {
+        let src = try addItemSource()
+        // The list is committed rows followed by the active compose line.
+        let list = try excerpt(src, from: "private var listBody", to: "private var titleChip")
+        XCTAssertTrue(list.contains("ForEach(items)"))
+        XCTAssertTrue(list.contains("LineItemRow("))
+        XCTAssertTrue(list.contains("composeLine"))
+    }
+
+    func testCommitStagesExactlyOneThinkingItemWithHaptic() throws {
+        let src = try addItemSource()
+        let commit = try excerpt(src, from: "private func commitLine", to: "private func recalcIfNeeded")
+        // A committed line becomes one thinking row, with a subtle haptic as it
+        // enters that state, and is then interpreted.
+        XCTAssertTrue(commit.contains("state: .thinking"))
+        XCTAssertTrue(commit.contains("Haptics.tap()"), "Enter/commit fires a haptic")
+        XCTAssertTrue(commit.contains("items.append(item)"),
+                      "a committed line must append exactly one item")
+        XCTAssertTrue(commit.contains("interpret(item.id, allowSplit: true)"))
+
+        // A second haptic fires when the AI finishes and the row(s) resolve.
+        let interpret = try excerpt(src, from: "private func interpret", to: "private struct ResolvedItem")
+        XCTAssertTrue(interpret.contains("Haptics.selection()"))
+    }
+
+    func testOnlyCommasDelineateMultipleItems() throws {
+        let src = try addItemSource()
+
+        // The line is split on commas; each segment is interpreted as one item and
+        // extras are inserted as additional rows after the first.
+        let interpret = try excerpt(src, from: "private func interpret", to: "private struct ResolvedItem")
+        XCTAssertTrue(interpret.contains("name.split(separator: \",\")"))
+        XCTAssertTrue(interpret.contains("APIClient.shared.parseList(segment)"))
+        XCTAssertTrue(interpret.contains("singleResolvedItem(from: parsed"))
+        XCTAssertTrue(interpret.contains("items.insert(contentsOf:"))
+        // The split is capped at 10 to bound the number of parse calls.
+        XCTAssertTrue(interpret.contains("maxItems = 10"))
+        XCTAssertTrue(interpret.contains("segments.prefix(maxItems - 1)"))
+
+        // Each comma segment coalesces to exactly one item (the AI never splits
+        // within a segment), with a single-item offline fallback that keeps the
+        // user's typed wording.
+        let single = try excerpt(src, from: "private func singleResolvedItem", to: "private func resolveQuantity")
+        XCTAssertTrue(single.contains("parsed.count == 1"))
+        XCTAssertTrue(single.contains("typedName"))
+    }
+
+    func testQuantityLabelComesFromAINotAnOnDeviceGuess() throws {
+        let src = try addItemSource()
+        let resolve = try excerpt(src, from: "private func resolveQuantity", to: "// MARK: - Priority markers")
+        // An explicit amount trusts the AI's unit exactly (an empty unit = a bare
+        // count), rather than forcing an on-device unit onto it.
+        XCTAssertTrue(resolve.contains("aiUnit"))
+        XCTAssertTrue(resolve.contains("Quantity(parsing: amount)"))
+        // The on-device guess is only an offline fallback when there's no AI unit.
+        XCTAssertTrue(resolve.contains("aiUnit.isEmpty ? UnitGuess.guess"))
+    }
+
+    func testThinkingRowShowsSkeletonAndShimmeringThinkingPill() throws {
+        let src = try addItemSource()
+        let row = try excerpt(src, from: "private struct LineItemRow", to: "private struct ThinkingPill")
+        // Left: skeleton while thinking, AI product image once resolved.
+        XCTAssertTrue(row.contains("ShimmerRect(cornerRadius: 8)"))
+        XCTAssertTrue(row.contains("ProductImageView(itemName: item.name, size: Self.imageSize)"))
+        // Right: the thinking pill while thinking.
+        XCTAssertTrue(row.contains("ThinkingPill()"))
+
+        // The pill is a shimmering "Thinking…" label (animated sweep).
+        let pill = try excerpt(src, from: "private struct ThinkingPill", to: "private struct InlineQuantityChip")
+        XCTAssertTrue(pill.contains("Thinking"))
+        XCTAssertTrue(pill.contains("LinearGradient"))
+        XCTAssertTrue(pill.contains("repeatForever"))
+    }
+
+    func testResolvedRowShowsInlineExpandingGlassQuantityStepper() throws {
+        let src = try addItemSource()
+        // The resolved accessory is the inline quantity chip — not a popover.
+        let row = try excerpt(src, from: "private struct LineItemRow", to: "private struct ThinkingPill")
+        XCTAssertTrue(row.contains("InlineQuantityChip(quantity: $quantity, unit: item.unit"))
+        XCTAssertFalse(row.contains(".popover("))
+
+        // The chip shows the amount + label and extends in place to an inline −/+
+        // stepper. The unit label is fixed — no unit picker — and it's a glass capsule.
+        let chip = try excerpt(src, from: "private struct InlineQuantityChip", to: "// MARK: - Identify confirm card")
+        XCTAssertTrue(chip.contains("Quantity.displayString(quantity)"))
+        XCTAssertTrue(chip.contains("expanded.toggle()"))
+        XCTAssertTrue(chip.contains("systemImage: \"minus\""))
+        XCTAssertTrue(chip.contains("systemImage: \"plus\""))
+        XCTAssertTrue(chip.contains("grocerLiquidGlass(in: Capsule()"))
+        XCTAssertFalse(chip.contains("Menu"),
+                       "the unit label is fixed — no inline unit picker")
+        XCTAssertFalse(chip.contains("QuantityStepperField"),
+                       "the stepper is inline, not the shared unit-editing field")
+    }
+
+    func testTappingNameEditsItLocallyWithoutTouchingQuantity() throws {
+        let src = try addItemSource()
+        let row = try excerpt(src, from: "private struct LineItemRow", to: "private struct ThinkingPill")
+        // The name is an editable TextField; tapping it starts editing.
+        XCTAssertTrue(row.contains("TextField(\"Item\", text: $name"))
+        XCTAssertTrue(row.contains("if !editing { editing = true }"))
+        // It scales + wraps to two lines while editing, one line when done.
+        XCTAssertTrue(row.contains(".lineLimit(editing ? 2 : 1)"))
+        XCTAssertTrue(row.contains(".minimumScaleFactor(editing ? 0.6 : 1)"))
+        XCTAssertTrue(row.contains("onCommitName()"))
+        XCTAssertTrue(src.contains("onCommitName: { recalcIfNeeded(item.id) }"))
+
+        // A name edit updates the name (and the image, keyed on it) but NEVER
+        // re-runs the AI, re-enters thinking, or touches the quantity/label.
+        let recalc = try excerpt(src, from: "private func recalcIfNeeded", to: "// MARK: - Interpret")
+        XCTAssertFalse(recalc.contains("interpret("), "a name edit must not re-run the AI")
+        XCTAssertFalse(recalc.contains(".thinking"), "a name edit must not re-enter thinking")
+        XCTAssertFalse(recalc.contains(".quantity"), "a name edit must not touch the quantity")
+        XCTAssertTrue(recalc.contains("items[idx].name = name"))
+        XCTAssertTrue(recalc.contains("removeItem(id)"),
+                      "clearing a row's name should drop the row")
+    }
+
+    func testAINameIsKeptOnlyWhenFaithfulToTheTypedText() throws {
+        let src = try addItemSource()
+        let single = try excerpt(src, from: "private func singleResolvedItem", to: "private func resolveQuantity")
+        // The AI name is adopted only when faithful; otherwise the user's wording wins.
+        XCTAssertTrue(single.contains("aiNameIsFaithful"))
+        XCTAssertTrue(single.contains("faithful ? d.name : typedName"))
+        // The user's explicit leading amount wins over the AI's.
+        XCTAssertTrue(single.contains("userAmount.isEmpty ?"))
+        // Faithfulness = the AI adds no new word (prefix match handles plurals).
+        XCTAssertTrue(single.contains("aiTokens.allSatisfy"))
+        XCTAssertTrue(single.contains("user.hasPrefix(ai) || ai.hasPrefix(user)"))
     }
 
     func testInlineMarkersStageItemsAsHighPriority() throws {
@@ -38,78 +207,35 @@ final class AddItemSourceGuardrailTests: XCTestCase {
         XCTAssertTrue(src.contains("critical|important|high"))
         XCTAssertTrue(src.contains("func hasHighPriorityMarker"))
 
-        // Markers are stripped before parsing, then priority is reattached.
-        let parse = try excerpt(src, from: "private func runParse", to: "private func localSplit")
-        XCTAssertTrue(parse.contains("highPriorityItemNames"))
-        XCTAssertTrue(parse.contains("strippingPriorityMarkers"))
-        XCTAssertTrue(parse.contains("isHighPriority"))
+        // Priority is derived per committed line, with the marker stripped from the name.
+        let commit = try excerpt(src, from: "private func commitLine", to: "private func recalcIfNeeded")
+        XCTAssertTrue(commit.contains("hasHighPriorityMarker(in: raw)"))
+        XCTAssertTrue(commit.contains("strippingPriorityMarkers(raw)"))
 
-        // Priority rides the draft through to the saved item.
-        XCTAssertTrue(src.contains("priority: draft.priority"))
-        // The HIGH chip is shown on the proposed/draft row (normal shows nothing).
-        let row = try excerpt(src, from: "private struct ParsedGroceryDraftRow", to: "/// Shimmer placeholder")
-        XCTAssertTrue(row.contains("PriorityLabel(priority: draft.priority)"))
+        // Priority rides through to the saved item…
+        XCTAssertTrue(src.contains("priority: item.priority"))
+        // …and shows the CRITICAL chip on the row (normal shows nothing).
+        let row = try excerpt(src, from: "private struct LineItemRow", to: "private struct ThinkingPill")
+        XCTAssertTrue(row.contains("PriorityLabel(priority: item.priority)"))
     }
 
-    func testInlineMarkerTogglesCriticalBothWaysAndInstantly() throws {
+    func testInlineMarkerTogglesCriticalBothWays() throws {
         let src = try addItemSource()
-
-        // Priority follows the text both ways: merge mirrors the detected item's
-        // priority (escalate *and* downgrade), not an escalate-only guard — so
-        // removing a "!" clears the CRITICAL flag instead of leaving it stuck.
-        let merge = try excerpt(src, from: "private func merge(", to: "private func makeDraft")
-        XCTAssertTrue(merge.contains("match.priority = item.priority"))
-        XCTAssertFalse(merge.contains("if item.priority == .critical { match.priority = .critical }"),
-                       "merge should no longer be escalate-only — removing a marker must clear critical")
-
-        // The write-back re-emits the "!" for critical rows so a quantity edit (or
-        // add-from-history/photo) doesn't strip the flag and reset it on re-parse.
-        let sync = try excerpt(src, from: "private func syncTextFromDrafts", to: "private static let bullet")
-        XCTAssertTrue(sync.contains("draft.priority == .critical ?"))
-        XCTAssertTrue(sync.contains("(base)!"))
-
-        // Marker changes apply instantly (locally) on each keystroke, not only via
-        // the debounced network parse — adding/removing "!" flips the chip at once.
-        XCTAssertTrue(src.contains("applyPriorityFromText()"))
-        let apply = try excerpt(src, from: "private func applyPriorityFromText", to: "/// Re-projects detected items")
-        XCTAssertTrue(apply.contains("isHighPriority(draft.name, among: urgentNames) ? .critical : .normal"))
+        let recalc = try excerpt(src, from: "private func recalcIfNeeded", to: "// MARK: - Interpret")
+        // Editing the name re-derives priority both ways (escalate and clear)…
+        XCTAssertTrue(recalc.contains("items[idx].priority = priority"))
+        XCTAssertTrue(recalc.contains("priority != items[idx].priority"))
+        // …and a bare "!" toggle (no name change) still updates without a re-parse.
+        XCTAssertTrue(recalc.contains("if nameChanged {"))
     }
 
     func testCameraViewShowsCaptureHint() throws {
         let src = try source("Grocer/Views/CameraCaptureView.swift")
-        // A hint at the top explains what's worth photographing — an item, a list…
-        XCTAssertTrue(src.contains("makeHintContainer"))
-        XCTAssertTrue(src.contains("written list"))
-        // …pinned to the top safe area.
-        let controls = try excerpt(src, from: "private func addControls", to: "private func makeShutterButton")
-        XCTAssertTrue(controls.contains("hintContainer.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor"))
-    }
-
-    func testProposedAreaTapDismissesKeyboard() throws {
-        let src = try addItemSource()
-        let panels = try excerpt(src, from: "private var panels: some View", to: "private var titleChip")
-        XCTAssertTrue(panels.contains("proposedPanel"))
-        XCTAssertTrue(panels.contains(".onTapGesture { dismissKeyboard() }"))
-    }
-
-    func testComposeFieldPreservesCaretWhenBulleting() throws {
-        let src = try addItemSource()
-        // The compose field is backed by a UITextView (not a plain TextField) so
-        // re-bulleting the list as the user types doesn't reset the caret to the
-        // end. Pressing return mid-list used to teleport the caret to the bottom
-        // and, racing UIKit's newline insert, leave a stray trailing bullet.
-        let compose = try excerpt(src, from: "private var composePanel: some View", to: "MARK: - Bottom pane")
-        XCTAssertTrue(compose.contains("BulletListTextEditor(text: $inputText"),
-                      "The compose field should use the caret-preserving editor")
-        XCTAssertFalse(compose.contains("TextField("),
-                       "The compose field should no longer be a plain TextField")
-
-        // The editor re-applies the bullet formatting, then restores the caret to
-        // the line being edited instead of leaving it at the end.
-        let editor = try excerpt(src, from: "struct BulletListTextEditor", to: "MARK: Caret mapping")
-        XCTAssertTrue(editor.contains("AddItemSearchView.bulletified(raw)"))
-        XCTAssertTrue(editor.contains("caretLocation(movingFrom:"))
-        XCTAssertTrue(editor.contains("textView.selectedRange = NSRange(location: caret"))
+        // A Liquid Glass hint explains what's worth photographing — an item, a
+        // written list, or a receipt.
+        let hint = try excerpt(src, from: "private struct CameraHintView", to: "struct CameraZoomOption")
+        XCTAssertTrue(hint.contains("written list"))
+        XCTAssertTrue(hint.contains("grocerLiquidGlass(in: Capsule())"))
     }
 
     func testCameraButtonSitsLeadingOnTheHistoryRow() throws {
@@ -136,12 +262,12 @@ final class AddItemSourceGuardrailTests: XCTestCase {
         let src = try addItemSource()
         // The custom AVFoundation camera (no Retake/Use Photo step) is used when a
         // camera is available; the library picker is only the fallback.
-        let capture = try excerpt(src, from: "private func startPhotoCapture", to: "private func handleCapturedImage")
+        let capture = try excerpt(src, from: "private func startPhotoCapture", to: "private func presentIdentifyIfPending")
         XCTAssertTrue(capture.contains("CameraCaptureView.isAvailable"))
         XCTAssertTrue(capture.contains("showCamera = true"))
     }
 
-    func testPhotoCaptureIdentifiesAndStagesDraftWithPhoto() throws {
+    func testPhotoCaptureIdentifiesAndStagesResolvedRowWithPhoto() throws {
         let src = try addItemSource()
 
         // Capture → vision identify.
@@ -149,15 +275,17 @@ final class AddItemSourceGuardrailTests: XCTestCase {
         XCTAssertTrue(capture.contains("resizedItemPhotoData()"))
         XCTAssertTrue(capture.contains("APIClient.shared.identifyItem(imageData:"))
 
-        // Confirmed single item is staged as a draft carrying its photo, quantity,
-        // and notes.
+        // A confirmed single item lands as a resolved row carrying its photo + notes.
         let addFromPhoto = try excerpt(src, from: "private func addFromPhoto", to: "private func addParsedList")
+        XCTAssertTrue(addFromPhoto.contains("appendResolved("))
         XCTAssertTrue(addFromPhoto.contains("photoData: photoData"))
-        XCTAssertTrue(addFromPhoto.contains("notes: resolvedNotes"))
+        let append = try excerpt(src, from: "private func appendResolved", to: "// MARK: - Photo capture")
+        XCTAssertTrue(append.contains("photoData: photoData"))
+        XCTAssertTrue(append.contains("notes: notes"))
 
         // The photo and notes flow into the saved item on finalize.
-        XCTAssertTrue(src.contains("photoData: draft.photoData"))
-        XCTAssertTrue(src.contains("notes: draft.notes"))
+        XCTAssertTrue(src.contains("photoData: item.photoData"))
+        XCTAssertTrue(src.contains("notes: item.notes"))
     }
 
     func testListPhotoBypassesCardAndStagesEveryItem() throws {
@@ -169,14 +297,14 @@ final class AddItemSourceGuardrailTests: XCTestCase {
         XCTAssertTrue(apply.contains("addParsedList(outcome.items)"))
     }
 
-    func testDraftRowUsesAIProductImageNotUserPhoto() throws {
+    func testRowUsesAIProductImageNotUserPhoto() throws {
         let src = try addItemSource()
-        // The proposed/draft row always renders the AI image — the user photo is
-        // reserved for the item detail screen.
-        let row = try excerpt(src, from: "private struct ParsedGroceryDraftRow", to: "/// Shimmer placeholder")
-        XCTAssertTrue(row.contains("ProductImageView(itemName: draft.name, size: 44)"))
-        XCTAssertFalse(row.contains("UIImage(data: photoData)"),
-                       "The draft row should not display the user-taken photo")
+        // The list row always renders the AI image — the user photo is reserved for
+        // the item detail screen.
+        let row = try excerpt(src, from: "private struct LineItemRow", to: "private struct ThinkingPill")
+        XCTAssertTrue(row.contains("ProductImageView(itemName: item.name, size: Self.imageSize)"))
+        XCTAssertFalse(row.contains("UIImage(data:"),
+                       "the row should not display the user-taken photo")
     }
 
     func testItemDetailShowsAIImageWithUserPhotoOverlay() throws {

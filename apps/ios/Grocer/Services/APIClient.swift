@@ -76,24 +76,33 @@ actor APIClient {
     func parseList(_ text: String) async -> [ParsedItem] {
         struct Req: Encodable { let text: String }
         struct Res: Decodable { let items: [ParsedItem] }
-        let res: Res? = await post("/parse-list", body: Req(text: text))
+        // Parsing runs an LLM server-side, which routinely exceeds the default 8s
+        // session (especially cold, or over a dev tunnel like localcan) — use the
+        // longer session so it doesn't time out into the on-device fallback.
+        let res: Res? = await post("/parse-list", body: Req(text: text), session: visionSession)
         return res?.items ?? []
     }
 
     // MARK: - Item identification (vision)
 
-    /// Best-effort: sends a photo to the Worker, which uses an AI vision model to
-    /// resolve it into either a single grocery product or a multi-item grocery
-    /// list (e.g. a photographed handwritten list). Returns an empty outcome on
-    /// any failure — offline, API down, or the photo isn't grocery-related. The
-    /// image is sent only to our Worker for identification; it is NOT persisted
-    /// server-side (the photo itself lives in CloudKit with the item).
-    func identifyItem(imageData: Data) async -> IdentifyOutcome {
+    /// Sends a photo to the Worker's vision model. Returns the identified item(s)
+    /// on success, or `.rateLimited` when the caller is over the AI quota (the
+    /// view should show an actionable message rather than a silent empty result).
+    /// The image is sent only to our Worker; it is NOT persisted server-side.
+    func identifyItem(imageData: Data) async -> Result<IdentifyOutcome, APIError> {
         struct Req: Encodable { let image: String; let mimeType: String }
         struct Res: Decodable { let item: IdentifiedItem?; let items: [ParsedItem]? }
-        let body = Req(image: imageData.base64EncodedString(), mimeType: "image/jpeg")
-        let res: Res? = await post("/identify-item", body: body, session: visionSession)
-        return IdentifyOutcome(item: res?.item, items: res?.items ?? [])
+        var req = URLRequest(url: baseURL.appendingPathComponent("/identify-item"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue(SettingsStore.shared.memberIdOrDevice, forHTTPHeaderField: "x-grocer-distinct-id")
+        guard let body = try? encoder.encode(Req(image: imageData.base64EncodedString(), mimeType: "image/jpeg")) else {
+            return .success(IdentifyOutcome(item: nil, items: []))
+        }
+        req.httpBody = body
+        let (res, status): (Res?, Int) = await performWithStatus(req, session: visionSession)
+        if status == 429 { return .failure(.rateLimited) }
+        return .success(IdentifyOutcome(item: res?.item, items: res?.items ?? []))
     }
 
     // MARK: - Product images
@@ -236,19 +245,34 @@ actor APIClient {
     }
 
     private func perform<T: Decodable>(_ req: URLRequest, session: URLSession? = nil) async -> T? {
+        await performWithStatus(req, session: session).0
+    }
+
+    private func performWithStatus<T: Decodable>(_ req: URLRequest, session: URLSession? = nil) async -> (T?, Int) {
         do {
             let (data, response) = try await (session ?? self.session).data(for: req)
-            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-                print("[APIClient] non-2xx for \(req.url?.path ?? "")")
-                return nil
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard (200..<300).contains(status) else {
+                print("[APIClient] non-2xx (\(status)) for \(req.url?.path ?? "")")
+                return (nil, status)
             }
-            return try decoder.decode(T.self, from: data)
+            do {
+                return (try decoder.decode(T.self, from: data), status)
+            } catch {
+                print("[APIClient] decode failed for \(req.url?.path ?? ""): \(error)")
+                return (nil, status)
+            }
         } catch {
-            // Best-effort: never surface API errors into the grocery workflow.
             print("[APIClient] request failed for \(req.url?.path ?? ""): \(error)")
-            return nil
+            return (nil, 0)
         }
     }
+}
+
+// MARK: - Errors
+
+enum APIError: Error {
+    case rateLimited
 }
 
 // MARK: - DTOs (mirror packages/shared/src/schemas.ts)

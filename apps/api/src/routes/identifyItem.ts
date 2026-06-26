@@ -5,8 +5,11 @@ import { parseBody } from "../lib/validate.js";
 import { identifyItemWithAI } from "../services/aiIdentifyItem.js";
 import { prewarmProductImages } from "./productImage.js";
 import { callerDistinctId, createPostHogClient } from "../lib/posthog.js";
+import { aiRateLimit } from "../lib/aiRateLimit.js";
 
 export const identifyItemRoute = new Hono<{ Bindings: Env }>();
+
+identifyItemRoute.use("/identify-item", aiRateLimit());
 
 identifyItemRoute.post("/identify-item", async (c) => {
   const parsed = await parseBody(c, IdentifyItemRequestSchema);

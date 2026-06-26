@@ -12,8 +12,12 @@ import {
   releaseGenerationLock,
 } from "../lib/imageLock.js";
 import { classifyGroceryName } from "../services/classifyGroceryName.js";
+import { aiRateLimit } from "../lib/aiRateLimit.js";
 
 export const productImageRoute = new Hono<{ Bindings: Env }>();
+
+productImageRoute.use("/product-image", aiRateLimit());
+productImageRoute.use("/product-image/prewarm", aiRateLimit());
 
 const SIMILARITY_THRESHOLD = 0.92;
 const OPENAI_EMBEDDINGS_URL = "https://api.openai.com/v1/embeddings";

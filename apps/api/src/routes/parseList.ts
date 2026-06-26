@@ -6,8 +6,11 @@ import { parseListWithAI } from "../services/aiParseList.js";
 import { parseList } from "../services/categorize.js";
 import { prewarmProductImages } from "./productImage.js";
 import { callerDistinctId, createPostHogClient } from "../lib/posthog.js";
+import { aiRateLimit } from "../lib/aiRateLimit.js";
 
 export const parseListRoute = new Hono<{ Bindings: Env }>();
+
+parseListRoute.use("/parse-list", aiRateLimit());
 
 parseListRoute.post("/parse-list", async (c) => {
   const parsed = await parseBody(c, ParseListRequestSchema);

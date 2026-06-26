@@ -1,5 +1,5 @@
 // Copy Secrets.xcconfig.example → Secrets.xcconfig and set your phc_… token
 // before archiving for TestFlight / App Store.
 #include? "Secrets.xcconfig"
-POSTHOG_HOST = https:/$()/us.i.posthog.com
+POSTHOG_HOST = https:/$()/aa.grocer.sh
 POSTHOG_PROJECT_TOKEN = phc_CzPx6jMYZiTV5joXtA54wtkSGgg4AW6rMddxvqkA2AzN
