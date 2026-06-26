@@ -177,6 +177,11 @@ struct AddItemSearchView: View {
 
     /// Debounce handle for the AI parse; cancelled and rescheduled on each edit.
     @State private var parseTask: Task<Void, Never>?
+    /// Monotonic token bumped on every keystroke. A scheduled parse captures the
+    /// token at schedule time and bails after its sleep unless it's still the
+    /// latest — a belt-and-suspenders guard so only the final keystroke in a burst
+    /// reaches the network even if a task's cancellation races.
+    @State private var parseGeneration = 0
     /// Last text we ran a parse for, so identical text doesn't re-parse.
     @State private var lastParsedText = ""
     /// Set when a text change originates from a row edit (mirror write-back) so
@@ -275,7 +280,7 @@ struct AddItemSearchView: View {
             // a typed/removed "!" flips the CRITICAL chip without waiting on the
             // debounced network parse. The parse still runs to pick up item edits.
             applyPriorityFromText()
-            scheduleParse(after: .milliseconds(500))
+            scheduleParse(after: .milliseconds(700))
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             // Pinned to the bottom and kept visible while the keyboard is up (it
@@ -329,14 +334,18 @@ struct AddItemSearchView: View {
         .postHogScreenView("Add Item Search")
     }
 
-    /// Bottom-floating row: the camera button is pinned to the leading edge and
-    /// the History pill (when there's history) to the trailing edge.
+    /// Bottom-floating row: the camera and History buttons are pinned to the
+    /// leading edge side by side; while the keyboard is up a dismiss button joins
+    /// the trailing edge.
     private var floatingControls: some View {
         HStack(spacing: 12) {
             cameraButton
-            Spacer(minLength: 0)
             if !historySuggestions.isEmpty {
                 historyButton
+            }
+            Spacer(minLength: 0)
+            if keyboardVisible {
+                keyboardDownButton
             }
         }
         .padding(.horizontal, 16)
@@ -345,25 +354,28 @@ struct AddItemSearchView: View {
                    value: historySuggestions.isEmpty)
     }
 
-    /// Floating glass pill that opens the camera to photograph an item (or a
-    /// written list), then has the server identify it. Icon-only — no label.
+    /// Floating glass circle that opens the camera to photograph an item (or a
+    /// written list), then has the server identify it. Icon-only, sized and styled
+    /// to match the close button.
     private var cameraButton: some View {
         Button {
             startPhotoCapture()
         } label: {
             Image(systemName: "camera.fill")
-                .font(.callout.weight(.semibold))
-                .foregroundStyle(.primary)
-                .frame(width: 44, height: 34)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+                .grocerLiquidGlass(in: Circle(), interactive: true)
         }
+        .buttonStyle(.plain)
         .tint(.primary)
-        .grocerGlassButton()
-        .clipShape(Capsule())
         .transition(.scale(scale: 0.85).combined(with: .opacity))
         .accessibilityLabel("Take a photo to identify an item")
     }
 
-    /// Floating glass pill that swaps the add flow for the group's item history.
+    /// Floating glass circle that swaps the add flow for the group's item history.
+    /// Icon-only, matching the close and camera buttons.
     private var historyButton: some View {
         Button {
             Haptics.tap()
@@ -372,17 +384,37 @@ struct AddItemSearchView: View {
                 showHistory = true
             }
         } label: {
-            Label("History", systemImage: "clock.arrow.circlepath")
-                .font(.callout.weight(.semibold))
-                .foregroundStyle(.primary)
-                .padding(.horizontal, 8)
-                .frame(height: 34)
+            Image(systemName: "clock.arrow.circlepath")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+                .grocerLiquidGlass(in: Circle(), interactive: true)
         }
+        .buttonStyle(.plain)
         .tint(.primary)
-        .grocerGlassButton()
-        .clipShape(Capsule())
         .transition(.scale(scale: 0.85).combined(with: .opacity))
         .accessibilityLabel("Add from history")
+    }
+
+    /// Floating glass circle that drops the keyboard. Lives on the trailing edge of
+    /// the bottom controls row and only appears while the keyboard is up.
+    private var keyboardDownButton: some View {
+        Button {
+            Haptics.tap()
+            dismissKeyboard()
+        } label: {
+            Image(systemName: "keyboard.chevron.compact.down")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+                .grocerLiquidGlass(in: Circle(), interactive: true)
+        }
+        .buttonStyle(.plain)
+        .tint(.primary)
+        .transition(.scale(scale: 0.85).combined(with: .opacity))
+        .accessibilityLabel(String(localized: "Dismiss keyboard"))
     }
 
     private var addFlowContent: some View {
@@ -431,43 +463,39 @@ struct AddItemSearchView: View {
     }
 
     /// The page title as a Liquid Glass capsule chip. It scrolls with the content
-    /// (not pinned), sitting at the leading content edge.
+    /// (not pinned), centered across the content width (the close button floats
+    /// over the leading edge).
     private var titleChip: some View {
         Text("Add Items")
             // ~10% larger than .headline (17pt).
             .font(.system(size: 18.7, weight: .semibold))
-            .padding(.horizontal, 0)
+            .frame(maxWidth: .infinity, alignment: .center)
             .frame(height: 36)
 //            .grocerLiquidGlass(in: Capsule())
             // Purely a label — taps pass through to nothing.
             .allowsHitTesting(false)
     }
 
-    /// The sticky close control, floated over the content at the top-trailing edge
-    /// (there's no header bar behind it). While typing it drops the keyboard;
-    /// otherwise it closes the flow.
+    /// The sticky close control, floated over the content at the top-leading edge
+    /// (there's no header bar behind it). It always closes the flow — keyboard
+    /// dismissal lives on the bottom controls row instead.
     private var closeButton: some View {
         HStack(spacing: 0) {
-            Spacer(minLength: 0)
             Button {
                 Haptics.tap()
-                if keyboardVisible {
-                    dismissKeyboard()
-                } else {
-                    attemptClose()
-                }
+                attemptClose()
             } label: {
-                Image(systemName: keyboardVisible ? "keyboard.chevron.compact.down" : "xmark")
+                Image(systemName: "xmark")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
                     .grocerLiquidGlass(in: Circle(), interactive: true)
-                    .contentTransition(.symbolEffect(.replace))
             }
             .buttonStyle(.plain)
             .tint(.primary)
-            .accessibilityLabel(keyboardVisible ? String(localized: "Dismiss keyboard") : String(localized: "Close"))
+            .accessibilityLabel(String(localized: "Close"))
+            Spacer(minLength: 0)
         }
         .padding(.horizontal, 16)
         .padding(.top, 12)
@@ -547,18 +575,9 @@ struct AddItemSearchView: View {
     // own (inline amounts, the "!" urgency marker, return-per-item, the camera).
     private var emptyProposed: some View {
         VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 10) {
-                Label("Tips", systemImage: "lightbulb")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.secondary)
-
-                SquigglyLine()
-                    .stroke(style: StrokeStyle(lineWidth: 1.75, lineCap: .round, lineJoin: .round))
-                    .foregroundStyle(.tertiary)
-                    .frame(height: 9)
-                    .frame(maxWidth: 130, alignment: .leading)
-                    .accessibilityHidden(true)
-            }
+            Label("Tips", systemImage: "lightbulb")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
 
             VStack(alignment: .leading, spacing: 14) {
                 ForEach(Self.composeTips) { tip in
@@ -592,30 +611,6 @@ struct AddItemSearchView: View {
         let text: LocalizedStringKey
     }
 
-    /// A continuous, rounded sine wave used as a hand-drawn squiggly divider under
-    /// the Tips title. The amplitude is sized to fill the view's height (minus the
-    /// stroke inset) so the wave reads clearly rather than as a near-flat line.
-    private struct SquigglyLine: Shape {
-        /// Horizontal span of one full up-and-down crest.
-        var wavelength: CGFloat = 27
-
-        func path(in rect: CGRect) -> Path {
-            var path = Path()
-            // Leave ~1pt of headroom so the rounded stroke isn't clipped at the
-            // crest of each wave.
-            let amplitude = max(rect.height / 2 - 1, 0)
-            let midY = rect.midY
-            path.move(to: CGPoint(x: rect.minX, y: midY))
-            var x = rect.minX
-            while x <= rect.maxX {
-                let y = midY + sin(x / wavelength * 2 * .pi) * amplitude
-                path.addLine(to: CGPoint(x: x, y: y))
-                x += 1
-            }
-            return path
-        }
-    }
-
     // Bold spans (markdown) only change weight, never colour, so the whole panel
     // stays grayscale. The icons mirror what each tip refers to: the urgency mark
     // uses the same "exclamationmark" symbol as the CRITICAL chip.
@@ -647,12 +642,17 @@ struct AddItemSearchView: View {
 
     private func scheduleParse(after delay: Duration) {
         parseTask?.cancel()
+        parseGeneration &+= 1
+        let generation = parseGeneration
         let text = trimmedInput
         parseTask = Task {
             if delay > .zero {
                 try? await Task.sleep(for: delay)
             }
-            guard !Task.isCancelled else { return }
+            // Bail if cancelled *or* superseded by a later keystroke — the latter
+            // catches the case where a cancel didn't stop this task in time, so a
+            // mid-burst edit can never sneak a network parse through.
+            guard !Task.isCancelled, generation == parseGeneration else { return }
             await runParse(text)
         }
     }

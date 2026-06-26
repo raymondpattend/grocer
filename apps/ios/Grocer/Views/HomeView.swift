@@ -649,58 +649,22 @@ struct HomeView: View {
         pinnedHouseholdIdsRaw = ids.sorted().joined(separator: "\n")
     }
 
-    // Number of preview rows to fake per skeleton card. Varied per card so the
-    // grid doesn't read as a rigid template.
-    private static let skeletonRowCounts = [4, 2, 3, 3]
-    // Point widths for the faked item-name lines, so rows look organic rather
-    // than uniform.
-    private static let skeletonRowWidths: [CGFloat] = [120, 78, 100, 64]
-
     private var skeleton: some View {
         LazyVGrid(columns: [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)],
                   spacing: 14) {
-            ForEach(0..<4, id: \.self) { index in
-                skeletonCard(rows: Self.skeletonRowCounts[index % Self.skeletonRowCounts.count])
+            ForEach(0..<4, id: \.self) { _ in
+                skeletonCard
             }
         }
     }
 
-    /// A placeholder that mirrors `gridCard`: a few item-preview rows up top,
-    /// then a title bar and count line anchored to the bottom. Matching the real
-    /// layout keeps the hand-off to loaded content from jumping.
-    private func skeletonCard(rows: Int) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(0..<rows, id: \.self) { row in
-                    HStack(spacing: 7) {
-                        ShimmerCircle()
-                            .frame(width: 22, height: 22)
-                        ShimmerRect(cornerRadius: 4)
-                            .frame(width: Self.skeletonRowWidths[row % Self.skeletonRowWidths.count],
-                                   height: 10)
-                        Spacer(minLength: 0)
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-
-            VStack(alignment: .leading, spacing: 6) {
-                ShimmerRect(cornerRadius: 5)
-                    .frame(width: 96, height: 16)
-                ShimmerRect(cornerRadius: 4)
-                    .frame(width: 56, height: 11)
-            }
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .frame(height: Self.cardHeight)
-        .background(Color(.secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .strokeBorder(Color(.separator).opacity(0.6), lineWidth: 1)
-        }
-        .accessibilityHidden(true)
+    /// A plain shimmering tile the size of a real `gridCard`. We skeleton-load
+    /// the card shapes only — no faked item rows, title, or count — so the
+    /// hand-off to loaded content is a simple fade, not a layout reshuffle.
+    private var skeletonCard: some View {
+        ShimmerRect(cornerRadius: 20)
+            .frame(height: Self.cardHeight)
+            .accessibilityHidden(true)
     }
 }
 
