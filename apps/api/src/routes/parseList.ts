@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { captureException } from "@sentry/cloudflare";
 import { ParseListRequestSchema, type ParsedItem } from "@grocer/shared";
 import type { Env } from "../env.js";
 import { parseBody } from "../lib/validate.js";
@@ -24,7 +25,8 @@ parseListRoute.post("/parse-list", async (c) => {
       distinctId,
     });
   } catch (err) {
-    console.warn("AI list parsing failed; using deterministic fallback:", err);
+    console.error("AI list parsing failed; using deterministic fallback:", err);
+    captureException(err);
   }
   const usedAI = !!(aiItems?.length);
   const items = usedAI ? aiItems! : parseList(parsed.data.text);

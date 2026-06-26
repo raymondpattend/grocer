@@ -3,6 +3,7 @@ import {
   ParseListResponseSchema,
   type ParsedItem,
 } from "@grocer/shared";
+import { captureException } from "@sentry/cloudflare";
 import type { Env } from "../env.js";
 import { createOpenAIClient } from "../lib/grafanaOpenAi.js";
 import {
@@ -211,7 +212,8 @@ export async function parseListWithAI(
         },
       });
     }
-    console.warn("OpenAI list parsing skipped:", err);
+    console.error("OpenAI list parsing failed:", err);
+    captureException(err);
     return null;
   }
 }

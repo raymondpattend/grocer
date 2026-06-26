@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { captureException } from "@sentry/cloudflare";
 import type { Env } from "../env.js";
 import {
   captureAiEmbedding,
@@ -721,6 +722,7 @@ async function generateAndCache(
       });
       captured = true;
       console.error("OpenAI image generation failed:", openaiRes.status, text);
+      captureException(new Error(`OpenAI image generation failed (${openaiRes.status}): ${text}`));
       return null;
     }
 
@@ -770,6 +772,7 @@ async function generateAndCache(
     captured = true;
     if (!b64) {
       console.error("OpenAI returned no image data");
+      captureException(new Error("OpenAI image generation returned no image data"));
       return null;
     }
 
@@ -920,6 +923,7 @@ function generateAndStream(
           });
           captured = true;
           console.error("OpenAI stream failed:", openaiRes.status, text);
+          captureException(new Error(`OpenAI image stream failed (${openaiRes.status}): ${text}`));
           controller.enqueue(sse("error", { message: "Image generation failed" }));
           return;
         }
@@ -1032,6 +1036,7 @@ function generateAndStream(
           });
         }
         console.error("Streaming generation error:", err);
+        captureException(err);
         controller.enqueue(sse("error", { message: "Image generation failed" }));
       } finally {
         controller.close();

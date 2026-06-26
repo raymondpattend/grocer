@@ -3,6 +3,7 @@ import {
   type IdentifiedItem,
   type ParsedItem,
 } from "@grocer/shared";
+import { captureException } from "@sentry/cloudflare";
 import type { Env } from "../env.js";
 import { createOpenAIClient } from "../lib/grafanaOpenAi.js";
 import {
