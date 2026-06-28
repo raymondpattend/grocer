@@ -307,6 +307,10 @@ struct QuantityStepperField: View {
     /// placements that already sit on a surface (e.g. a form row). Passed through
     /// to the underlying `QuantityStepperControl`.
     var fill: Bool = false
+    /// Prominent circular style: large filled-circle minus/plus buttons pinned to
+    /// the row's leading and trailing edges, with the amount centered above the
+    /// unit menu — the stepper card used in the Add Item sheet.
+    var prominent: Bool = false
 
     @State private var showingCustomUnit = false
     @State private var customUnit = ""
@@ -331,10 +335,16 @@ struct QuantityStepperField: View {
     }
 
     var body: some View {
-        HStack(spacing: 12) {
-            stepperControl
-                .frame(maxWidth: fill ? .infinity : nil)
-            unitMenu
+        Group {
+            if prominent {
+                prominentStepper
+            } else {
+                HStack(spacing: 12) {
+                    stepperControl
+                        .frame(maxWidth: fill ? .infinity : nil)
+                    unitMenu
+                }
+            }
         }
         .alert("Custom unit", isPresented: $showingCustomUnit) {
             TextField("Unit", text: $customUnit)
@@ -394,6 +404,40 @@ struct QuantityStepperField: View {
         .tint(.primary)
         .fixedSize()
         .accessibilityLabel("Unit")
+    }
+
+    /// The circular, edge-aligned stepper used by the Add Item sheet: big filled
+    /// minus/plus circles pinned to the leading and trailing edges, with the amount
+    /// (and the unit menu beneath it) centered between them.
+    private var prominentStepper: some View {
+        HStack(spacing: 0) {
+            circleButton(systemImage: "minus") { adjust(-1) }
+            Spacer(minLength: 12)
+            VStack(spacing: 2) {
+                Text(amountLabel)
+                    .font(.title.weight(.bold).monospacedDigit())
+                    .foregroundStyle(.primary)
+                    .contentTransition(.numericText())
+                    .animation(reduceMotion ? nil : .snappy(duration: 0.22), value: amountLabel)
+                unitMenu
+            }
+            Spacer(minLength: 12)
+            circleButton(systemImage: "plus") { adjust(1) }
+        }
+        .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .contain)
+    }
+
+    private func circleButton(systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.primary)
+                .frame(width: 56, height: 56)
+                .background(Color(.systemGray5), in: Circle())
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: - Mutation

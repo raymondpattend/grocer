@@ -30,23 +30,19 @@ struct SettingsView: View {
     @State private var committedGroupName = ""
     @State private var confirmLeave = false
     @State private var selectedProfilePhoto: PhotosPickerItem?
-    @State private var showInviteIntro = false
     @State private var showDebug = false
-    @State private var openMemberRowId: String?
-    @State private var storeLinkMode: StoreLinkMode?
     @State private var billingPortal: BillingPortalPresentation?
 
-    private static let proAccent = Color(red: 0.06, green: 0.72, blue: 0.51)
+    fileprivate static let proAccent = Color(red: 0.06, green: 0.72, blue: 0.51)
 
     var body: some View {
         ScrollView {
             VStack(spacing: 24) {
                 profileHeader
                 proCard
-                generalSection
-                membersSection
-                storeReminderSection
-                moreSection
+                thisListSection
+                appSettingsSection
+                dangerZoneSection
                 versionFooter
             }
             .padding(.horizontal, 16)
@@ -76,14 +72,8 @@ struct SettingsView: View {
         .onDisappear {
             commitPendingChanges()
         }
-        .sheet(isPresented: $showInviteIntro) {
-            InviteToGroupSheet()
-        }
         .sheet(isPresented: $showDebug) {
             DebugView()
-        }
-        .sheet(item: $storeLinkMode) { mode in
-            StoreLinkSheet(startAtPicker: mode == .change)
         }
         .sheet(item: $billingPortal) { portal in
             WebCheckoutView(url: portal.url)
@@ -99,10 +89,6 @@ struct SettingsView: View {
         .postHogScreenView("Settings")
     }
 
-    private func canRemove(_ member: HouseholdMember) -> Bool {
-        repo.isOwnerOfCurrentGroup && member.role != .owner
-    }
-
     private var purchaseErrorPresented: Binding<Bool> {
         Binding(
             get: { subscriptions.lastErrorMessage != nil },
@@ -112,75 +98,6 @@ struct SettingsView: View {
 
     private var purchaseErrorMessage: String {
         subscriptions.lastErrorMessage ?? ""
-    }
-
-    // MARK: - Reusable building blocks
-
-    /// Rounded "card" container matching the Home screen aesthetic.
-    @ViewBuilder
-    private func card<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
-        VStack(spacing: 0) { content() }
-            .background(Color(.secondarySystemGroupedBackground),
-                        in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .strokeBorder(Color(.separator).opacity(0.35), lineWidth: 1)
-            }
-    }
-
-    /// Section header + content, with an optional footer caption.
-    @ViewBuilder
-    private func settingsSection<Content: View>(
-        _ title: String,
-        footer: String? = nil,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-                Text(title)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 4)
-            content()
-            if let footer {
-                Text(footer)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 4)
-            }
-        }
-    }
-
-    /// Divider between rows inside a card, inset past the leading icon.
-    private var rowDivider: some View {
-        Divider().padding(.leading, 52)
-    }
-
-    /// A leading-icon row label used across button/navigation rows.
-    private func rowLabel(_ title: String,
-                          systemImage: String,
-                          tint: Color = .accentColor,
-                          chevron: Bool = false,
-                          destructive: Bool = false,
-                          enabled: Bool = true) -> some View {
-        let iconColor: Color = !enabled ? .secondary : (destructive ? .red : tint)
-        let textColor: Color = !enabled ? .secondary : (destructive ? .red : .primary)
-        return HStack(spacing: 14) {
-            Image(systemName: systemImage)
-                .font(.body)
-                .foregroundStyle(iconColor)
-                .frame(width: 24)
-            Text(title)
-                .foregroundStyle(textColor)
-            Spacer(minLength: 8)
-            if chevron {
-                Image(systemName: "chevron.right")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.tertiary)
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 13)
-        .contentShape(Rectangle())
     }
 
     // MARK: - Profile header
@@ -338,239 +255,155 @@ struct SettingsView: View {
         openURL(url)
     }
 
-    // MARK: - General
+    // MARK: - Section 1: This List
 
-    private var generalSection: some View {
-        settingsSection(String(localized: "General")) {
+    private var thisListSection: some View {
+        settingsSection(String(localized: "This List")) {
             VStack(spacing: 12) {
-                iCloudStatusCard
                 HStack(spacing: 12) {
-                    navTile(String(localized: "Preferences"),
-                            systemImage: "gearshape.fill",
-                            tint: .secondary) {
-                        PreferencesView()
-                    }
-                    navTile(String(localized: "Customize List"),
-                            systemImage: "paintbrush.fill",
-                            tint: .accentColor) {
+                    settingsNavTile(String(localized: "List Appearance"),
+                                    systemImage: "paintbrush.fill",
+                                    tint: .accentColor) {
                         CustomizeListView()
                     }
+                    settingsNavTile(String(localized: "Shopping Settings"),
+                                    systemImage: "cart.fill",
+                                    tint: .grocerGreen) {
+                        ShoppingSettingsView()
+                    }
                 }
+                membersBlock
             }
         }
     }
 
-    /// "iCloud Backup" status card mirroring the reference layout: title,
-    /// reassurance copy, then a live status line derived from the sync state.
-    private var iCloudStatusCard: some View {
-        card {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("iCloud Backup")
-                    .font(.headline)
-                Text("Your lists and items are stored securely and privately in your iCloud.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: 8) {
-                    Image(systemName: iCloudStatus.symbol)
-                        .foregroundStyle(iCloudStatus.color)
-                    Text(iCloudStatus.label)
-                        .font(.subheadline.weight(.semibold))
-                }
-                .padding(.top, 2)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(16)
-        }
-    }
-
-    private var iCloudStatus: (label: String, symbol: String, color: Color) {
-        if !repo.iCloudAccountAvailable {
-            return (String(localized: "iCloud unavailable"), "exclamationmark.icloud.fill", .orange)
-        }
-        switch repo.syncState {
-        case .syncing:
-            return (String(localized: "Syncing"), "arrow.triangle.2.circlepath.icloud.fill", .yellow)
-        case .offline:
-            return (String(localized: "Offline"), "icloud.slash.fill", .secondary)
-        case .error:
-            return (String(localized: "Sync error"), "exclamationmark.icloud.fill", .orange)
-        case .idle:
-            return (String(localized: "Up to date"), "checkmark.icloud.fill", .grocerGreen)
-        }
-    }
-
-    /// A square navigation tile (icon top-left, bold label below) — the
-    /// side-by-side card style from the reference "General" section.
-    @ViewBuilder
-    private func navTile<Destination: View>(_ title: String,
-                                            systemImage: String,
-                                            tint: Color,
-                                            @ViewBuilder destination: () -> Destination) -> some View {
+    /// Full-width "Members & Sharing" block opening the member management list.
+    private var membersBlock: some View {
         NavigationLink {
-            destination()
+            MembersView()
         } label: {
-            tileContent(title, systemImage: systemImage, tint: tint)
-        }
-        .buttonStyle(.plain)
-        .simultaneousGesture(TapGesture().onEnded { Haptics.selection() })
-    }
-
-    /// Shared tile body: colored icon top-left, gray chevron top-right, and a
-    /// bold label below. Used by both `navTile` and the standalone store button
-    /// so they read as the same primary-action style.
-    private func tileContent(_ title: String,
-                             systemImage: String,
-                             tint: Color) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 8) {
-                Image(systemName: systemImage)
+            HStack(spacing: 14) {
+                Image(systemName: "person.2.fill")
                     .font(.title2)
-                    .foregroundStyle(tint)
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 30)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Members & Sharing")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text("^[\(repo.currentMembers.count) Member](inflect: true)")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer(minLength: 8)
                 Image(systemName: "chevron.right")
                     .font(.footnote.weight(.semibold))
                     .foregroundStyle(.tertiary)
             }
-            Spacer(minLength: 10)
-            Text(title)
-                .font(.body.weight(.semibold))
-                .foregroundStyle(.primary)
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(.secondarySystemGroupedBackground),
+                        in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .strokeBorder(Color(.separator).opacity(0.35), lineWidth: 1)
+            }
         }
-        .frame(maxWidth: .infinity, minHeight: 50, alignment: .leading)
-        .padding(16)
-        .background(Color(.secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .strokeBorder(Color(.separator).opacity(0.35), lineWidth: 1)
-        }
+        .buttonStyle(.plain)
+        .simultaneousGesture(TapGesture().onEnded { Haptics.selection() })
     }
 
-    // MARK: - Members
+    // MARK: - Section 2: App Settings
 
-    private var membersSection: some View {
-        let canInvite = repo.isOwnerOfCurrentGroup && repo.canShare
-        return settingsSection(String(localized: "Members"), footer: membersFooter) {
-            card {
+    private var appSettingsSection: some View {
+        settingsSection(String(localized: "App Settings")) {
+            settingsCard {
+                settingsNavRow(String(localized: "Live Activities"),
+                               systemImage: "bolt.fill", tint: .orange) {
+                    LiveActivitiesSettingsView()
+                }
+                settingsRowDivider
+                settingsNavRow(String(localized: "Notifications"),
+                               systemImage: "bell.badge.fill", tint: .red) {
+                    NotificationsSettingsView()
+                }
+                settingsRowDivider
+                settingsNavRow(String(localized: "App Appearance"),
+                               systemImage: "circle.lefthalf.filled", tint: .indigo) {
+                    AppearanceSettingsView()
+                }
+                settingsRowDivider
                 Button {
                     Haptics.selection()
-                    showInviteIntro = true
+                    if subscriptions.hasGrocerPro {
+                        openManageSubscription()
+                    } else {
+                        showProPaywall = true
+                    }
                 } label: {
-                    inviteRow(enabled: canInvite)
+                    settingsRowLabel(String(localized: "Manage Pro"),
+                                     systemImage: "crown.fill",
+                                     tint: Self.proAccent,
+                                     chevron: true)
                 }
                 .buttonStyle(.plain)
-                .disabled(!canInvite)
-
-                ForEach(repo.currentMembers) { member in
-                    Divider().padding(.leading, member.role == .owner ? 52 : 68)
-                    memberRow(member)
-                }
             }
-            // Contain the swipe-to-remove action background within the rounded card.
-            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         }
     }
 
-    /// "Invite to List" row. Sized to match the General section's nav tiles —
-    /// `.title2` icon and a semibold body title — so it reads as a primary action.
-    private func inviteRow(enabled: Bool) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: "person.crop.circle.fill.badge.plus")
-                .font(.title2)
-                .foregroundStyle(enabled ? Color.accentColor : .secondary)
-                .frame(width: 30)
-            Text("Invite to List")
-                .font(.body.weight(.semibold))
-                .foregroundStyle(enabled ? .primary : .secondary)
-            Spacer(minLength: 8)
-            if showsInviteLimitChip {
-                inviteLimitChip
-            }
-            Image(systemName: "chevron.right")
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(.tertiary)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .contentShape(Rectangle())
-    }
-
-    /// Free list owners get a couple of invites before they hit the cap, so we
-    /// surface their remaining allowance right on the invite row as an upsell.
-    /// Pro members and non-owners (who can't invite) don't need the nudge.
-    private var showsInviteLimitChip: Bool {
-        !subscriptions.hasGrocerPro && repo.isOwnerOfCurrentGroup
-    }
-
-    /// "1/2 · Upgrade" capsule. Pro-yellow to read as an upgrade affordance; the
-    /// row itself opens the invite sheet, which presents the paywall at the cap.
-    private var inviteLimitChip: some View {
-        let count = repo.invitedMemberCount
-        let limit = GroceryRepository.freeInviteLimit
-        return HStack(spacing: 5) {
-            Text(verbatim: "\(count)/\(limit)")
-                .font(.caption.weight(.bold))
-                .monospacedDigit()
-            Text("Upgrade")
-                .font(.caption2.weight(.semibold))
-        }
-        .foregroundStyle(.black)
-        .padding(.horizontal, 9)
-        .padding(.vertical, 4)
-        .background(Color.yellow, in: Capsule())
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(Text("\(count) of \(limit) members invited. Upgrade to Grocer Pro to invite more."))
-    }
-
-    private var membersFooter: String? {
-        if !repo.isOwnerOfCurrentGroup {
-            return String(localized: "Only the list owner can invite people.")
-        } else if let reason = repo.sharingUnavailableReason {
-            return reason
-        } else if repo.currentMembers.contains(where: { $0.role != .owner }) {
-            // Only relevant once there's someone other than the owner to remove.
-            return String(localized: "Swipe left on a member to remove them from this list.")
-        }
-        return nil
-    }
-
-    // MARK: - More / actions
+    // MARK: - Section 3: Danger Zone
 
     @ViewBuilder
-    private var moreSection: some View {
+    private var dangerZoneSection: some View {
         if repo.households.count > 1 || !repo.isOwnerOfCurrentGroup {
-            card {
-                Button(role: .destructive) {
-                    Haptics.selection()
-                    confirmLeave = true
-                } label: {
-                    rowLabel(repo.isOwnerOfCurrentGroup ? String(localized: "Delete List") : String(localized: "Leave List"),
-                             systemImage: repo.isOwnerOfCurrentGroup ? "trash" : "rectangle.portrait.and.arrow.right",
-                             destructive: true)
-                }
-                .buttonStyle(.plain)
-                // Anchor the confirmation popover (iPad/Mac) to the button itself.
-                .confirmationDialog(
-                    repo.isOwnerOfCurrentGroup
-                        ? String(localized: "Delete this list?")
-                        : String(localized: "Leave this list?"),
-                    isPresented: $confirmLeave,
-                    titleVisibility: .visible
-                ) {
-                    Button(repo.isOwnerOfCurrentGroup ? String(localized: "Delete List") : String(localized: "Leave List"),
-                           role: .destructive) {
-                        Haptics.warning()
-                        repo.leaveCurrentGroup()
+            settingsSection(String(localized: "Danger Zone")) {
+                settingsCard {
+                    Button(role: .destructive) {
+                        Haptics.selection()
+                        confirmLeave = true
+                    } label: {
+                        settingsRowLabel(repo.isOwnerOfCurrentGroup ? String(localized: "Delete List") : String(localized: "Leave List"),
+                                         systemImage: repo.isOwnerOfCurrentGroup ? "trash" : "rectangle.portrait.and.arrow.right",
+                                         destructive: true)
                     }
-                    Button("Cancel", role: .cancel) {}
-                } message: {
-                    Text(repo.isOwnerOfCurrentGroup
-                         ? String(localized: "As the owner, this deletes the list for everyone.")
-                         : String(localized: "You\u{2019}ll stop seeing this list on this device."))
+                    .buttonStyle(.plain)
+                    // Anchor the confirmation popover (iPad/Mac) to the button itself.
+                    .confirmationDialog(
+                        repo.isOwnerOfCurrentGroup
+                            ? String(localized: "Delete this list?")
+                            : String(localized: "Leave this list?"),
+                        isPresented: $confirmLeave,
+                        titleVisibility: .visible
+                    ) {
+                        Button(repo.isOwnerOfCurrentGroup ? String(localized: "Delete List") : String(localized: "Leave List"),
+                               role: .destructive) {
+                            Haptics.warning()
+                            repo.leaveCurrentGroup()
+                        }
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text(repo.isOwnerOfCurrentGroup
+                             ? String(localized: "As the owner, this deletes the list for everyone.")
+                             : String(localized: "You\u{2019}ll stop seeing this list on this device."))
+                    }
                 }
             }
         }
+    }
+
+    /// A navigation row inside the App Settings card.
+    @ViewBuilder
+    private func settingsNavRow<Destination: View>(_ title: String,
+                                                   systemImage: String,
+                                                   tint: Color,
+                                                   @ViewBuilder destination: () -> Destination) -> some View {
+        NavigationLink {
+            destination()
+        } label: {
+            settingsRowLabel(title, systemImage: systemImage, tint: tint, chevron: true)
+        }
+        .buttonStyle(.plain)
+        .simultaneousGesture(TapGesture().onEnded { Haptics.selection() })
     }
 
     /// App version pinned at the bottom. Long-pressing it opens the engineer
@@ -588,98 +421,6 @@ struct SettingsView: View {
             }
             .accessibilityLabel(Text("Version \(settings.appVersion)"))
             .accessibilityHint(Text("Opens diagnostics"))
-    }
-
-    // MARK: - Store reminders
-
-    /// Per-list arrival reminder controls. The store itself is shared on the
-    /// group; this opt-in is personal, so each member chooses independently.
-    @ViewBuilder
-    private var storeReminderSection: some View {
-        if let house = repo.currentHousehold {
-            settingsSection(String(localized: "Store"), footer: storeReminderFooter(house)) {
-                if house.hasLinkedStore {
-                    StoreLocationCard(
-                        household: house,
-                        remindersEnabled: storeRemindersBinding(for: house.id),
-                        onChange: {
-                            Haptics.tap()
-                            storeLinkMode = .change
-                        },
-                        onRemove: {
-                            Haptics.warning()
-                            repo.unlinkStore()
-                        }
-                    )
-                } else {
-                    Button {
-                        Haptics.tap()
-                        storeLinkMode = .link
-                    } label: {
-                        tileContent(String(localized: "Link a store"),
-                                    systemImage: "mappin.and.ellipse",
-                                    tint: .accentColor)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-        }
-    }
-
-    private func storeReminderFooter(_ house: Household) -> String? {
-        house.hasLinkedStore
-            ? nil
-            : String(localized: "Link this list to a store to be reminded to start a trip when you arrive.")
-    }
-
-    private func storeRemindersBinding(for householdId: String) -> Binding<Bool> {
-        Binding(
-            get: { settings.storeRemindersEnabled(forHousehold: householdId) },
-            set: { newValue in
-                settings.setStoreRemindersEnabled(newValue, forHousehold: householdId)
-                if newValue { StoreReminderManager.shared.requestAlwaysAuthorization() }
-                StoreReminderManager.shared.syncMonitoredRegions(households: repo.households)
-            }
-        )
-    }
-
-    @ViewBuilder
-    private func memberRow(_ member: HouseholdMember) -> some View {
-        let isOwner = member.role == .owner
-        let content = HStack(spacing: 12) {
-            ProfilePicture(
-                imageData: repo.isCurrentUser(member) ? repo.profileImageData : member.profileImageData,
-                size: 30
-            )
-            Text(member.displayName)
-            Spacer(minLength: 8)
-            if isOwner {
-                Image(systemName: "crown.fill")
-                    .font(.footnote)
-                    .foregroundStyle(.yellow)
-                    .accessibilityLabel(Text(member.role.localizedName))
-            }
-        }
-        // Nest non-owner members slightly beneath the owner to show hierarchy.
-        .padding(.leading, isOwner ? 16 : 32)
-        .padding(.trailing, 16)
-        .padding(.vertical, 11)
-
-        if canRemove(member) {
-            SwipeToRemoveRow(id: member.id, openRowId: $openMemberRowId) {
-                Haptics.warning()
-                repo.removeMember(member)
-            } content: {
-                content
-            }
-            .accessibilityElement(children: .combine)
-            .accessibilityAction(named: Text("Remove \(member.displayName)")) {
-                Haptics.warning()
-                repo.removeMember(member)
-            }
-        } else {
-            content
-        }
     }
 
     private func commitPendingChanges() {
@@ -748,6 +489,367 @@ struct SettingsView: View {
         }
     }
 
+}
+
+// MARK: - Shared settings building blocks
+
+/// Rounded "card" container matching the Home screen aesthetic.
+@ViewBuilder
+private func settingsCard<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+    VStack(spacing: 0) { content() }
+        .background(Color(.secondarySystemGroupedBackground),
+                    in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .strokeBorder(Color(.separator).opacity(0.35), lineWidth: 1)
+        }
+}
+
+/// Section header + content, with an optional footer caption.
+@ViewBuilder
+private func settingsSection<Content: View>(
+    _ title: String,
+    footer: String? = nil,
+    @ViewBuilder content: () -> Content
+) -> some View {
+    VStack(alignment: .leading, spacing: 10) {
+        Text(title)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 4)
+        content()
+        if let footer {
+            Text(footer)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 4)
+        }
+    }
+}
+
+/// Divider between rows inside a card, inset past the leading icon.
+private var settingsRowDivider: some View {
+    Divider().padding(.leading, 52)
+}
+
+/// A leading-icon row label used across button/navigation rows.
+private func settingsRowLabel(_ title: String,
+                             systemImage: String,
+                             tint: Color = .accentColor,
+                             chevron: Bool = false,
+                             destructive: Bool = false,
+                             enabled: Bool = true) -> some View {
+    let iconColor: Color = !enabled ? .secondary : (destructive ? .red : tint)
+    let textColor: Color = !enabled ? .secondary : (destructive ? .red : .primary)
+    return HStack(spacing: 14) {
+        Image(systemName: systemImage)
+            .font(.body)
+            .foregroundStyle(iconColor)
+            .frame(width: 24)
+        Text(title)
+            .foregroundStyle(textColor)
+        Spacer(minLength: 8)
+        if chevron {
+            Image(systemName: "chevron.right")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.tertiary)
+        }
+    }
+    .padding(.horizontal, 16)
+    .padding(.vertical, 13)
+    .contentShape(Rectangle())
+}
+
+/// A square navigation tile (icon top-left, bold label below) — the
+/// side-by-side card style used in the "This List" section.
+@ViewBuilder
+private func settingsNavTile<Destination: View>(_ title: String,
+                                                systemImage: String,
+                                                tint: Color,
+                                                @ViewBuilder destination: () -> Destination) -> some View {
+    NavigationLink {
+        destination()
+    } label: {
+        settingsTileContent(title, systemImage: systemImage, tint: tint)
+    }
+    .buttonStyle(.plain)
+    .simultaneousGesture(TapGesture().onEnded { Haptics.selection() })
+}
+
+/// Shared tile body: colored icon top-left, gray chevron top-right, and a
+/// bold label below. Used by both `settingsNavTile` and the standalone store
+/// button so they read as the same primary-action style.
+private func settingsTileContent(_ title: String,
+                                 systemImage: String,
+                                 tint: Color) -> some View {
+    VStack(alignment: .leading, spacing: 0) {
+        HStack(spacing: 8) {
+            Image(systemName: systemImage)
+                .font(.title2)
+                .foregroundStyle(tint)
+            Spacer(minLength: 8)
+            Image(systemName: "chevron.right")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.tertiary)
+        }
+        Spacer(minLength: 10)
+        Text(title)
+            .font(.body.weight(.semibold))
+            .foregroundStyle(.primary)
+    }
+    .frame(maxWidth: .infinity, minHeight: 50, alignment: .leading)
+    .padding(16)
+    .background(Color(.secondarySystemGroupedBackground),
+                in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+    .overlay {
+        RoundedRectangle(cornerRadius: 24, style: .continuous)
+            .strokeBorder(Color(.separator).opacity(0.35), lineWidth: 1)
+    }
+}
+
+// MARK: - Members & Sharing
+
+/// Members & Sharing — invite people and manage who is in the list.
+struct MembersView: View {
+    @Environment(GroceryRepository.self) private var repo
+    @Environment(SubscriptionStore.self) private var subscriptions
+
+    @State private var showInviteIntro = false
+    @State private var openMemberRowId: String?
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 24) {
+                membersSection
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+            .padding(.bottom, 40)
+        }
+        .background(Color(.systemGroupedBackground))
+        .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(true)
+        .swipeBackEnabled()
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) { HapticBackButton() }
+        }
+        .sheet(isPresented: $showInviteIntro) {
+            InviteToGroupSheet()
+        }
+        .postHogScreenView("Members & Sharing")
+    }
+
+    private func canRemove(_ member: HouseholdMember) -> Bool {
+        repo.isOwnerOfCurrentGroup && member.role != .owner
+    }
+
+    private var membersSection: some View {
+        let canInvite = repo.isOwnerOfCurrentGroup && repo.canShare
+        return settingsSection(String(localized: "Members"), footer: membersFooter) {
+            settingsCard {
+                Button {
+                    Haptics.selection()
+                    showInviteIntro = true
+                } label: {
+                    inviteRow(enabled: canInvite)
+                }
+                .buttonStyle(.plain)
+                .disabled(!canInvite)
+
+                ForEach(repo.currentMembers) { member in
+                    Divider().padding(.leading, member.role == .owner ? 52 : 68)
+                    memberRow(member)
+                }
+            }
+            // Contain the swipe-to-remove action background within the rounded card.
+            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        }
+    }
+
+    /// "Invite to List" row. Sized to match the nav tiles — `.title2` icon and a
+    /// semibold body title — so it reads as a primary action.
+    private func inviteRow(enabled: Bool) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "person.crop.circle.fill.badge.plus")
+                .font(.title2)
+                .foregroundStyle(enabled ? Color.accentColor : .secondary)
+                .frame(width: 30)
+            Text("Invite to List")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(enabled ? .primary : .secondary)
+            Spacer(minLength: 8)
+            if showsInviteLimitChip {
+                inviteLimitChip
+            }
+            Image(systemName: "chevron.right")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .contentShape(Rectangle())
+    }
+
+    /// Free list owners get a couple of invites before they hit the cap, so we
+    /// surface their remaining allowance right on the invite row as an upsell.
+    /// Pro members and non-owners (who can't invite) don't need the nudge.
+    private var showsInviteLimitChip: Bool {
+        !subscriptions.hasGrocerPro && repo.isOwnerOfCurrentGroup
+    }
+
+    /// "1/2 · Upgrade" capsule. Pro-yellow to read as an upgrade affordance; the
+    /// row itself opens the invite sheet, which presents the paywall at the cap.
+    private var inviteLimitChip: some View {
+        let count = repo.invitedMemberCount
+        let limit = GroceryRepository.freeInviteLimit
+        return HStack(spacing: 5) {
+            Text(verbatim: "\(count)/\(limit)")
+                .font(.caption.weight(.bold))
+                .monospacedDigit()
+            Text("Upgrade")
+                .font(.caption2.weight(.semibold))
+        }
+        .foregroundStyle(.black)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 4)
+        .background(Color.yellow, in: Capsule())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text("\(count) of \(limit) members invited. Upgrade to Grocer Pro to invite more."))
+    }
+
+    private var membersFooter: String? {
+        if !repo.isOwnerOfCurrentGroup {
+            return String(localized: "Only the list owner can invite people.")
+        } else if let reason = repo.sharingUnavailableReason {
+            return reason
+        } else if repo.currentMembers.contains(where: { $0.role != .owner }) {
+            // Only relevant once there's someone other than the owner to remove.
+            return String(localized: "Swipe left on a member to remove them from this list.")
+        }
+        return nil
+    }
+
+    @ViewBuilder
+    private func memberRow(_ member: HouseholdMember) -> some View {
+        let isOwner = member.role == .owner
+        let content = HStack(spacing: 12) {
+            ProfilePicture(
+                imageData: repo.isCurrentUser(member) ? repo.profileImageData : member.profileImageData,
+                size: 30
+            )
+            Text(member.displayName)
+            Spacer(minLength: 8)
+            if isOwner {
+                Image(systemName: "crown.fill")
+                    .font(.footnote)
+                    .foregroundStyle(.yellow)
+                    .accessibilityLabel(Text(member.role.localizedName))
+            }
+        }
+        // Nest non-owner members slightly beneath the owner to show hierarchy.
+        .padding(.leading, isOwner ? 16 : 32)
+        .padding(.trailing, 16)
+        .padding(.vertical, 11)
+
+        if canRemove(member) {
+            SwipeToRemoveRow(id: member.id, openRowId: $openMemberRowId) {
+                Haptics.warning()
+                repo.removeMember(member)
+            } content: {
+                content
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityAction(named: Text("Remove \(member.displayName)")) {
+                Haptics.warning()
+                repo.removeMember(member)
+            }
+        } else {
+            content
+        }
+    }
+}
+
+// MARK: - Shopping Settings
+
+/// Shopping Settings — the store this list is linked to and arrival reminders.
+struct ShoppingSettingsView: View {
+    @Environment(GroceryRepository.self) private var repo
+    @Environment(SettingsStore.self) private var settings
+
+    @State private var storeLinkMode: StoreLinkMode?
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 24) {
+                storeReminderSection
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+            .padding(.bottom, 40)
+        }
+        .background(Color(.systemGroupedBackground))
+        .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(true)
+        .swipeBackEnabled()
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) { HapticBackButton() }
+        }
+        .sheet(item: $storeLinkMode) { mode in
+            StoreLinkSheet(startAtPicker: mode == .change)
+        }
+        .postHogScreenView("Shopping Settings")
+    }
+
+    /// Per-list arrival reminder controls. The store itself is shared on the
+    /// group; this opt-in is personal, so each member chooses independently.
+    @ViewBuilder
+    private var storeReminderSection: some View {
+        if let house = repo.currentHousehold {
+            settingsSection(String(localized: "Store"), footer: storeReminderFooter(house)) {
+                if house.hasLinkedStore {
+                    StoreLocationCard(
+                        household: house,
+                        remindersEnabled: storeRemindersBinding(for: house.id),
+                        onChange: {
+                            Haptics.tap()
+                            storeLinkMode = .change
+                        },
+                        onRemove: {
+                            Haptics.warning()
+                            repo.unlinkStore()
+                        }
+                    )
+                } else {
+                    Button {
+                        Haptics.tap()
+                        storeLinkMode = .link
+                    } label: {
+                        settingsTileContent(String(localized: "Link a store"),
+                                            systemImage: "mappin.and.ellipse",
+                                            tint: .accentColor)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    private func storeReminderFooter(_ house: Household) -> String? {
+        house.hasLinkedStore
+            ? nil
+            : String(localized: "Link this list to a store to be reminded to start a trip when you arrive.")
+    }
+
+    private func storeRemindersBinding(for householdId: String) -> Binding<Bool> {
+        Binding(
+            get: { settings.storeRemindersEnabled(forHousehold: householdId) },
+            set: { newValue in
+                settings.setStoreRemindersEnabled(newValue, forHousehold: householdId)
+                if newValue { StoreReminderManager.shared.requestAlwaysAuthorization() }
+                StoreReminderManager.shared.syncMonitoredRegions(households: repo.households)
+            }
+        )
+    }
 }
 
 private struct ProfilePicture: View {

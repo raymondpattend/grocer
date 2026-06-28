@@ -34,14 +34,17 @@ struct AddItemView: View {
                     .onSubmit { if canSave { save() } }
             }
 
+            Section("Quantity") {
+                QuantityStepperField(
+                    quantity: $quantity,
+                    proposedUnit: proposedUnit,
+                    tint: .green,
+                    prominent: true
+                )
+                .padding(.vertical, 8)
+            }
+
             Section("Details (optional)") {
-                LabeledContent("Quantity") {
-                    QuantityStepperField(
-                        quantity: $quantity,
-                        proposedUnit: proposedUnit,
-                        tint: .green
-                    )
-                }
                 Picker("Category", selection: $category) {
                     ForEach(GroceryCategory.ordered) { Text($0.localizedName).tag($0) }
                 }
@@ -269,6 +272,9 @@ struct AddItemSearchView: View {
                 },
                 onRemove: { name in
                     removeFromHistory(name: name)
+                },
+                onDeleteFromHistory: { name in
+                    deleteFromHistory(name: name)
                 },
                 onClose: { showHistory = false }
             )
@@ -881,9 +887,10 @@ struct AddItemSearchView: View {
 
         guard parsed.count == 1, let d = parsed.first.flatMap(DetectedItem.init(parsedItem:)) else {
             let q = resolveQuantity(name: typedName, aiAmount: userAmount, aiUnit: "")
-            return ResolvedItem(name: typedName, quantity: q.quantity, unit: q.unit,
+            let capped = applyTypedCap(name: typedName, unit: q.unit, quantity: q.quantity, userAmount: userAmount)
+            return ResolvedItem(name: typedName, quantity: capped.quantity, unit: q.unit,
                                 category: CategoryGuess.guess(for: typedName),
-                                uncappedQuantity: uncappedTypedQuantity(userAmount: userAmount, unit: q.unit))
+                                uncappedQuantity: capped.uncapped)
         }
 
         let faithful = Self.aiNameIsFaithful(d.name, to: segment)
@@ -894,19 +901,34 @@ struct AddItemSearchView: View {
         // Trust the AI's unit label only when its name was faithful.
         let unit = faithful ? (d.unit.isEmpty ? aiParsed.unit : d.unit) : ""
         let q = resolveQuantity(name: name, aiAmount: amount, aiUnit: unit)
-        return ResolvedItem(name: name, quantity: q.quantity, unit: q.unit, category: d.category,
-                            uncappedQuantity: uncappedTypedQuantity(userAmount: userAmount, unit: q.unit))
+        let capped = applyTypedCap(name: name, unit: q.unit, quantity: q.quantity, userAmount: userAmount)
+        return ResolvedItem(name: name, quantity: capped.quantity, unit: q.unit, category: d.category,
+                            uncappedQuantity: capped.uncapped)
     }
 
-    /// When the shopper *typed* an amount that the count cap clamped (e.g.
-    /// "15000 milk"), the original quantity they typed — so we can confirm it
-    /// rather than silently trimming. Returns nil when nothing was typed, the unit
-    /// is a weight (uncapped), or the amount is within the cap.
-    private func uncappedTypedQuantity(userAmount: String, unit: String) -> String? {
+    /// Apply the count cap to a freshly resolved item. When the shopper *typed* an
+    /// over-cap amount (e.g. "15000 milk"), swap in a sensible fallback for the row
+    /// — the household's last-used amount from History if known, else the cap — and
+    /// report the original they typed so it can be confirmed. Otherwise the quantity
+    /// is returned unchanged with no confirmation.
+    private func applyTypedCap(name: String, unit: String, quantity: String,
+                              userAmount: String) -> (quantity: String, uncapped: String?) {
         guard let typed = Quantity(parsing: userAmount).amount,
               !GroceryUnits.isWeightUnit(unit),
-              typed > GroceryUnits.maxCountableAmount else { return nil }
-        return Quantity(amount: typed, unit: unit).formatted
+              typed > GroceryUnits.maxCountableAmount else { return (quantity, nil) }
+        let original = Quantity(amount: typed, unit: unit).formatted
+        return (cappedFallbackQuantity(name: name, unit: unit), original)
+    }
+
+    /// The amount to fall back to when a typed amount is clamped: the household's
+    /// last-used amount for this item if known, else the cap (999) in the resolved
+    /// unit.
+    private func cappedFallbackQuantity(name: String, unit: String) -> String {
+        if let known = repo.currentItemSuggestion(named: name)?.quantity?
+            .trimmingCharacters(in: .whitespaces), !known.isEmpty {
+            return known
+        }
+        return Quantity(amount: GroceryUnits.maxCountableAmount, unit: unit).formatted
     }
 
     /// Split a leading numeric amount off the front of a segment, e.g.
@@ -1111,6 +1133,16 @@ struct AddItemSearchView: View {
         guard let idx = items.firstIndex(where: { $0.name.lowercased() == key }),
               items[idx].quantity != trimmedQuantity else { return }
         items[idx].quantity = trimmedQuantity
+    }
+
+    /// Permanently drop a previously-bought item from the group's history so it no
+    /// longer appears as a suggestion. Any row staged here is taken back off first
+    /// so the two stay in sync.
+    private func deleteFromHistory(name: String) {
+        removeFromHistory(name: name)
+        withAnimation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.86)) {
+            repo.removeCurrentItemSuggestion(named: name)
+        }
     }
 
     /// Append (or merge by name) a fully-resolved row — the landing spot for the
@@ -1902,7 +1934,6 @@ private struct IdentifyItemCard: View {
                     heroImages
                         .frame(maxWidth: .infinity)
                         .listRowBackground(Color.clear)
-                    photoActionButton
                 }
 
                 Section("Item") {
@@ -1959,47 +1990,72 @@ private struct IdentifyItemCard: View {
         }
     }
 
-    /// Attach a photo when none is set, or remove the one that's attached. The
-    /// shopper's photo is optional on every item — manual entries start without
-    /// one, and a photographed item can have its picture dropped.
+    /// AI product image up top with the shopper's own photo — or, when none is
+    /// attached yet, a tappable "Add Photo" tile — overlaid small in the corner.
+    private var heroImages: some View {
+        ZStack(alignment: .bottomTrailing) {
+            aiImage
+            photoCorner
+                .padding(10)
+        }
+    }
+
+    /// The corner photo slot. With a photo attached it shows the thumbnail and a
+    /// remove badge; empty, it's a dashed "Add Photo" button that opens the
+    /// camera/library — the photo affordance lives on the image itself rather than
+    /// in a separate form row.
     @ViewBuilder
-    private var photoActionButton: some View {
-        if userPhoto == nil {
+    private var photoCorner: some View {
+        if let userPhoto {
+            Image(uiImage: userPhoto)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: 72, height: 72)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder(Color(.systemBackground), lineWidth: 3)
+                }
+                .shadow(color: .black.opacity(0.2), radius: 4, y: 2)
+                .overlay(alignment: .topTrailing) {
+                    Button {
+                        Haptics.tap()
+                        onRemovePhoto()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.title3)
+                            .symbolRenderingMode(.palette)
+                            .foregroundStyle(.white, Color.black.opacity(0.55))
+                    }
+                    .offset(x: 7, y: -7)
+                    .accessibilityLabel("Remove photo")
+                }
+        } else {
             Button {
                 Haptics.tap()
                 onAddPhoto()
             } label: {
-                Label("Add Photo", systemImage: "camera")
+                VStack(spacing: 5) {
+                    Image(systemName: "camera.fill")
+                        .font(.title3)
+                    Text("Add Photo")
+                        .font(.caption2.weight(.semibold))
+                }
+                .foregroundStyle(tint)
+                .frame(width: 72, height: 72)
+                .background {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(Color(.systemBackground))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .strokeBorder(tint.opacity(0.5),
+                                              style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+                        }
+                }
+                .shadow(color: .black.opacity(0.15), radius: 4, y: 2)
             }
-        } else {
-            Button(role: .destructive) {
-                Haptics.tap()
-                onRemovePhoto()
-            } label: {
-                Label("Remove Photo", systemImage: "trash")
-            }
-        }
-    }
-
-    /// AI product image up top with the user's own photo overlaid small in the
-    /// corner.
-    private var heroImages: some View {
-        ZStack(alignment: .bottomTrailing) {
-            aiImage
-            if let userPhoto {
-                Image(uiImage: userPhoto)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .frame(width: 72, height: 72)
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .strokeBorder(Color(.systemBackground), lineWidth: 3)
-                    }
-                    .shadow(color: .black.opacity(0.2), radius: 4, y: 2)
-                    .padding(10)
-                    .accessibilityHidden(true)
-            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Add Photo")
         }
     }
 
@@ -2283,6 +2339,8 @@ private struct HistoryItemsView: View {
     /// Live amount change for a row that's already been added — (name, quantity).
     var onUpdateQuantity: (String, String) -> Void
     var onRemove: (String) -> Void
+    /// Permanently drop a previously-bought item from the group's history.
+    var onDeleteFromHistory: (String) -> Void
     var onClose: () -> Void
 
     @State private var search = ""
@@ -2392,7 +2450,8 @@ private struct HistoryItemsView: View {
                             onUpdateQuantity: { quantity in
                                 onUpdateQuantity(suggestion.name, quantity)
                             },
-                            onRemove: { onRemove(suggestion.name) }
+                            onRemove: { onRemove(suggestion.name) },
+                            onDeleteFromHistory: { onDeleteFromHistory(suggestion.name) }
                         )
                     }
                 }
@@ -2432,6 +2491,9 @@ private struct HistoryItemRow: View {
     /// item's quantity tracks the stepper without re-tapping "Add".
     var onUpdateQuantity: (String) -> Void
     var onRemove: () -> Void
+    /// Permanently drop this item from the group's history (it disappears from the
+    /// suggestion list).
+    var onDeleteFromHistory: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -2440,6 +2502,12 @@ private struct HistoryItemRow: View {
     @State private var showAddAgainConfirm = false
     /// Amount captured when the confirmation is raised, applied on confirm.
     @State private var pendingQuantity = ""
+    /// Drives the "remove from history?" prompt raised when the amount is stepped
+    /// down to zero.
+    @State private var showRemoveFromHistoryConfirm = false
+    /// The amount in the field before it was stepped to zero — restored if the
+    /// removal prompt is dismissed (the "undo").
+    @State private var quantityBeforeZero = ""
     /// Set once this item has been staged from history. Gives the row a border and
     /// flips the action to "Remove" so the staged item can be taken back off.
     @State private var addedToList = false
@@ -2502,17 +2570,51 @@ private struct HistoryItemRow: View {
                     .strokeBorder(Color(.systemGray3), lineWidth: 2)
             }
         }
+        .contextMenu {
+            Button(role: .destructive) {
+                Haptics.warning()
+                onDeleteFromHistory()
+            } label: {
+                Label("Remove from History", systemImage: "trash")
+            }
+        }
         .alert("Already on your list", isPresented: $showAddAgainConfirm) {
             Button("Add Again") { performAdd(pendingQuantity) }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("\(suggestion.name) is already on your list. Add it again?")
         }
+        .confirmationDialog(
+            String(localized: "Remove \(suggestion.name) from History?"),
+            isPresented: $showRemoveFromHistoryConfirm,
+            titleVisibility: .visible
+        ) {
+            Button(String(localized: "Remove from History"), role: .destructive) {
+                Haptics.warning()
+                onDeleteFromHistory()
+            }
+            // Dismissing (Cancel or tapping away) undoes the step to zero.
+            Button(String(localized: "Cancel"), role: .cancel) {
+                quantity = quantityBeforeZero
+            }
+        } message: {
+            Text("This removes \(suggestion.name) from your saved items. You can always add it again later.")
+        }
         .onAppear {
             // Always-expanded rows seed a non-zero amount to adjust from.
             if quantity.isEmpty { quantity = defaultQuantity }
         }
-        .onChange(of: quantity) { _, newValue in
+        .onChange(of: quantity) { oldValue, newValue in
+            // Stepping the amount down to zero on a row that isn't staged yet offers
+            // to drop the item from history entirely — the prompt's Cancel restores
+            // the previous amount (the "undo").
+            if !addedToList,
+               sanitizedQuantity(newValue).isEmpty,
+               !sanitizedQuantity(oldValue).isEmpty {
+                quantityBeforeZero = oldValue
+                showRemoveFromHistoryConfirm = true
+                return
+            }
             // Once the row is on the list, edits to the amount flow straight through
             // to the staged item — no need to remove and re-add to change a quantity.
             guard addedToList else { return }

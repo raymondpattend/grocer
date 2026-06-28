@@ -1,10 +1,11 @@
 import PostHog
 import SwiftUI
 
-/// List customization (name, color, icon), reachable from Settings → Customize List.
+/// List customization (name, color, icon), reachable from Settings → This List → List Appearance.
 ///
-/// Mirrors `PreferencesView`'s look — standalone rounded cards with the title
-/// baked in — but edits the current household instead of device preferences.
+/// Mirrors the App Settings feature screens' look — standalone rounded cards
+/// with the title baked in — but edits the current household instead of device
+/// preferences.
 struct CustomizeListView: View {
     @Environment(GroceryRepository.self) private var repo
     @Environment(\.dismiss) private var dismiss
@@ -167,7 +168,7 @@ struct CustomizeListView: View {
     // MARK: - Building blocks
 
     /// A standalone setting card: large rounded surface with generous padding.
-    /// Matches `PreferencesView.featureCard`.
+    /// Matches the App Settings feature-screen card style.
     @ViewBuilder
     private func featureCard<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
         content()

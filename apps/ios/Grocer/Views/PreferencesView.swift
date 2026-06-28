@@ -1,11 +1,151 @@
 import PostHog
 import SwiftUI
 
-/// Device-local app preferences, reachable from Settings → Preferences.
-///
-/// Each setting is its own standalone card with the title baked in — matching
-/// the reference design — rather than separate gray section headers.
-struct PreferencesView: View {
+// MARK: - App Settings feature screens
+//
+// The old combined "Preferences" screen is split into one screen per feature —
+// Live Activities, Notifications, and App Appearance — each reachable from
+// Settings → App Settings. They share the card style and chrome below.
+
+/// Prominent in-card title used across the feature screens.
+private let featureTitleFont = Font.system(.title2, design: .default, weight: .bold)
+
+/// A standalone setting card: large rounded surface with generous padding.
+private struct FeatureCard<Content: View>: View {
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        content()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(20)
+            .background(Color(.secondarySystemGroupedBackground),
+                        in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 28, style: .continuous)
+                    .strokeBorder(Color(.separator).opacity(0.35), lineWidth: 1)
+            }
+    }
+}
+
+/// Shared chrome for the feature screens: scrolling grouped background plus the
+/// haptic back button that the rest of Settings uses.
+private struct FeatureScreenChrome: ViewModifier {
+    func body(content: Content) -> some View {
+        ScrollView {
+            content
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+                .padding(.bottom, 40)
+        }
+        .background(Color(.systemGroupedBackground))
+        .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(true)
+        .swipeBackEnabled()
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) { HapticBackButton() }
+        }
+    }
+}
+
+/// Framed lock-screen / notification preview image used atop the toggle cards.
+private func featurePreviewImage(_ name: String) -> some View {
+    Image(name)
+        .resizable()
+        .scaledToFit()
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(Color(.separator).opacity(0.35), lineWidth: 1)
+        }
+        .accessibilityHidden(true)
+}
+
+/// Title + subtitle on the left, toggle on the right.
+private func featureToggleHeader(_ title: String, subtitle: String, isOn: Binding<Bool>) -> some View {
+    HStack(alignment: .top, spacing: 16) {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(featureTitleFont)
+            Text(subtitle)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        Spacer(minLength: 8)
+        Toggle("", isOn: isOn)
+            .labelsHidden()
+    }
+}
+
+// MARK: - Live Activities
+
+struct LiveActivitiesSettingsView: View {
+    @Environment(SettingsStore.self) private var settings
+
+    var body: some View {
+        VStack(spacing: 16) {
+            FeatureCard {
+                VStack(alignment: .leading, spacing: 18) {
+                    featurePreviewImage("LiveActivityPreview")
+                    featureToggleHeader(
+                        String(localized: "Live Activities"),
+                        subtitle: String(localized: "Show the current shopping trip on your Lock Screen and Dynamic Island."),
+                        isOn: liveActivitiesBinding
+                    )
+                }
+            }
+        }
+        .modifier(FeatureScreenChrome())
+        .postHogScreenView("Live Activities")
+    }
+
+    private var liveActivitiesBinding: Binding<Bool> {
+        Binding(
+            get: { settings.familyLiveActivitiesEnabled },
+            set: { newValue in
+                settings.familyLiveActivitiesEnabled = newValue
+                LiveActivityManager.shared.familyPreferenceChanged()
+            }
+        )
+    }
+}
+
+// MARK: - Notifications
+
+struct NotificationsSettingsView: View {
+    @Environment(SettingsStore.self) private var settings
+
+    var body: some View {
+        VStack(spacing: 16) {
+            FeatureCard {
+                VStack(alignment: .leading, spacing: 18) {
+                    featurePreviewImage("NotificationPreview")
+                    featureToggleHeader(
+                        String(localized: "Shopping notifications"),
+                        subtitle: String(localized: "Get a heads-up when someone starts a trip or changes the shared list."),
+                        isOn: notificationsBinding
+                    )
+                }
+            }
+        }
+        .modifier(FeatureScreenChrome())
+        .postHogScreenView("Notifications")
+    }
+
+    private var notificationsBinding: Binding<Bool> {
+        Binding(
+            get: { settings.notificationsEnabled },
+            set: { newValue in
+                settings.notificationsEnabled = newValue
+                PushNotificationCoordinator.shared.notificationPreferenceChanged()
+            }
+        )
+    }
+}
+
+// MARK: - App Appearance
+
+struct AppearanceSettingsView: View {
     @Environment(SettingsStore.self) private var settings
     @Environment(SubscriptionStore.self) private var subscriptions
 
@@ -15,68 +155,24 @@ struct PreferencesView: View {
     /// Presented when a non-Pro user taps a Pro-only icon.
     @State private var showProPaywall = false
 
-    /// Prominent in-card title. Uses the standard system font (bold).
-    private let titleFont = Font.system(.title2, design: .default, weight: .bold)
-
     var body: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                liveActivitiesCard
-                notificationsCard
-                appearanceCard
-                appIconCard
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
-            .padding(.bottom, 40)
+        VStack(spacing: 16) {
+            appearanceCard
+            appIconCard
         }
-        .background(Color(.systemGroupedBackground))
-        .navigationBarTitleDisplayMode(.inline)
-        .navigationBarBackButtonHidden(true)
-        .swipeBackEnabled()
-        .toolbar {
-            ToolbarItem(placement: .topBarLeading) { HapticBackButton() }
-        }
+        .modifier(FeatureScreenChrome())
         .onAppear { selectedIcon = AppIconManager.current }
         .fullScreenCover(isPresented: $showProPaywall) {
             GrocerProPaywallView()
         }
-        .postHogScreenView("Preferences")
-    }
-
-    // MARK: - Cards
-
-    private var liveActivitiesCard: some View {
-        featureCard {
-            VStack(alignment: .leading, spacing: 18) {
-                liveActivityPreview
-                toggleHeader(
-                    String(localized: "Live Activities"),
-                    subtitle: String(localized: "Show the current shopping trip on your Lock Screen and Dynamic Island."),
-                    isOn: liveActivitiesBinding
-                )
-            }
-        }
-    }
-
-    private var notificationsCard: some View {
-        featureCard {
-            VStack(alignment: .leading, spacing: 18) {
-                notificationPreview
-                toggleHeader(
-                    String(localized: "Shopping notifications"),
-                    subtitle: String(localized: "Get a heads-up when someone starts a trip or changes the shared list."),
-                    isOn: notificationsBinding
-                )
-            }
-        }
+        .postHogScreenView("App Appearance")
     }
 
     private var appearanceCard: some View {
-        featureCard {
+        FeatureCard {
             VStack(alignment: .leading, spacing: 18) {
                 Text("Appearance")
-                    .font(titleFont)
+                    .font(featureTitleFont)
                 HStack(spacing: 12) {
                     ForEach(AppAppearance.allCases) { option in
                         appearanceTile(option)
@@ -87,10 +183,10 @@ struct PreferencesView: View {
     }
 
     private var appIconCard: some View {
-        featureCard {
+        FeatureCard {
             VStack(alignment: .leading, spacing: 18) {
                 Text("App Icon")
-                    .font(titleFont)
+                    .font(featureTitleFont)
                 HStack(spacing: 12) {
                     ForEach(AppIcon.allCases) { option in
                         appIconTile(option)
@@ -151,30 +247,6 @@ struct PreferencesView: View {
 
     // MARK: - Appearance picker
 
-    private var liveActivityPreview: some View {
-        Image("LiveActivityPreview")
-            .resizable()
-            .scaledToFit()
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .strokeBorder(Color(.separator).opacity(0.35), lineWidth: 1)
-            }
-            .accessibilityHidden(true)
-    }
-
-    private var notificationPreview: some View {
-        Image("NotificationPreview")
-            .resizable()
-            .scaledToFit()
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .strokeBorder(Color(.separator).opacity(0.35), lineWidth: 1)
-            }
-            .accessibilityHidden(true)
-    }
-
     private func appearanceTile(_ option: AppAppearance) -> some View {
         let isSelected = settings.appearance == option
         return Button {
@@ -229,66 +301,6 @@ struct PreferencesView: View {
             .padding(11)
         }
     }
-
-    // MARK: - Bindings
-
-    private var liveActivitiesBinding: Binding<Bool> {
-        Binding(
-            get: { settings.familyLiveActivitiesEnabled },
-            set: { newValue in
-                settings.familyLiveActivitiesEnabled = newValue
-                LiveActivityManager.shared.familyPreferenceChanged()
-            }
-        )
-    }
-
-    private var notificationsBinding: Binding<Bool> {
-        Binding(
-            get: { settings.notificationsEnabled },
-            set: { newValue in
-                settings.notificationsEnabled = newValue
-                PushNotificationCoordinator.shared.notificationPreferenceChanged()
-            }
-        )
-    }
-
-    // MARK: - Building blocks
-
-    /// A standalone setting card: large rounded surface with generous padding.
-    @ViewBuilder
-    private func featureCard<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
-        content()
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(20)
-            .background(Color(.secondarySystemGroupedBackground),
-                        in: RoundedRectangle(cornerRadius: 28, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 28, style: .continuous)
-                    .strokeBorder(Color(.separator).opacity(0.35), lineWidth: 1)
-            }
-    }
-
-    private func toggleCard(_ title: String, subtitle: String, isOn: Binding<Bool>) -> some View {
-        featureCard {
-            toggleHeader(title, subtitle: subtitle, isOn: isOn)
-        }
-    }
-
-    private func toggleHeader(_ title: String, subtitle: String, isOn: Binding<Bool>) -> some View {
-        HStack(alignment: .top, spacing: 16) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(title)
-                    .font(titleFont)
-                Text(subtitle)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 8)
-            Toggle("", isOn: isOn)
-                .labelsHidden()
-        }
-    }
 }
 
 /// Diagonal mask used for the "System" appearance preview — covers the right
@@ -306,9 +318,23 @@ private struct DiagonalSplit: Shape {
 }
 
 #if DEBUG
-#Preview("Preferences") {
+#Preview("Live Activities") {
     NavigationStack {
-        PreferencesView()
+        LiveActivitiesSettingsView()
+            .grocerPreviewEnvironment()
+    }
+}
+
+#Preview("Notifications") {
+    NavigationStack {
+        NotificationsSettingsView()
+            .grocerPreviewEnvironment()
+    }
+}
+
+#Preview("App Appearance") {
+    NavigationStack {
+        AppearanceSettingsView()
             .grocerPreviewEnvironment()
     }
 }
