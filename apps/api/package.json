@@ -8,7 +8,7 @@
     "dev:worker": "wrangler d1 migrations apply grocer --local && wrangler dev",
     "apns:bridge": "node scripts/apns-http2-bridge.mjs",
     "seed:images": "node scripts/seed-product-images.mjs",
-    "deploy": "wrangler deploy",
+    "deploy": "pnpm db:migrate:remote && wrangler deploy",
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit",
     "test": "vitest run",

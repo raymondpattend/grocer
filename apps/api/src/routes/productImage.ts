@@ -332,7 +332,15 @@ productImageRoute.get("/product-image", async (c) => {
   const existing = inFlight.get(canonical);
   if (existing) {
     console.log(`Coalescing duplicate request for "${canonicalName}"`);
-    const bytes = await existing;
+    // The in-flight generation already captures its own failures; a rejection
+    // here is a transient generation error, not a server fault, so degrade to a
+    // 502 instead of letting it bubble to the global handler as a 500.
+    let bytes: Uint8Array | null = null;
+    try {
+      bytes = await existing;
+    } catch {
+      return c.json({ ok: false, error: "Image generation failed" }, 502);
+    }
     if (bytes) {
       return cacheAtEdge(c, cache, cacheKey, imageResponse(new Uint8Array(bytes)));
     }
@@ -359,6 +367,13 @@ productImageRoute.get("/product-image", async (c) => {
       return c.json({ ok: false, error: "Image generation failed" }, 502);
     }
     return cacheAtEdge(c, cache, cacheKey, imageResponse(bytes));
+  } catch (err) {
+    // generateAndCache already captured this failure before re-throwing. A
+    // thrown error here is a transient subrequest fault (e.g. a Cloudflare
+    // "internal error; reference = …" on the OpenAI/R2 call), so degrade to a
+    // 502 rather than letting it surface as an unhandled 500. (GROCER-API-4)
+    console.error("Image generation threw:", err);
+    return c.json({ ok: false, error: "Image generation failed" }, 502);
   } finally {
     inFlight.delete(canonical);
   }

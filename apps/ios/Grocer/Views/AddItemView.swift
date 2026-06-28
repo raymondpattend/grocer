@@ -184,6 +184,19 @@ struct AddItemSearchView: View {
     /// Set when the identify call is rejected with a 429 so the view can show
     /// an actionable error rather than a silent empty result.
     @State private var aiRateLimited = false
+    /// True when the identify card was opened for manual entry (no photo) rather
+    /// than from a capture — drives the "Cancel" vs "Retake" button and analytics.
+    @State private var identifyIsManual = false
+    /// True when the camera/library is being opened only to attach a photo to the
+    /// already-open manual card, so its `onDismiss` attaches the image rather than
+    /// re-running identification.
+    @State private var attachPhotoOnly = false
+
+    /// Typed amounts the count cap clamped (e.g. "15000 milk"), awaiting a "did you
+    /// mean that many?" confirmation. Shown one at a time via `overCapPrompt`.
+    @State private var overCapQueue: [OverCapPrompt] = []
+    /// The over-cap confirmation currently presented, if any.
+    @State private var overCapPrompt: OverCapPrompt?
 
     /// First-responder for the active compose line. A plain Bool bridged to the
     /// UIKit-backed compose field (so it can detect backspace-on-empty); each
@@ -326,8 +339,12 @@ struct AddItemSearchView: View {
                 quantity: $identifiedQuantity,
                 notes: $identifiedNotes,
                 tint: tint,
+                allowsRetake: !identifyIsManual,
                 onAdd: commitIdentifiedItem,
-                onRetake: retakePhoto
+                onRetake: retakePhoto,
+                onCancel: cancelIdentifyCard,
+                onAddPhoto: startManualPhotoCapture,
+                onRemovePhoto: removeManualPhoto
             )
         }
         .postHogScreenView("Add Item Search")
@@ -335,6 +352,19 @@ struct AddItemSearchView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text("You've made too many photo requests. Please wait a moment and try again.")
+        }
+        .alert("Did you mean that many?", isPresented: Binding(
+            get: { overCapPrompt != nil },
+            set: { if !$0 { overCapPrompt = nil } }
+        ), presenting: overCapPrompt) { prompt in
+            Button("Use \(Quantity.displayString(prompt.originalQuantity))") {
+                applyUncapped(prompt)
+            }
+            Button("Keep \(Quantity.displayString(prompt.cappedQuantity))", role: .cancel) {
+                scheduleNextOverCapPrompt()
+            }
+        } message: { prompt in
+            Text("You entered \(Quantity.displayString(prompt.originalQuantity)) \(prompt.name). Add that many, or keep it at \(Quantity.displayString(prompt.cappedQuantity))?")
         }
     }
 
@@ -344,6 +374,7 @@ struct AddItemSearchView: View {
     private var floatingControls: some View {
         HStack(spacing: 12) {
             cameraButton
+            manualEntryButton
             if !historySuggestions.isEmpty {
                 historyButton
             }
@@ -367,9 +398,9 @@ struct AddItemSearchView: View {
             startPhotoCapture()
         } label: {
             Image(systemName: "camera.fill")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 44, height: 44)
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.primary)
+                .frame(width: 50, height: 50)
                 .contentShape(Rectangle())
                 .grocerLiquidGlass(in: Circle(), interactive: true)
         }
@@ -377,6 +408,26 @@ struct AddItemSearchView: View {
         .tint(.primary)
         .transition(.scale(scale: 0.85).combined(with: .opacity))
         .accessibilityLabel("Take a photo to identify an item")
+    }
+
+    /// Floating glass circle that opens the same item card as the camera flow, but
+    /// empty — for entering an item by hand (name, category, quantity, notes) with
+    /// the option to attach a photo, instead of typing it as plain text.
+    private var manualEntryButton: some View {
+        Button {
+            startManualEntry()
+        } label: {
+            Image(systemName: "plus.circle.dashed")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.primary)
+                .frame(width: 50, height: 50)
+                .contentShape(Rectangle())
+                .grocerLiquidGlass(in: Circle(), interactive: true)
+        }
+        .buttonStyle(.plain)
+        .tint(.primary)
+        .transition(.scale(scale: 0.85).combined(with: .opacity))
+        .accessibilityLabel("Add an item manually")
     }
 
     /// Floating glass circle that swaps the add flow for the group's item history.
@@ -388,9 +439,9 @@ struct AddItemSearchView: View {
             showHistory = true
         } label: {
             Image(systemName: "clock.arrow.circlepath")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 44, height: 44)
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.primary)
+                .frame(width: 50, height: 50)
                 .contentShape(Rectangle())
                 .grocerLiquidGlass(in: Circle(), interactive: true)
         }
@@ -640,6 +691,9 @@ struct AddItemSearchView: View {
         .padding(.top, 8)
         .padding(.bottom, 10)
         .disabled(addableCount == 0)
+        // Removing the last row drops the count to 0; ease the active→disabled
+        // style change so the button fades between states instead of flashing.
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: addableCount == 0)
     }
 
     // MARK: - Commit (typed line → row)
@@ -683,8 +737,8 @@ struct AddItemSearchView: View {
             category: CategoryGuess.guess(for: name),
             priority: priority
         )
-        // A tap as the line is committed (Enter) and the row drops into thinking.
-        Haptics.tap()
+        // A firm thud as the line is committed (Enter) and the row drops into thinking.
+        Haptics.commit()
         withAnimation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.86)) {
             items.append(item)
         }
@@ -767,6 +821,7 @@ struct AddItemSearchView: View {
         guard let first = resolved.first else { return }
 
         let priority = items[idx].priority
+        var capPrompts: [OverCapPrompt] = []
         withAnimation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.86)) {
             items[idx].name = first.name
             items[idx].quantity = first.quantity
@@ -774,18 +829,30 @@ struct AddItemSearchView: View {
             items[idx].category = first.category
             items[idx].lastInterpretedName = first.name
             items[idx].state = .resolved
+            if let original = first.uncappedQuantity {
+                capPrompts.append(OverCapPrompt(itemID: items[idx].id, name: first.name,
+                                                cappedQuantity: first.quantity, originalQuantity: original))
+            }
 
             // Extra comma segments land as their own rows just after this one.
             if resolved.count > 1 {
-                let extras = resolved.dropFirst().map { r in
+                let extras = resolved.dropFirst()
+                let rows = extras.map { r in
                     LineItem(name: r.name, state: .resolved, quantity: r.quantity,
                              unit: r.unit, category: r.category, priority: priority)
                 }
-                items.insert(contentsOf: extras, at: idx + 1)
+                items.insert(contentsOf: rows, at: idx + 1)
+                for (offset, r) in extras.enumerated() {
+                    guard let original = r.uncappedQuantity else { continue }
+                    let row = items[idx + 1 + offset]
+                    capPrompts.append(OverCapPrompt(itemID: row.id, name: row.name,
+                                                    cappedQuantity: row.quantity, originalQuantity: original))
+                }
             }
         }
-        // A subtle tick as the row(s) finish thinking and resolve.
-        Haptics.selection()
+        // A firm thud as the row(s) finish thinking and resolve.
+        Haptics.commit()
+        enqueueOverCapPrompts(capPrompts)
         Task { await APIClient.shared.prewarmImages(resolved.map(\.name)) }
     }
 
@@ -794,6 +861,9 @@ struct AddItemSearchView: View {
         var quantity: String
         var unit: String
         var category: GroceryCategory
+        /// When the shopper's typed amount was clamped to the cap, the original
+        /// (uncapped) quantity they typed — so we can offer to restore it.
+        var uncappedQuantity: String?
     }
 
     /// Coalesce one comma segment's parse result into a single item.
@@ -812,7 +882,8 @@ struct AddItemSearchView: View {
         guard parsed.count == 1, let d = parsed.first.flatMap(DetectedItem.init(parsedItem:)) else {
             let q = resolveQuantity(name: typedName, aiAmount: userAmount, aiUnit: "")
             return ResolvedItem(name: typedName, quantity: q.quantity, unit: q.unit,
-                                category: CategoryGuess.guess(for: typedName))
+                                category: CategoryGuess.guess(for: typedName),
+                                uncappedQuantity: uncappedTypedQuantity(userAmount: userAmount, unit: q.unit))
         }
 
         let faithful = Self.aiNameIsFaithful(d.name, to: segment)
@@ -823,7 +894,19 @@ struct AddItemSearchView: View {
         // Trust the AI's unit label only when its name was faithful.
         let unit = faithful ? (d.unit.isEmpty ? aiParsed.unit : d.unit) : ""
         let q = resolveQuantity(name: name, aiAmount: amount, aiUnit: unit)
-        return ResolvedItem(name: name, quantity: q.quantity, unit: q.unit, category: d.category)
+        return ResolvedItem(name: name, quantity: q.quantity, unit: q.unit, category: d.category,
+                            uncappedQuantity: uncappedTypedQuantity(userAmount: userAmount, unit: q.unit))
+    }
+
+    /// When the shopper *typed* an amount that the count cap clamped (e.g.
+    /// "15000 milk"), the original quantity they typed — so we can confirm it
+    /// rather than silently trimming. Returns nil when nothing was typed, the unit
+    /// is a weight (uncapped), or the amount is within the cap.
+    private func uncappedTypedQuantity(userAmount: String, unit: String) -> String? {
+        guard let typed = Quantity(parsing: userAmount).amount,
+              !GroceryUnits.isWeightUnit(unit),
+              typed > GroceryUnits.maxCountableAmount else { return nil }
+        return Quantity(amount: typed, unit: unit).formatted
     }
 
     /// Split a leading numeric amount off the front of a segment, e.g.
@@ -869,6 +952,11 @@ struct AddItemSearchView: View {
         if !amount.isEmpty {
             var parsed = Quantity(parsing: amount)
             if parsed.unit.isEmpty, !aiUnit.isEmpty { parsed.unit = aiUnit }
+            // Cap countable amounts (e.g. "1500 milk" → 1000); weight/volume
+            // measures like "1500 lb cement" are left alone.
+            if let value = parsed.amount {
+                parsed.amount = GroceryUnits.cappedAmount(value, unit: parsed.unit)
+            }
             return (parsed.formatted, parsed.unit)
         }
         let proposedUnit = aiUnit.isEmpty ? UnitGuess.guess(for: name) : aiUnit
@@ -879,6 +967,40 @@ struct AddItemSearchView: View {
         }
         if !proposedUnit.isEmpty { return ("1 \(proposedUnit)", proposedUnit) }
         return ("1", "")
+    }
+
+    // MARK: - Over-cap confirmation
+
+    /// Queue the clamped-amount confirmations produced while interpreting a line,
+    /// then surface the first one.
+    private func enqueueOverCapPrompts(_ prompts: [OverCapPrompt]) {
+        guard !prompts.isEmpty else { return }
+        overCapQueue.append(contentsOf: prompts)
+        presentNextOverCapPrompt()
+    }
+
+    /// Show the next queued confirmation, if no other is already up.
+    private func presentNextOverCapPrompt() {
+        guard overCapPrompt == nil, !overCapQueue.isEmpty else { return }
+        overCapPrompt = overCapQueue.removeFirst()
+    }
+
+    /// Restore the shopper's original (uncapped) amount on the row it applied to.
+    private func applyUncapped(_ prompt: OverCapPrompt) {
+        if let idx = items.firstIndex(where: { $0.id == prompt.itemID }) {
+            withAnimation(reduceMotion ? nil : .snappy(duration: 0.22)) {
+                items[idx].quantity = prompt.originalQuantity
+            }
+        }
+        scheduleNextOverCapPrompt()
+    }
+
+    /// Let the current alert finish dismissing before presenting the next queued
+    /// one (presenting two alerts in the same run loop drops the second).
+    private func scheduleNextOverCapPrompt() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            presentNextOverCapPrompt()
+        }
     }
 
     // MARK: - Priority markers
@@ -1037,7 +1159,12 @@ struct AddItemSearchView: View {
     private func presentIdentifyIfPending() {
         guard let image = pendingCaptureImage else { return }
         pendingCaptureImage = nil
-        handleCapturedImage(image)
+        if attachPhotoOnly {
+            attachPhotoOnly = false
+            attachManualPhoto(image)
+        } else {
+            handleCapturedImage(image)
+        }
     }
 
     /// Downscale the captured photo, show the confirm card immediately, and kick
@@ -1046,6 +1173,7 @@ struct AddItemSearchView: View {
     /// a single product, the card is dropped and every detected item is staged
     /// instead (skipping per-item confirmation).
     private func handleCapturedImage(_ image: UIImage) {
+        identifyIsManual = false
         let data = image.resizedItemPhotoData()
         capturePhotoData = data
         captureImage = data.flatMap(UIImage.init(data:)) ?? image
@@ -1128,8 +1256,9 @@ struct AddItemSearchView: View {
                      quantity: identifiedQuantity, notes: identifiedNotes,
                      photoData: capturePhotoData)
         PostHogSDK.shared.capture("item_photo_added", properties: [
-            "source": "camera_identify",
+            "source": identifyIsManual ? "manual_entry" : "camera_identify",
             "ai_identified": didIdentify,
+            "has_photo": capturePhotoData != nil,
         ])
     }
 
@@ -1139,6 +1268,50 @@ struct AddItemSearchView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
             startPhotoCapture()
         }
+    }
+
+    // MARK: - Manual entry (same card, no photo)
+
+    /// Open the item card empty so the shopper can enter an item by hand —
+    /// structured fields instead of plain text — with the option to attach a photo.
+    private func startManualEntry() {
+        Haptics.tap()
+        dismissKeyboard()
+        identifyIsManual = true
+        captureImage = nil
+        capturePhotoData = nil
+        resetIdentifyDraft()
+        isIdentifying = false
+        showIdentifyCard = true
+    }
+
+    /// From the open manual card, open the camera/library to attach a photo —
+    /// flagged so its `onDismiss` attaches the image rather than re-identifying.
+    private func startManualPhotoCapture() {
+        attachPhotoOnly = true
+        startPhotoCapture()
+    }
+
+    /// Attach a just-captured photo to the open manual card without re-running the
+    /// vision model — the shopper's own picture, kept as-is.
+    private func attachManualPhoto(_ image: UIImage) {
+        let data = image.resizedItemPhotoData()
+        capturePhotoData = data
+        captureImage = data.flatMap(UIImage.init(data:)) ?? image
+        Haptics.success()
+    }
+
+    /// Detach the photo from the open card (the "Remove Photo" action).
+    private func removeManualPhoto() {
+        captureImage = nil
+        capturePhotoData = nil
+    }
+
+    /// Dismiss the manual card without adding anything.
+    private func cancelIdentifyCard() {
+        showIdentifyCard = false
+        captureImage = nil
+        capturePhotoData = nil
     }
 
     private func resetIdentifyDraft() {
@@ -1282,6 +1455,20 @@ private struct DetectedItem {
     }
 }
 
+/// A pending "did you mean that many?" confirmation: the shopper typed an amount
+/// (e.g. "15000 milk") that the count cap clamped. We keep both the clamped value
+/// shown on the row and the original they typed, so they can restore it.
+private struct OverCapPrompt: Identifiable, Equatable {
+    let id = UUID()
+    /// The row the typed amount landed on.
+    let itemID: UUID
+    let name: String
+    /// What the row currently shows (clamped to the cap, e.g. "999").
+    let cappedQuantity: String
+    /// The shopper's original typed quantity (e.g. "15000").
+    let originalQuantity: String
+}
+
 /// One committed line. Typed lines start `.thinking` and resolve once the AI (or
 /// the on-device fallback) fills in the name, quantity, unit, and category;
 /// History/photo items arrive already `.resolved`.
@@ -1359,14 +1546,16 @@ private struct LineItemRow: View {
             leftSlot
 
             // A vertical field so a long name can wrap to two lines while being
-            // edited (shrinking to fit past that); it collapses back to one line —
-            // and the quantity fades back in — once editing ends. While not editing
-            // a truncating Text sits on top so a long name ends in "…" (a TextField
-            // just clips); taps fall through to the field beneath to start editing.
+            // edited; it collapses back to one line — and the quantity fades back
+            // in — once editing ends. The range line limit (1...2) reserves only a
+            // single line and grows to a second one only when the content needs it,
+            // so a long name doesn't leave an empty reserved line padding the row.
+            // While not editing a truncating Text sits on top so a long name ends in
+            // "…" (a TextField just clips); taps fall through to the field beneath to
+            // start editing.
             ZStack(alignment: .leading) {
                 TextField("Item", text: $name, axis: .vertical)
-                    .lineLimit(editing ? 2 : 1)
-                    .minimumScaleFactor(editing ? 0.6 : 1)
+                    .lineLimit(editing ? 1...2 : 1...1)
                     .focused($editing)
                     .opacity(editing ? 1 : 0)
                     .onChange(of: name) { _, newValue in
@@ -1655,8 +1844,19 @@ private struct IdentifyItemCard: View {
     @Binding var quantity: String
     @Binding var notes: String
     var tint: Color
+    /// Whether the leading toolbar button offers "Retake" (the photo flow, which
+    /// can re-open the camera) or a plain "Cancel" (manual entry, where there's no
+    /// photo to retake).
+    var allowsRetake: Bool = true
     var onAdd: () -> Void
     var onRetake: () -> Void
+    /// Dismiss the card without adding — used by manual entry's "Cancel".
+    var onCancel: () -> Void = {}
+    /// Open the camera/library to attach a photo to this item (manual entry, or
+    /// re-attaching after a removal).
+    var onAddPhoto: () -> Void = {}
+    /// Detach the item's photo.
+    var onRemovePhoto: () -> Void = {}
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -1702,6 +1902,7 @@ private struct IdentifyItemCard: View {
                     heroImages
                         .frame(maxWidth: .infinity)
                         .listRowBackground(Color.clear)
+                    photoActionButton
                 }
 
                 Section("Item") {
@@ -1729,14 +1930,21 @@ private struct IdentifyItemCard: View {
                     TextField("Notes", text: $notes, axis: .vertical)
                 }
             }
-            .navigationTitle("Add Photo Item")
+            .navigationTitle("Add Item")
             .navigationBarTitleDisplayMode(.inline)
             .tint(tint)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Retake") {
-                        Haptics.tap()
-                        onRetake()
+                    if allowsRetake {
+                        Button("Retake") {
+                            Haptics.tap()
+                            onRetake()
+                        }
+                    } else {
+                        Button("Cancel") {
+                            Haptics.tap()
+                            onCancel()
+                        }
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
@@ -1747,6 +1955,28 @@ private struct IdentifyItemCard: View {
                     .bold()
                     .disabled(!canAdd)
                 }
+            }
+        }
+    }
+
+    /// Attach a photo when none is set, or remove the one that's attached. The
+    /// shopper's photo is optional on every item — manual entries start without
+    /// one, and a photographed item can have its picture dropped.
+    @ViewBuilder
+    private var photoActionButton: some View {
+        if userPhoto == nil {
+            Button {
+                Haptics.tap()
+                onAddPhoto()
+            } label: {
+                Label("Add Photo", systemImage: "camera")
+            }
+        } else {
+            Button(role: .destructive) {
+                Haptics.tap()
+                onRemovePhoto()
+            } label: {
+                Label("Remove Photo", systemImage: "trash")
             }
         }
     }
@@ -2465,7 +2695,7 @@ private struct ComposeTextField: UIViewRepresentable {
     func makeUIView(context: Context) -> BackspacingTextField {
         let field = BackspacingTextField()
         field.delegate = context.coordinator
-        field.placeholder = String(localized: "Type an item…")
+        field.placeholder = String(localized: "Just type naturally…")
         field.autocapitalizationType = .words
         field.returnKeyType = .next
         field.backgroundColor = .clear

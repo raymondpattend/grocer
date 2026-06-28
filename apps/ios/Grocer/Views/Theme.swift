@@ -10,6 +10,12 @@ enum Haptics {
         impact(.light, intensity: 0.7)
     }
 
+    /// A firm, percussive thud for committing an item — pressing Return to add a
+    /// line, and a row finishing "Thinking". Deliberately harder than `tap`.
+    static func commit() {
+        impact(.heavy, intensity: 1.0)
+    }
+
     /// A selection tick for toggles, pickers, and expandable rows.
     static func selection() {
         play(minimumSpacing: 0.04) {

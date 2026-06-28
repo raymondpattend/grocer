@@ -128,6 +128,26 @@ enum GroceryUnits {
         fractionalUnits.contains(unit.lowercased()) ? 0.5 : 1
     }
 
+    /// The most of a countable item we'll add at once before clamping. Weight
+    /// units are exempt (see `cappedAmount`) — 1500 lb of cement is reasonable,
+    /// but 1500 cartons of milk is almost always a typo.
+    static let maxCountableAmount: Double = 999
+
+    /// Weight units, which bypass the `maxCountableAmount` cap — you really can buy
+    /// 1500 lb of something. Everything else (counts and volume) is capped, but the
+    /// shopper is always offered the chance to keep their original number.
+    private static let weightUnits: Set<String> = ["lb", "oz", "g", "kg"]
+
+    static func isWeightUnit(_ unit: String) -> Bool {
+        weightUnits.contains(unit.trimmingCharacters(in: .whitespaces).lowercased())
+    }
+
+    /// Clamp a countable amount to `maxCountableAmount`; weight amounts pass
+    /// through unchanged.
+    static func cappedAmount(_ amount: Double, unit: String) -> Double {
+        isWeightUnit(unit) ? amount : min(amount, maxCountableAmount)
+    }
+
     /// Units that read the same regardless of count — abbreviations and collective
     /// measures ("2 lb", "2 dozen", not "2 lbs" / "2 dozens").
     private static let invariableUnits: Set<String> = [
