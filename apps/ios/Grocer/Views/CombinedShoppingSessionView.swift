@@ -32,6 +32,10 @@ struct CombinedShoppingSessionView: View {
     @State private var endingTask: Task<[String], Never>?
     @State private var showAddGroupPicker = false
     @State private var addTarget: AddTarget?
+    /// Organization for the combined view only — each list keeps its own
+    /// persisted sort mode for its individual session; this is local to the
+    /// combined trip since it spans lists that may not share a preference.
+    @State private var sortMode: ListSortMode = .category
 
     /// Identifiable wrapper so the add-item cover can be driven by the chosen
     /// list id (a bare `String` isn't `Identifiable`).
@@ -81,13 +85,21 @@ struct CombinedShoppingSessionView: View {
         List {
             progressHeader
 
-            ForEach(repo.combinedPendingGroups(sessionIds: activeIds), id: \.category) { group in
+            if sortMode == .custom {
                 Section {
-                    ForEach(group.items, id: \.combinedPendingRowID) { item in
+                    ForEach(repo.combinedPendingItemsCustom(sessionIds: activeIds), id: \.combinedPendingRowID) { item in
                         shopItemButton(item)
                     }
-                } header: {
-                    CategoryHeader(category: group.category, count: group.items.count)
+                }
+            } else {
+                ForEach(repo.combinedPendingGroups(sessionIds: activeIds), id: \.category) { group in
+                    Section {
+                        ForEach(group.items, id: \.combinedPendingRowID) { item in
+                            shopItemButton(item)
+                        }
+                    } header: {
+                        CategoryHeader(category: group.category, count: group.items.count)
+                    }
                 }
             }
 
@@ -114,7 +126,19 @@ struct CombinedShoppingSessionView: View {
             }
         }
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Menu {
+                    Picker("Organize", selection: $sortMode) {
+                        Label("Categories", systemImage: "square.grid.2x2").tag(ListSortMode.category)
+                        Label("My order", systemImage: "line.3.horizontal").tag(ListSortMode.custom)
+                    }
+                    .pickerStyle(.inline)
+                } label: {
+                    Image(systemName: sortMode == .custom ? "line.3.horizontal" : "arrow.up.arrow.down")
+                }
+                .accessibilityLabel("Organize list")
+                .onChange(of: sortMode) { _, _ in Haptics.selection() }
+
                 Button { Haptics.tap(); presentAddItem() } label: { Image(systemName: "plus") }
             }
         }

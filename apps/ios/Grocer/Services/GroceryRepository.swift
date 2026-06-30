@@ -2397,6 +2397,15 @@ final class GroceryRepository {
         return merged.groupedByCategory()
     }
 
+    /// Pending items across the given sessions in each list's manual order,
+    /// one list's run after another — for `ListSortMode.custom`.
+    func combinedPendingItemsCustom(sessionIds: [String]) -> [GroceryItem] {
+        trackDerivedState()
+        return sessionIds
+            .compactMap { sessionsById[$0] }
+            .flatMap { pendingShoppingItemsCustom(session: $0) }
+    }
+
     /// Items added to any of the combined lists after their trip started, unioned.
     func combinedAddedDuringTrip(sessionIds: [String]) -> [GroceryItem] {
         trackDerivedState()

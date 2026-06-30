@@ -367,15 +367,17 @@ struct CombinedSessionSummaryView: View {
             failed = await repo.finishCombinedShopping(sessionIds: targets)
         }
         failedSessionIds = failed
-        if failed.isEmpty {
-            await repo.completeCombinedTripCleanup(
-                sessionIds: sessionIds,
-                clearCompleted: clearFound,
-                keepOutOfStock: keepOutOfStock
-            )
-        }
         isFinishing = false
         if failed.isEmpty {
+            // Ending already landed; cleanup is local + an outbox flush per
+            // list, so it doesn't need to block the shopper from leaving.
+            Task {
+                await repo.completeCombinedTripCleanup(
+                    sessionIds: sessionIds,
+                    clearCompleted: clearFound,
+                    keepOutOfStock: keepOutOfStock
+                )
+            }
             onDone()
         } else {
             Haptics.warning()

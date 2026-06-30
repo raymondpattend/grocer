@@ -16,7 +16,6 @@ struct SessionSummaryView: View {
     @State private var clearFound = true
     @State private var keepOutOfStock = true
     @State private var finished = false
-    @State private var isFinishing = false
 
     private var progress: SessionProgress { repo.progress(for: session) }
 
@@ -76,23 +75,18 @@ struct SessionSummaryView: View {
         .navigationBarBackButtonHidden(true)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             Button {
-                Task { await finishTrip() }
+                finishTrip()
             } label: {
-                HStack(spacing: 8) {
-                    if isFinishing { ProgressView() }
-                    Text(isFinishing ? "Finishing..." : "Done")
-                        .font(.headline)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 6)
+                Text("Done")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
             }
             .grocerGlassButton(prominent: true)
             .tint(tint)
             .controlSize(.large)
             .padding()
-            .disabled(isFinishing)
         }
-        .interactiveDismissDisabled(isFinishing)
         .postHogScreenView("Session Summary")
     }
 
@@ -279,11 +273,10 @@ struct SessionSummaryView: View {
 
     // MARK: - Finish
 
-    private func finishTrip() async {
-        guard !finished, !isFinishing else { return }
+    private func finishTrip() {
+        guard !finished else { return }
         Haptics.success()
         finished = true
-        isFinishing = true
         PostHogSDK.shared.capture("shopping_trip_finished", properties: [
             "items_found": progress.found,
             "items_replaced": progress.replaced,
@@ -292,9 +285,12 @@ struct SessionSummaryView: View {
             "total_items": progress.total,
             "store_name": session.storeName ?? "unknown",
         ])
-        await endingTask?.value
-        await repo.completeTripCleanup(session, clearCompleted: clearFound, keepOutOfStock: keepOutOfStock)
-        isFinishing = false
+        // Ending already started on the previous screen; cleanup is local +
+        // an outbox flush. Neither needs to block the shopper from leaving.
+        Task {
+            await endingTask?.value
+            await repo.completeTripCleanup(session, clearCompleted: clearFound, keepOutOfStock: keepOutOfStock)
+        }
         onDone()
     }
 }
