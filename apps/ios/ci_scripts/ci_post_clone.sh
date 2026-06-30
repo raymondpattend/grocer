@@ -10,3 +10,9 @@ fi
 
 cd "$CI_PRIMARY_REPOSITORY_PATH/apps/ios"
 xcodegen generate
+
+# Package.resolved lives inside the gitignored .xcodeproj, so it can't be
+# committed at its normal path. Seed it from the tracked copy so Xcode
+# Cloud's strict (non-automatic) package resolution has a file to read.
+mkdir -p Grocer.xcodeproj/project.xcworkspace/xcshareddata/swiftpm
+cp Package.resolved Grocer.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved

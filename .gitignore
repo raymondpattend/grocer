@@ -46,3 +46,6 @@ Packages/
 !packages/*/package.json
 !packages/*/tsconfig.json
 Package.resolved
+# ...except the tracked copy ci_post_clone.sh seeds into the gitignored
+# .xcodeproj on Xcode Cloud, so package resolution there is reproducible.
+!apps/ios/Package.resolved
