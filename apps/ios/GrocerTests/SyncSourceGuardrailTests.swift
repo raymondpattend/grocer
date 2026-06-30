@@ -311,16 +311,27 @@ final class SyncSourceGuardrailTests: XCTestCase {
         XCTAssertTrue(detail.contains("repo.addItems"))
     }
 
-    func testItemHistorySupportsSwipeRemoval() throws {
+    func testItemHistorySupportsRemoval() throws {
         let add = try source("Grocer/Views/AddItemView.swift")
         let repo = try source("Grocer/Services/GroceryRepository.swift")
 
-        XCTAssertTrue(add.contains("HistorySwipeToRemoveRow"))
-        XCTAssertTrue(add.contains("onDeleteHistory"))
+        // A history card can be removed; the confirmation is an iOS alert (not a
+        // bottom action-sheet "popup"), wired through to the repo, which forgets
+        // every record for that name so the suggestion reliably disappears.
+        XCTAssertTrue(add.contains("struct HistoryItemRow"))
+        XCTAssertTrue(add.contains("onDeleteFromHistory"))
         XCTAssertTrue(add.contains("deleteFromHistory(name:"))
-        XCTAssertTrue(add.contains("Remove from history"))
+        XCTAssertTrue(add.contains("Remove from History"))
+        XCTAssertTrue(add.contains("isPresented: $showRemoveFromHistoryConfirm"))
+        XCTAssertFalse(add.contains(".confirmationDialog"))
         XCTAssertTrue(repo.contains("func removeCurrentItemSuggestion(named name: String)"))
-        XCTAssertTrue(repo.contains("$0.name.itemSuggestionKey == key && $0.status != .needed"))
+
+        // Removal must forget every record for the name — not skip the ones still
+        // on the list — otherwise an "On list" item can't be removed at all.
+        let removeFn = try excerpt(repo, from: "func removeCurrentItemSuggestion",
+                                   to: "private static func itemSuggestionDate")
+        XCTAssertTrue(removeFn.contains("$0.name.itemSuggestionKey == key"))
+        XCTAssertFalse(removeFn.contains("status != .needed"))
     }
 
     func testItemDetailBackNavigationHasHaptics() throws {

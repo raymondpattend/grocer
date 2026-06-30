@@ -369,24 +369,14 @@ struct QuantityStepperField: View {
 
     private var unitMenu: some View {
         Menu {
-            Button("None") { setUnit("") }
-            Divider()
-            ForEach(GroceryUnits.all, id: \.self) { unit in
-                Button {
-                    setUnit(unit)
-                } label: {
-                    if unit == effectiveUnit {
-                        Label(unit, systemImage: "checkmark")
-                    } else {
-                        Text(unit)
-                    }
+            UnitMenuItems(
+                selectedUnit: effectiveUnit,
+                onSelect: { setUnit($0) },
+                onCustom: {
+                    customUnit = effectiveUnit
+                    showingCustomUnit = true
                 }
-            }
-            Divider()
-            Button("Custom\u{2026}") {
-                customUnit = effectiveUnit
-                showingCustomUnit = true
-            }
+            )
         } label: {
             HStack(spacing: 4) {
                 Text(effectiveUnit.isEmpty ? String(localized: "unit") : displayUnit)
@@ -464,5 +454,35 @@ struct QuantityStepperField: View {
         withAnimation(reduceMotion ? nil : .snappy(duration: 0.22)) {
             quantity = next.formatted
         }
+    }
+}
+
+/// The grocery-unit picker menu content: a "None" option, every unit in
+/// `GroceryUnits.all` (checkmarking the current one), and a "Custom…" escape
+/// hatch. Lives inside the add-item stepper's unit `Menu`. (The inline quantity
+/// chip's long-press picker offers the same `GroceryUnits.all` options in a
+/// popover instead.)
+struct UnitMenuItems: View {
+    /// The unit currently in effect — checkmarked in the list.
+    var selectedUnit: String
+    var onSelect: (String) -> Void
+    var onCustom: () -> Void
+
+    var body: some View {
+        Button("None") { onSelect("") }
+        Divider()
+        ForEach(GroceryUnits.all, id: \.self) { unit in
+            Button {
+                onSelect(unit)
+            } label: {
+                if unit == selectedUnit {
+                    Label(unit, systemImage: "checkmark")
+                } else {
+                    Text(unit)
+                }
+            }
+        }
+        Divider()
+        Button("Custom\u{2026}") { onCustom() }
     }
 }

@@ -18,6 +18,24 @@ enum RevenueCatConfig {
     static let quarterlyProductID = "grocer_pro_subscription_quarterly_1"
     static let monthlyProductID = "grocer_pro_subscription_monthly_1"
 
+    /// When the `DEBUG_ENABLE_PRO_BYPASS` environment variable is set to a
+    /// truthy value (`1`, `true`, or `yes`), every Grocer Pro entitlement check
+    /// is forced to `true` so the device behaves as if it has an active Pro
+    /// subscription. Set it via the Xcode scheme (Run ▸ Arguments ▸ Environment
+    /// Variables). Gated to DEBUG builds so it can never be enabled in
+    /// TestFlight or App Store releases.
+    static var isProBypassEnabled: Bool {
+        #if DEBUG
+        guard let raw = ProcessInfo.processInfo.environment["DEBUG_ENABLE_PRO_BYPASS"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        else { return false }
+        return ["1", "true", "yes"].contains(raw)
+        #else
+        return false
+        #endif
+    }
+
     private static var didConfigure = false
 
     static func configure(appUserID: String) {
@@ -32,7 +50,8 @@ enum RevenueCatConfig {
     }
 
     static func hasGrocerPro(_ customerInfo: CustomerInfo?) -> Bool {
-        customerInfo?.entitlements.all[grocerProEntitlementID]?.isActive == true
+        if isProBypassEnabled { return true }
+        return customerInfo?.entitlements.all[grocerProEntitlementID]?.isActive == true
     }
 
     static func storeIdentifier(for store: Store) -> String {

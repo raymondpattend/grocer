@@ -27,6 +27,12 @@ struct CameraCaptureView: UIViewControllerRepresentable {
     func updateUIViewController(_ uiViewController: CameraCaptureController, context: Context) {}
 }
 
+/// Exponential ramp rate (powers-of-two per second) used when animating between
+/// zoom stops. Tuned so adjacent stops (0.5↔1, 1↔2) glide across in roughly a
+/// quarter second — quick, but unmistakably smooth like the system Camera rather
+/// than a hard cut. File-scoped so the `nonisolated` zoom code can read it.
+private let cameraZoomRampRate: Float = 4.0
+
 /// UIKit controller driving an `AVCaptureSession`. Owns a full-bleed preview, a
 /// shutter, and a cancel control; on shutter tap it captures a single frame and
 /// immediately hands the resulting image back, dismissing nothing itself (the
@@ -131,7 +137,7 @@ final class CameraCaptureController: UIViewController, AVCapturePhotoCaptureDele
                 let options = self.makeZoomOptions(for: device)
                 let oneXIndex = options.firstIndex { $0.label == "1" } ?? 0
                 if options.indices.contains(oneXIndex) {
-                    self.applyZoomFactor(options[oneXIndex].videoZoomFactor, to: device)
+                    self.applyZoomFactor(options[oneXIndex].videoZoomFactor, to: device, animated: false)
                 }
                 DispatchQueue.main.async {
                     self.publishZoomOptions(options, selectedIndex: oneXIndex)
@@ -217,16 +223,28 @@ final class CameraCaptureController: UIViewController, AVCapturePhotoCaptureDele
         let factor = zoomModel.options[index].videoZoomFactor
         sessionQueue.async { [weak self] in
             guard let self, let device = self.videoDevice else { return }
-            self.applyZoomFactor(factor, to: device)
+            // Tapping a stop animates the lens across, like the system Camera.
+            self.applyZoomFactor(factor, to: device, animated: true)
         }
     }
 
     /// `nonisolated`: only touches `device`, invoked from the session queue.
-    private nonisolated func applyZoomFactor(_ factor: CGFloat, to device: AVCaptureDevice) {
+    /// When `animated`, the lens smoothly ramps to the target (Apple Camera–style
+    /// transition); otherwise it snaps — used for the one-time opening framing.
+    private nonisolated func applyZoomFactor(_ factor: CGFloat, to device: AVCaptureDevice,
+                                             animated: Bool) {
         do {
             try device.lockForConfiguration()
-            device.videoZoomFactor = min(max(factor, device.minAvailableVideoZoomFactor),
-                                         device.maxAvailableVideoZoomFactor)
+            let clamped = min(max(factor, device.minAvailableVideoZoomFactor),
+                              device.maxAvailableVideoZoomFactor)
+            if animated {
+                // Retarget any in-flight ramp (rapid taps) so the lens always ends
+                // up at the latest selection without stutter.
+                if device.isRampingVideoZoom { device.cancelVideoZoomRamp() }
+                device.ramp(toVideoZoomFactor: clamped, withRate: cameraZoomRampRate)
+            } else {
+                device.videoZoomFactor = clamped
+            }
             device.unlockForConfiguration()
         } catch {
             // Leave the zoom where it is if the device can't be locked.
@@ -418,6 +436,8 @@ private struct CameraZoomSelector: View {
         }
         .padding(5)
         .grocerLiquidGlass(in: Capsule())
-        .animation(.easeInOut(duration: 0.15), value: model.selectedIndex)
+        // Match the lens ramp so the highlight glides across in step with the
+        // preview zoom rather than snapping ahead of it.
+        .animation(.easeInOut(duration: 0.25), value: model.selectedIndex)
     }
 }

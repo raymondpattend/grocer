@@ -48,6 +48,8 @@ enum CK {
         // Household appearance (group is the list)
         static let icon = "icon"
         static let colorTheme = "colorTheme"
+        /// Shared list organization (`ListSortMode`): aisle categories vs manual order.
+        static let listSortMode = "listSortMode"
         // (group store reuses the `storeName` key below)
         // Linked store geofence (shared on the group; members opt in/out locally).
         static let storeLatitude = "storeLatitude"
@@ -75,6 +77,8 @@ enum CK {
         static let activeSessionId = "activeSessionId"
         /// Optional user-taken item photo (CKAsset). Shared with the group.
         static let photo = "photo"
+        /// Manual position when the group's list uses custom ordering.
+        static let sortOrder = "sortOrder"
 
         // Session
         static let startedByMemberId = "startedByMemberId"

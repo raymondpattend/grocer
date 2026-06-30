@@ -16,6 +16,10 @@ struct ShoppingSessionView: View {
     @State private var showCompleted = true
     @State private var showFinish = false
     @State private var showFinishConfirm = false
+    /// Kicked off as soon as the shopper commits to finishing, so the session
+    /// ends (and the shared Live Activity closes) for everyone right away
+    /// instead of waiting on the Trip Summary's Done button.
+    @State private var endingTask: Task<Void, Never>?
     @State private var showAddItem = false
     @State private var editingStore = false
     @State private var storeText = ""
@@ -34,6 +38,18 @@ struct ShoppingSessionView: View {
     private var tint: Color {
         guard let session else { return .green }
         return repo.households.first { $0.id == session.householdId }?.tint ?? .green
+    }
+
+    /// Two-way binding to the group's shared sort mode for this trip's list, so the
+    /// shopper can switch between aisle categories and the manual order mid-trip.
+    private func sortModeBinding(_ session: ShoppingSession) -> Binding<ListSortMode> {
+        Binding(
+            get: { repo.sortMode(forSession: session) },
+            set: { newValue in
+                Haptics.selection()
+                repo.setListSortMode(newValue, forSession: session)
+            }
+        )
     }
 
     var body: some View {
@@ -77,13 +93,21 @@ struct ShoppingSessionView: View {
         List {
             progressHeader(session, canManageTrip: canManageTrip)
 
-            ForEach(repo.pendingShoppingGroups(session: session), id: \.category) { group in
+            if repo.sortMode(forSession: session) == .custom {
                 Section {
-                    ForEach(group.items, id: \.shoppingPendingRowID) { item in
+                    ForEach(repo.pendingShoppingItemsCustom(session: session), id: \.shoppingPendingRowID) { item in
                         shopItemButton(item, canManageTrip: canManageTrip)
                     }
-                } header: {
-                    CategoryHeader(category: group.category, count: group.items.count)
+                }
+            } else {
+                ForEach(repo.pendingShoppingGroups(session: session), id: \.category) { group in
+                    Section {
+                        ForEach(group.items, id: \.shoppingPendingRowID) { item in
+                            shopItemButton(item, canManageTrip: canManageTrip)
+                        }
+                    } header: {
+                        CategoryHeader(category: group.category, count: group.items.count)
+                    }
                 }
             }
 
@@ -110,7 +134,18 @@ struct ShoppingSessionView: View {
             }
         }
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Menu {
+                    Picker("Organize", selection: sortModeBinding(session)) {
+                        Label("Categories", systemImage: "square.grid.2x2").tag(ListSortMode.category)
+                        Label("My order", systemImage: "line.3.horizontal").tag(ListSortMode.custom)
+                    }
+                    .pickerStyle(.inline)
+                } label: {
+                    Image(systemName: repo.sortMode(forSession: session) == .custom ? "line.3.horizontal" : "arrow.up.arrow.down")
+                }
+                .accessibilityLabel("Organize list")
+
                 Button { Haptics.tap(); showAddItem = true } label: { Image(systemName: "plus") }
             }
         }
@@ -154,12 +189,12 @@ struct ShoppingSessionView: View {
             }
         }
         .navigationDestination(isPresented: $showFinish) {
-            SessionSummaryView(session: session) { onExit() }
+            SessionSummaryView(session: session, endingTask: endingTask) { onExit() }
         }
         .alert("Finish shopping?", isPresented: $showFinishConfirm) {
             Button("Finish Anyway") {
                 Haptics.selection()
-                showFinish = true
+                beginFinishing(session)
             }
             Button("Keep Shopping", role: .cancel) {}
         } message: {
@@ -364,12 +399,20 @@ struct ShoppingSessionView: View {
 
     // MARK: - Finish button
 
+    /// Starts ending the session in the background and pushes the Trip
+    /// Summary immediately — the shopper doesn't wait on this.
+    private func beginFinishing(_ session: ShoppingSession) {
+        endingTask = Task { await repo.finishShopping(session) }
+        showFinish = true
+    }
+
     private var finishButton: some View {
         let allHandled = progress.remaining == 0
         return Button {
             Haptics.selection()
+            guard let session else { return }
             if allHandled {
-                showFinish = true
+                beginFinishing(session)
             } else {
                 showFinishConfirm = true
             }
@@ -401,6 +444,15 @@ struct ShopItemRow: View {
     let item: GroceryItem
     var member: HouseholdMember?
     var tint: Color = .green
+    /// In a combined trip the row shows which group the item came from. `nil` for
+    /// a single-list session, where every item belongs to the same group.
+    var groupBadge: GroupBadge?
+
+    struct GroupBadge {
+        let name: String
+        let tint: Color
+        let icon: String
+    }
 
     var body: some View {
         HStack(spacing: 12) {
@@ -434,7 +486,21 @@ struct ShopItemRow: View {
                 PriorityCircle(priority: item.priority, size: 10)
             }
 
+            // The member who added the item, with the source group's icon as a
+            // small corner badge during a combined trip (`groupBadge` is nil in a
+            // single-list session, so the avatar shows alone).
             MemberAvatarView(member: member, size: 26)
+                .overlay(alignment: .bottomTrailing) {
+                    if let groupBadge {
+                        Image(systemName: groupBadge.icon)
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(.white)
+                            .padding(3)
+                            .background(Circle().fill(groupBadge.tint))
+                            .overlay(Circle().strokeBorder(Color(.systemBackground), lineWidth: 1.5))
+                            .offset(x: 3, y: 3)
+                    }
+                }
         }
         .padding(.vertical, 4)
         .contentShape(Rectangle())
@@ -446,6 +512,7 @@ struct ShopItemRow: View {
         var parts = [item.name]
         if let qty = quantityText { parts.append(qty) }
         if let notes = item.notes, !notes.isEmpty { parts.append(notes) }
+        if let groupBadge { parts.append(groupBadge.name) }
         if item.priority != .normal { parts.append(String(localized: "\(item.priority.localizedName) priority")) }
         return parts.joined(separator: ", ")
     }

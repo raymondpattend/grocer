@@ -333,6 +333,15 @@ final class GroceryRepository {
     /// Set after successfully joining a group; the UI shows a welcome sheet.
     var joinedHouseholdId: String?
 
+    /// The set of active `ShoppingSession` ids the current user is shopping
+    /// together as one combined trip. Local-only and per-device — the underlying
+    /// sessions are the shared CloudKit truth, but the *grouping* of them spans
+    /// CloudKit zones and so can't be a single Cloud record. Persisted to the App
+    /// Group so a combined trip survives relaunch.
+    private(set) var combinedTripSessionIds: [String] = [] {
+        didSet { persistCombinedTrip() }
+    }
+
     /// True while a CloudKit share invite is being accepted. The UI shows a
     /// loading indicator until the joined-group sheet is ready to present.
     private(set) var isAcceptingInvite = false
@@ -432,6 +441,14 @@ final class GroceryRepository {
     /// mismatch on that field, so items still sync without the photo until the
     /// production schema catches up. Mirrors `supportsTripItemReplacementNameField`.
     private var supportsItemPhotoField = true
+    /// Whether the deployed schema has `GroceryItem.sortOrder`. Flipped off for the
+    /// session on a schema mismatch so item saves still succeed (without the manual
+    /// position) until production catches up. Mirrors `supportsItemPhotoField`.
+    private var supportsItemSortOrderField = true
+    /// Whether the deployed schema has `Household.listSortMode`. Flipped off for the
+    /// session on a schema mismatch so group saves still succeed until production
+    /// catches up. Mirrors `supportsItemPhotoField`.
+    private var supportsHouseholdSortModeField = true
     /// Set when a refresh is requested while one is already in flight, so the
     /// in-flight pass re-runs once more instead of silently dropping the request.
     private var refreshRequestedWhileInFlight = false
@@ -447,7 +464,11 @@ final class GroceryRepository {
     @ObservationIgnored private var itemsByListId: [String: [GroceryItem]] = [:]
     @ObservationIgnored private var pendingItemsByListId: [String: [GroceryItem]] = [:]
     @ObservationIgnored private var pendingGroupsByListId: [String: [(category: GroceryCategory, items: [GroceryItem])]] = [:]
+    /// Pending items per list in the user's manual order, for `ListSortMode.custom`.
+    @ObservationIgnored private var pendingCustomItemsByListId: [String: [GroceryItem]] = [:]
     @ObservationIgnored private var shoppingPendingGroupsBySessionId: [String: [(category: GroceryCategory, items: [GroceryItem])]] = [:]
+    /// Original (pre-trip) pending items per session in manual order, for custom mode.
+    @ObservationIgnored private var shoppingPendingCustomBySessionId: [String: [GroceryItem]] = [:]
     @ObservationIgnored private var addedDuringTripBySessionId: [String: [GroceryItem]] = [:]
     @ObservationIgnored private var handledItemsBySessionId: [String: [GroceryItem]] = [:]
     @ObservationIgnored private var itemSuggestionsByListId: [String: [GroceryItemSuggestion]] = [:]
@@ -542,6 +563,7 @@ final class GroceryRepository {
         itemsByListId = byList.mapValues { $0.sorted(by: GroceryItem.listDisplayOrder) }
         pendingItemsByListId = pendingByList.mapValues { $0.sorted(by: GroceryItem.listDisplayOrder) }
         pendingGroupsByListId = pendingItemsByListId.mapValues { $0.groupedByCategory() }
+        pendingCustomItemsByListId = pendingItemsByListId.mapValues { $0.sorted(by: GroceryItem.customOrder) }
         handledItemsBySessionId = handledBySession.mapValues { $0.sorted(by: GroceryItem.handledDisplayOrder) }
         rebuildItemSuggestionCaches()
         rebuildShoppingSessionItemCaches()
@@ -552,21 +574,25 @@ final class GroceryRepository {
     private func rebuildShoppingSessionItemCaches() {
         guard !sessions.isEmpty else {
             shoppingPendingGroupsBySessionId = [:]
+            shoppingPendingCustomBySessionId = [:]
             addedDuringTripBySessionId = [:]
             return
         }
 
         var pendingGroups: [String: [(category: GroceryCategory, items: [GroceryItem])]] = [:]
+        var pendingCustom: [String: [GroceryItem]] = [:]
         var addedDuringTrip: [String: [GroceryItem]] = [:]
         for session in sessions {
             let pending = pendingItemsByListId[session.listId] ?? []
-            let originalItems = pending
-                .filter { $0.createdAt <= session.startedAt }
+            let originalItems = pending.filter { $0.createdAt <= session.startedAt }
+            pendingGroups[session.id] = originalItems
                 .sorted(by: GroceryItem.shoppingPriorityOrder)
-            pendingGroups[session.id] = originalItems.groupedByCategory()
+                .groupedByCategory()
+            pendingCustom[session.id] = originalItems.sorted(by: GroceryItem.customOrder)
             addedDuringTrip[session.id] = pending.filter { $0.createdAt > session.startedAt }
         }
         shoppingPendingGroupsBySessionId = pendingGroups
+        shoppingPendingCustomBySessionId = pendingCustom
         addedDuringTripBySessionId = addedDuringTrip
     }
 
@@ -819,6 +845,21 @@ final class GroceryRepository {
         return starter == currentMemberId || session.startedByMemberId == settings.deviceId
     }
 
+    // MARK: - Combined shopping (multiple lists, same store)
+
+    /// The still-active sessions backing the current combined trip. Filters out
+    /// any that have ended (e.g. expired by inactivity or finished individually),
+    /// so the combined view shrinks gracefully rather than showing stale rows.
+    var combinedTripSessions: [ShoppingSession] {
+        trackDerivedState()
+        return combinedTripSessionIds.compactMap { sessionsById[$0] }.filter { $0.status == .active }
+    }
+
+    /// A combined trip is only meaningfully "combined" with two or more active
+    /// lists — drives the resume banner and entry point. The combined view itself
+    /// tolerates the count dropping to one (or zero) while it's open.
+    var hasActiveCombinedTrip: Bool { combinedTripSessions.count >= 2 }
+
     func pendingItems(forList listId: String?) -> [GroceryItem] {
         trackDerivedState()
         guard let listId else { return [] }
@@ -836,6 +877,18 @@ final class GroceryRepository {
     var pendingItemGroups: [(category: GroceryCategory, items: [GroceryItem])] {
         pendingItemGroups(forList: currentList?.id)
     }
+
+    /// The active list organization for the current group.
+    var currentSortMode: ListSortMode { currentHousehold?.sortMode ?? .category }
+
+    /// Pending items for a list in the user's manual order (`ListSortMode.custom`).
+    func pendingItemsCustom(forList listId: String?) -> [GroceryItem] {
+        trackDerivedState()
+        guard let listId else { return [] }
+        return pendingCustomItemsByListId[listId] ?? []
+    }
+
+    var pendingItemsCustom: [GroceryItem] { pendingItemsCustom(forList: currentList?.id) }
 
     var removedItems: [GroceryItem] {
         guard let listId = currentList?.id else { return [] }
@@ -871,22 +924,24 @@ final class GroceryRepository {
         return itemSuggestionLookupByListId[listId]?[name.itemSuggestionKey]
     }
 
-    /// Removes completed/removed history records for a suggestion while leaving
-    /// any currently-needed item with the same name on the list.
+    /// Forgets a suggestion entirely: drops every record for that name — both the
+    /// completed/removed history and any copy still pending on the list — so
+    /// "Remove from History" reliably makes the item disappear from the pane (and
+    /// off the list if it happened to still be on it).
     func removeCurrentItemSuggestion(named name: String) {
         guard let listId = currentList?.id else { return }
         let key = name.itemSuggestionKey
         guard !key.isEmpty else { return }
 
-        let historicalItems = (itemsByListId[listId] ?? []).filter {
-            $0.name.itemSuggestionKey == key && $0.status != .needed
+        let matchingItems = (itemsByListId[listId] ?? []).filter {
+            $0.name.itemSuggestionKey == key
         }
-        guard !historicalItems.isEmpty else { return }
+        guard !matchingItems.isEmpty else { return }
 
-        let historicalIds = Set(historicalItems.map(\.id))
+        let matchingIds = Set(matchingItems.map(\.id))
         performLocalPersistenceBatch {
-            items.removeAll { historicalIds.contains($0.id) }
-            for item in historicalItems {
+            items.removeAll { matchingIds.contains($0.id) }
+            for item in matchingItems {
                 enqueueDelete(.item(item))
             }
         }
@@ -904,6 +959,17 @@ final class GroceryRepository {
     func pendingShoppingGroups(session: ShoppingSession) -> [(category: GroceryCategory, items: [GroceryItem])] {
         trackDerivedState()
         return shoppingPendingGroupsBySessionId[session.id] ?? []
+    }
+
+    /// The list organization for a session's group.
+    func sortMode(forSession session: ShoppingSession) -> ListSortMode {
+        householdById[session.householdId]?.sortMode ?? .category
+    }
+
+    /// Original (pre-trip) pending items for a session in the user's manual order.
+    func pendingShoppingItemsCustom(session: ShoppingSession) -> [GroceryItem] {
+        trackDerivedState()
+        return shoppingPendingCustomBySessionId[session.id] ?? []
     }
 
     func handledItems(session: ShoppingSession) -> [GroceryItem] {
@@ -1052,6 +1118,7 @@ final class GroceryRepository {
         selectedHouseholdId = settings.selectedHouseholdId.nilIfBlank
         print("[Repo] restored selectedHouseholdId: \(selectedHouseholdId ?? "nil")")
         loadLocalSyncState()
+        restoreCombinedTrip()
 
         syncState = .syncing
         print("[Repo] checking iCloud account status…")
@@ -1671,6 +1738,81 @@ final class GroceryRepository {
         StoreReminderManager.shared.syncMonitoredRegions(households: households)
     }
 
+    /// Switch how the current group's list is organized. Shared with everyone in
+    /// the group (any member may change it; it's non-destructive). Switching to
+    /// custom backfills manual positions for any items that lack one, so
+    /// drag-reordering always has stable neighbors.
+    func setListSortMode(_ mode: ListSortMode) {
+        guard let house = currentHousehold else { return }
+        setListSortMode(mode, forHouseholdId: house.id, listId: currentList?.id)
+    }
+
+    /// Switch the sort mode for the group being shopped, so the control is usable
+    /// from inside an active trip and not just the planning list.
+    func setListSortMode(_ mode: ListSortMode, forSession session: ShoppingSession) {
+        setListSortMode(mode, forHouseholdId: session.householdId, listId: session.listId)
+    }
+
+    private func setListSortMode(_ mode: ListSortMode, forHouseholdId householdId: String, listId: String?) {
+        guard let idx = households.firstIndex(where: { $0.id == householdId }),
+              households[idx].sortMode != mode else { return }
+        var house = households[idx]
+        house.listSortMode = mode
+        house.updatedAt = Date()
+        households[idx] = house
+        persistHousehold(house)
+        if mode == .custom, let listId {
+            ensureCustomOrderBackfilled(listId: listId)
+        }
+    }
+
+    /// Assigns evenly-spaced manual positions to any pending items on a list that
+    /// lack one (items created before custom ordering existed), preserving their
+    /// current display order. One-time per list; a no-op once everything is placed.
+    private func ensureCustomOrderBackfilled(listId: String) {
+        let pending = pendingItemsByListId[listId] ?? []
+        guard pending.contains(where: { $0.sortOrder == nil }) else { return }
+        let ordered = pending.sorted(by: GroceryItem.customOrder)
+        performLocalPersistenceBatch {
+            var next = GroceryItem.sortOrderStep
+            for placeholder in ordered {
+                if var item = items.first(where: { $0.id == placeholder.id }), item.sortOrder != next {
+                    item.sortOrder = next
+                    item.updatedAt = Date()
+                    replaceInWorkingSet(item)
+                    persist(item)
+                }
+                next += GroceryItem.sortOrderStep
+            }
+        }
+    }
+
+    /// Move pending items within the current list's manual order. Sets each moved
+    /// item's `sortOrder` to sit between its new neighbors (fractional indexing), so
+    /// a drag rewrites only the items that actually moved.
+    func reorderPendingItems(from source: IndexSet, to destination: Int) {
+        guard let listId = currentList?.id else { return }
+        ensureCustomOrderBackfilled(listId: listId)
+        var ordered = pendingCustomItemsByListId[listId] ?? []
+        guard !ordered.isEmpty else { return }
+        let movedIds = source.map { ordered[$0].id }
+        ordered.move(fromOffsets: source, toOffset: destination)
+        performLocalPersistenceBatch {
+            for id in movedIds {
+                guard let pos = ordered.firstIndex(where: { $0.id == id }),
+                      var item = items.first(where: { $0.id == id }) else { continue }
+                let before = pos > 0 ? ordered[pos - 1].sortOrder : nil
+                let after = pos < ordered.count - 1 ? ordered[pos + 1].sortOrder : nil
+                let value = GroceryItem.sortOrder(between: before, and: after)
+                item.sortOrder = value
+                item.updatedAt = Date()
+                replaceInWorkingSet(item)
+                persist(item)
+                ordered[pos].sortOrder = value
+            }
+        }
+    }
+
     func renameGroup(_ name: String) {
         guard isOwnerOfCurrentGroup else {
             syncState = .error(String(localized: "Only the list owner can rename this list."))
@@ -1852,6 +1994,12 @@ final class GroceryRepository {
         }
         let preexistingIds = Set(byName.values.map(\.id))
 
+        // New items append to the end of the manual order, so a group using custom
+        // ordering sees adds at the bottom — and the position is ready if they
+        // switch to custom later.
+        var nextSortOrder = ((pendingItemsByListId[list.id] ?? []).compactMap(\.sortOrder).max() ?? 0)
+            + GroceryItem.sortOrderStep
+
         // Keys touched by this batch, in first-seen order, so persistence and the
         // return value run in a stable order.
         var touchedKeys: [String] = []
@@ -1887,8 +2035,10 @@ final class GroceryRepository {
                     completedAt: nil,
                     deletedAt: nil,
                     activeSessionId: session?.id,
-                    photoData: input.photoData
+                    photoData: input.photoData,
+                    sortOrder: nextSortOrder
                 )
+                nextSortOrder += GroceryItem.sortOrderStep
             }
             if !touchedKeys.contains(key) { touchedKeys.append(key) }
         }
@@ -2146,7 +2296,12 @@ final class GroceryRepository {
         pushLiveActivityUpdate(for: updated, lastItem: nil, lastStatus: nil)
     }
 
-    func finishShopping(_ session: ShoppingSession, clearCompleted: Bool, keepOutOfStock: Bool) async {
+    /// Marks the session completed and ends the shared Live Activity, so every
+    /// participant sees the trip as finished right away. Called when the
+    /// shopper taps Finish Shopping — before they've chosen cleanup options,
+    /// which are applied separately by `completeTripCleanup` once they
+    /// confirm the Trip Summary, so "Done" there doesn't have to wait on this.
+    func finishShopping(_ session: ShoppingSession) async {
         var ended = session
         let now = Date()
         ended.status = .completed
@@ -2166,13 +2321,19 @@ final class GroceryRepository {
         await flushCriticalSessionWrites(sessionId: session.id)
         // Snapshot the trip's items *before* cleanup wipes their activeSessionId.
         captureTripItems(for: session, at: now)
-        applyCleanup(session: session, clearCompleted: clearCompleted, keepOutOfStock: keepOutOfStock)
-        await flushOutboxNow()
         guard !hasPendingWrite(for: .session(ended)) else {
             print("[Repo] ⚠️ finishShopping deferred Live Activity end; session completion still pending CloudKit")
             return
         }
         await api.endLiveActivity(payload)
+    }
+
+    /// Applies the shopper's cleanup choices once they confirm the Trip
+    /// Summary. The session is already ended by this point (see
+    /// `finishShopping`), so this is just local item mutation plus a flush.
+    func completeTripCleanup(_ session: ShoppingSession, clearCompleted: Bool, keepOutOfStock: Bool) async {
+        applyCleanup(session: session, clearCompleted: clearCompleted, keepOutOfStock: keepOutOfStock)
+        await flushOutboxNow()
     }
 
     func cancelShopping(_ session: ShoppingSession) async {
@@ -2200,6 +2361,162 @@ final class GroceryRepository {
             return
         }
         await api.endLiveActivity(payload)
+    }
+
+    // MARK: - Combined shopping
+
+    /// Starts a real shopping session for each list (reusing one already in
+    /// flight), records the grouping locally, and returns the session ids. Each
+    /// session is its own shared CloudKit object, so other members of each group
+    /// still see "someone is shopping" through the normal single-session UI.
+    @discardableResult
+    func startCombinedShopping(lists: [GroceryList]) async -> [String] {
+        var ids: [String] = []
+        for list in lists {
+            if let existing = activeSession(for: list.id) {
+                ids.append(existing.id)
+            } else {
+                await startShopping(list: list)
+                if let started = activeSession(for: list.id) {
+                    ids.append(started.id)
+                }
+            }
+        }
+        combinedTripSessionIds = ids
+        return ids
+    }
+
+    /// Pending items across the given sessions, merged and re-grouped by category
+    /// so the shopper sees one aisle-ordered list instead of one per group.
+    func combinedPendingGroups(sessionIds: [String]) -> [(category: GroceryCategory, items: [GroceryItem])] {
+        trackDerivedState()
+        let merged = sessionIds
+            .compactMap { sessionsById[$0] }
+            .flatMap { pendingShoppingGroups(session: $0).flatMap { $0.items } }
+            .sorted(by: GroceryItem.shoppingPriorityOrder)
+        return merged.groupedByCategory()
+    }
+
+    /// Items added to any of the combined lists after their trip started, unioned.
+    func combinedAddedDuringTrip(sessionIds: [String]) -> [GroceryItem] {
+        trackDerivedState()
+        return sessionIds
+            .compactMap { sessionsById[$0] }
+            .flatMap { addedDuringTrip(session: $0) }
+            .sorted(by: GroceryItem.shoppingPriorityOrder)
+    }
+
+    /// Handled (found/replaced/skipped/out-of-stock) items across the combined
+    /// lists, unioned and ordered most-recently-handled first.
+    func combinedHandledItems(sessionIds: [String]) -> [GroceryItem] {
+        trackDerivedState()
+        return sessionIds
+            .compactMap { sessionsById[$0] }
+            .flatMap { handledItems(session: $0) }
+            .sorted(by: GroceryItem.handledDisplayOrder)
+    }
+
+    /// Sum of per-session progress across the combined trip.
+    func combinedProgress(sessionIds: [String]) -> SessionProgress {
+        trackDerivedState()
+        var result = Self.emptyProgress
+        for id in sessionIds {
+            guard let session = sessionsById[id] else { continue }
+            let p = progress(for: session)
+            result.total += p.total
+            result.found += p.found
+            result.replaced += p.replaced
+            result.outOfStock += p.outOfStock
+            result.skipped += p.skipped
+            result.remaining += p.remaining
+        }
+        return result
+    }
+
+    /// The people shopping the combined lists, deduped across groups by iCloud
+    /// identity (falling back to member id) so a person in both groups appears
+    /// once in the header avatars and isn't notified twice.
+    func combinedShoppers(sessionIds: [String]) -> [HouseholdMember] {
+        trackDerivedState()
+        var seen = Set<String>()
+        var result: [HouseholdMember] = []
+        for id in sessionIds {
+            guard let session = sessionsById[id],
+                  let shopper = member(id: session.startedByMemberId, householdId: session.householdId)
+            else { continue }
+            let key = shopper.iCloudUserRecordName?.nilIfBlank ?? shopper.id
+            if seen.insert(key).inserted {
+                result.append(shopper)
+            }
+        }
+        return result
+    }
+
+    /// Ends each combined session (marks completed, ends its shared Live
+    /// Activity) without applying any cleanup yet — called when the shopper
+    /// taps Finish Shopping on the combined view, before they've picked
+    /// cleanup options. Each session writes to a *different* CloudKit zone,
+    /// so a mid-loop failure can leave a partially-ended trip; we drop a
+    /// session from the local grouping only once it lands and return the ids
+    /// that still failed so the summary can offer a targeted retry.
+    @discardableResult
+    func finishCombinedShopping(sessionIds: [String]) async -> [String] {
+        var failed: [String] = []
+        for id in sessionIds {
+            guard let session = sessionsById[id] else {
+                // Already gone (expired/removed elsewhere) — just ungroup it.
+                combinedTripSessionIds.removeAll { $0 == id }
+                continue
+            }
+            await finishShopping(session)
+            if hasPendingWrite(for: .session(session)) {
+                failed.append(id)
+            } else {
+                combinedTripSessionIds.removeAll { $0 == id }
+            }
+        }
+        return failed
+    }
+
+    /// Applies the shopper's cleanup choices across the combined trip once
+    /// they confirm the Trip Summary. Every session here is already ended
+    /// (see `finishCombinedShopping`), so this is just local cleanup per list.
+    func completeCombinedTripCleanup(sessionIds: [String], clearCompleted: Bool, keepOutOfStock: Bool) async {
+        for id in sessionIds {
+            guard let session = sessionsById[id] else { continue }
+            await completeTripCleanup(session, clearCompleted: clearCompleted, keepOutOfStock: keepOutOfStock)
+        }
+    }
+
+    /// Ungroups a combined trip without ending any session — used by "Exit
+    /// combined view", which leaves each individual trip running so members can
+    /// keep shopping or finish it through the normal single-session flow.
+    func clearCombinedTrip(_ sessionIds: [String]? = nil) {
+        if let sessionIds {
+            combinedTripSessionIds.removeAll { sessionIds.contains($0) }
+        } else {
+            combinedTripSessionIds = []
+        }
+    }
+
+    private static let combinedTripSessionIdsKey = "grocer.combinedTrip.sessionIds"
+
+    private func persistCombinedTrip() {
+        let key = GrocerAppGroup.scopedName(Self.combinedTripSessionIdsKey)
+        if combinedTripSessionIds.isEmpty {
+            GrocerAppGroup.defaults.removeObject(forKey: key)
+        } else if let data = try? JSONEncoder().encode(combinedTripSessionIds) {
+            GrocerAppGroup.defaults.set(data, forKey: key)
+        }
+    }
+
+    /// Restores a persisted combined trip on launch, pruning any session that is
+    /// no longer active so a stale id can't resurrect a finished trip.
+    private func restoreCombinedTrip() {
+        let key = GrocerAppGroup.scopedName(Self.combinedTripSessionIdsKey)
+        guard let data = GrocerAppGroup.defaults.data(forKey: key),
+              let ids = try? JSONDecoder().decode([String].self, from: data) else { return }
+        combinedTripSessionIds = ids.filter { sessionsById[$0]?.status == .active }
     }
 
     private func applyCleanup(session: ShoppingSession, clearCompleted: Bool, keepOutOfStock: Bool) {
@@ -3199,6 +3516,24 @@ final class GroceryRepository {
                     outcome.serverWon = outcome.serverWon || resolution.serverWon
                     continue
                 }
+                if Self.isItemSortOrderSchemaError(error), case .item = write.record {
+                    let resolution = await retryItemWithoutSortOrder(
+                        write: write, rid: rid, zone: zone, schemaError: error
+                    )
+                    outcome.removedAny = outcome.removedAny || resolution.removedAny
+                    outcome.systemFieldsChanged = outcome.systemFieldsChanged || resolution.systemFieldsChanged
+                    outcome.serverWon = outcome.serverWon || resolution.serverWon
+                    continue
+                }
+                if Self.isHouseholdSortModeSchemaError(error), case .household = write.record {
+                    let resolution = await retryHouseholdWithoutSortMode(
+                        write: write, rid: rid, zone: zone, schemaError: error
+                    )
+                    outcome.removedAny = outcome.removedAny || resolution.removedAny
+                    outcome.systemFieldsChanged = outcome.systemFieldsChanged || resolution.systemFieldsChanged
+                    outcome.serverWon = outcome.serverWon || resolution.serverWon
+                    continue
+                }
                 let resolution = await handleSaveFailure(write: write, rid: rid, error: error, zone: zone)
                 outcome.removedAny = outcome.removedAny || resolution.removedAny
                 outcome.systemFieldsChanged = outcome.systemFieldsChanged || resolution.systemFieldsChanged
@@ -3290,6 +3625,16 @@ final class GroceryRepository {
                 write: write, rid: rid, zone: zone, schemaError: error
             )
         }
+        if Self.isItemSortOrderSchemaError(error), case .item = write.record {
+            return await retryItemWithoutSortOrder(
+                write: write, rid: rid, zone: zone, schemaError: error
+            )
+        }
+        if Self.isHouseholdSortModeSchemaError(error), case .household = write.record {
+            return await retryHouseholdWithoutSortMode(
+                write: write, rid: rid, zone: zone, schemaError: error
+            )
+        }
         if CloudKitSchemaTelemetry.parseMismatch(from: error) != nil {
             reportSchemaMismatch(
                 error,
@@ -3341,6 +3686,8 @@ final class GroceryRepository {
     /// member saves (role repair, roster sync).
     private func applyFields(of pending: PendingCloudRecord, to record: CKRecord) {
         switch pending {
+        case .household(let house):
+            house.apply(to: record, includeListSortMode: supportsHouseholdSortModeField)
         case .member(let member):
             member.applyMetadata(to: record)
             let recordName = pending.recordName
@@ -3350,7 +3697,7 @@ final class GroceryRepository {
                 member.applyProfileImage(to: record)
             }
         case .item(let item):
-            item.applyMetadata(to: record)
+            item.applyMetadata(to: record, includeSortOrder: supportsItemSortOrderField)
             // Upload the photo asset only when it changed since our last upload
             // (or on the first save of this record), and only while the schema is
             // known to support it.
@@ -3462,6 +3809,103 @@ final class GroceryRepository {
         return SaveFailureResolution()
     }
 
+    /// Re-saves a `GroceryItem` without `sortOrder` after a schema mismatch on that
+    /// field (production CloudKit not yet deployed with it). Disables the field for
+    /// the session so the item — and every later item — still syncs; manual
+    /// positions sync once the schema catches up. Mirrors `retryItemWithoutPhoto`.
+    private func retryItemWithoutSortOrder(
+        write: PendingCloudWrite,
+        rid: CKRecord.ID,
+        zone: CKRecordZone.ID,
+        schemaError: Error
+    ) async -> SaveFailureResolution {
+        if supportsItemSortOrderField {
+            supportsItemSortOrderField = false
+            print("[Repo] ⚠️ GroceryItem.sortOrder missing in CloudKit schema; omitting manual order on item saves")
+            reportSchemaMismatch(
+                schemaError,
+                recordName: rid.recordName,
+                context: "item_omit_sort_order",
+                recovered: true
+            )
+        }
+
+        guard case .item = write.record else {
+            return SaveFailureResolution()
+        }
+
+        let record = buildRecord(for: write.record, recordID: rid)
+
+        do {
+            let results = try await cloud.modify(saving: [record], deleting: [], in: zone)
+            if let saveResult = results.save[rid], case .success(let saved) = saveResult {
+                recordSystemFields[rid.recordName] = saved.encodedSystemFields()
+                if removeIfCurrent(write) {
+                    return SaveFailureResolution(removedAny: true, systemFieldsChanged: true, serverWon: false)
+                }
+            }
+        } catch {
+            print("[Repo] ⚠️ item retry without sortOrder failed for \(rid.recordName): \(error)")
+            reportSchemaMismatch(
+                error,
+                recordName: rid.recordName,
+                context: "item_omit_sort_order_retry_failed",
+                recovered: false
+            )
+            _ = markWriteDeferred(write, error: error)
+            recordSyncFailure(error, context: "iCloud save failed")
+        }
+        return SaveFailureResolution()
+    }
+
+    /// Re-saves a `Household` without `listSortMode` after a schema mismatch on that
+    /// field. Disables it for the session so group edits still sync; the shared
+    /// sort mode syncs once the schema catches up. Mirrors `retryItemWithoutPhoto`.
+    private func retryHouseholdWithoutSortMode(
+        write: PendingCloudWrite,
+        rid: CKRecord.ID,
+        zone: CKRecordZone.ID,
+        schemaError: Error
+    ) async -> SaveFailureResolution {
+        if supportsHouseholdSortModeField {
+            supportsHouseholdSortModeField = false
+            print("[Repo] ⚠️ Household.listSortMode missing in CloudKit schema; omitting list sort mode on group saves")
+            reportSchemaMismatch(
+                schemaError,
+                recordName: rid.recordName,
+                context: "household_omit_sort_mode",
+                recovered: true
+            )
+        }
+
+        guard case .household = write.record else {
+            return SaveFailureResolution()
+        }
+
+        let record = buildRecord(for: write.record, recordID: rid)
+
+        do {
+            let results = try await cloud.modify(saving: [record], deleting: [], in: zone)
+            if let saveResult = results.save[rid], case .success(let saved) = saveResult {
+                recordSystemFields[rid.recordName] = saved.encodedSystemFields()
+                if removeIfCurrent(write) {
+                    return SaveFailureResolution(removedAny: true, systemFieldsChanged: true, serverWon: false)
+                }
+            }
+        } catch {
+            print("[Repo] ⚠️ household retry without listSortMode failed for \(rid.recordName): \(error)")
+            reportSchemaMismatch(
+                error,
+                recordName: rid.recordName,
+                context: "household_omit_sort_mode_retry_failed",
+                recovered: false
+            )
+            _ = markWriteDeferred(write, error: error)
+            recordSyncFailure(error, context: "iCloud save failed")
+        }
+        return SaveFailureResolution()
+    }
+
     private func reportSchemaMismatch(
         _ error: Error,
         recordName: String?,
@@ -3495,6 +3939,18 @@ final class GroceryRepository {
         guard let mismatch = CloudKitSchemaTelemetry.parseMismatch(from: error) else { return false }
         return mismatch.recordType.caseInsensitiveCompare(CK.RecordType.item) == .orderedSame
             && mismatch.fieldName == CK.Field.photo
+    }
+
+    private static func isItemSortOrderSchemaError(_ error: Error) -> Bool {
+        guard let mismatch = CloudKitSchemaTelemetry.parseMismatch(from: error) else { return false }
+        return mismatch.recordType.caseInsensitiveCompare(CK.RecordType.item) == .orderedSame
+            && mismatch.fieldName == CK.Field.sortOrder
+    }
+
+    private static func isHouseholdSortModeSchemaError(_ error: Error) -> Bool {
+        guard let mismatch = CloudKitSchemaTelemetry.parseMismatch(from: error) else { return false }
+        return mismatch.recordType.caseInsensitiveCompare(CK.RecordType.household) == .orderedSame
+            && mismatch.fieldName == CK.Field.listSortMode
     }
 
     /// Records the hash of the asset we just uploaded for a record so subsequent

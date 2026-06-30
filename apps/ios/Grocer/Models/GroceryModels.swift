@@ -118,6 +118,14 @@ enum MemberRole: String, Codable, Hashable {
     case member = "Member"
 }
 
+/// How items are organized on the list and shopping screens. Shared on the group
+/// so every member sees the same arrangement. `category` is the default aisle
+/// grouping; `custom` is the user's manual drag order (see `GroceryItem.sortOrder`).
+enum ListSortMode: String, Codable, Hashable {
+    case category = "category"
+    case custom = "custom"
+}
+
 // MARK: - Domain models
 
 /// A group is also the grocery list: it carries the store, icon, and color
@@ -139,6 +147,10 @@ struct Household: Identifiable, Codable, Hashable {
     var updatedAt: Date
     var recordZoneName: String?
     var recordOwnerName: String?
+    /// How the list is organized for the whole group. Optional + defaulted so
+    /// snapshots written before this field decode cleanly (a missing key would
+    /// otherwise throw and discard the local cache); read it through `sortMode`.
+    var listSortMode: ListSortMode? = nil
 
     /// Default geofence radius (meters) when one isn't explicitly set.
     static let defaultStoreRadius: Double = 150
@@ -147,6 +159,9 @@ struct Household: Identifiable, Codable, Hashable {
     var hasLinkedStore: Bool {
         storeLatitude != nil && storeLongitude != nil
     }
+
+    /// Effective list organization, treating an unset preference as `.category`.
+    var sortMode: ListSortMode { listSortMode ?? .category }
 }
 
 struct HouseholdMember: Identifiable, Codable, Hashable {
@@ -195,6 +210,10 @@ struct GroceryItem: Identifiable, Codable, Hashable {
     /// Defaulted (and decoded as absent → nil) so older snapshots and existing
     /// call sites stay source- and wire-compatible.
     var photoData: Data? = nil
+    /// Manual position within the list when the group uses `ListSortMode.custom`.
+    /// Fractional, so a single drag rewrites only the moved item. `nil` until the
+    /// item is first placed; defaulted so older snapshots/call sites stay compatible.
+    var sortOrder: Double? = nil
 }
 
 struct GroceryItemSuggestion: Identifiable, Hashable {
@@ -318,6 +337,32 @@ extension GroceryItem {
             lhsID: lhs.id,
             rhsID: rhs.id
         )
+    }
+
+    /// Manual drag order for `ListSortMode.custom`. Placed items (non-nil
+    /// `sortOrder`) come first in ascending order; not-yet-placed items fall to the
+    /// end in stable creation order.
+    static func customOrder(_ lhs: GroceryItem, _ rhs: GroceryItem) -> Bool {
+        switch (lhs.sortOrder, rhs.sortOrder) {
+        case let (l?, r?) where l != r: return l < r
+        case (.some, .none): return true
+        case (.none, .some): return false
+        default: return listDisplayOrder(lhs, rhs)
+        }
+    }
+
+    /// Spacing between consecutive manual positions when backfilling or appending.
+    static let sortOrderStep: Double = 1024
+
+    /// A `sortOrder` placing an item between two neighbors (or past an edge when a
+    /// neighbor is absent). Neighbors are expected to be non-nil — backfill first.
+    static func sortOrder(between before: Double?, and after: Double?) -> Double {
+        switch (before, after) {
+        case let (b?, a?): return (b + a) / 2
+        case let (b?, nil): return b + sortOrderStep
+        case let (nil, a?): return a - sortOrderStep
+        case (nil, nil): return sortOrderStep
+        }
     }
 }
 

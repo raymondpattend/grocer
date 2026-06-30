@@ -2,3 +2,4 @@
 #include? "Secrets.xcconfig"
 POSTHOG_PROJECT_TOKEN = phc_CzPx6jMYZiTV5joXtA54wtkSGgg4AW6rMddxvqkA2AzN
 POSTHOG_HOST = https:/$()/aa.grocer.sh
+DEBUG_ENABLE_PRO_BYPASS = 1

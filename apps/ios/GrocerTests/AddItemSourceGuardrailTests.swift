@@ -82,15 +82,16 @@ final class AddItemSourceGuardrailTests: XCTestCase {
     func testCommitStagesExactlyOneThinkingItemWithHaptic() throws {
         let src = try addItemSource()
         let commit = try excerpt(src, from: "private func commitLine", to: "private func recalcIfNeeded")
-        // A committed line becomes one thinking row, with a subtle haptic as it
+        // A committed line becomes one thinking row, with a firm thud as it
         // enters that state, and is then interpreted.
         XCTAssertTrue(commit.contains("state: .thinking"))
-        XCTAssertTrue(commit.contains("Haptics.tap()"), "Enter/commit fires a haptic")
+        XCTAssertTrue(commit.contains("Haptics.commit()"), "Enter/commit fires a firm thud")
         XCTAssertTrue(commit.contains("items.append(item)"),
                       "a committed line must append exactly one item")
         XCTAssertTrue(commit.contains("interpret(item.id, allowSplit: true)"))
 
-        // A second haptic fires when the AI finishes and the row(s) resolve.
+        // A softer haptic (a selection tick, not the commit thud) fires when the AI
+        // finishes and the row(s) resolve, so an item settling in doesn't jolt.
         let interpret = try excerpt(src, from: "private func interpret", to: "private struct ResolvedItem")
         XCTAssertTrue(interpret.contains("Haptics.selection()"))
     }
@@ -146,21 +147,26 @@ final class AddItemSourceGuardrailTests: XCTestCase {
 
     func testResolvedRowShowsInlineExpandingGlassQuantityStepper() throws {
         let src = try addItemSource()
-        // The resolved accessory is the inline quantity chip — not a popover.
+        // The resolved accessory is the inline quantity chip.
         let row = try excerpt(src, from: "private struct LineItemRow", to: "private struct ThinkingPill")
         XCTAssertTrue(row.contains("InlineQuantityChip(quantity: $quantity, unit: item.unit"))
-        XCTAssertFalse(row.contains(".popover("))
 
         // The chip shows the amount + label and extends in place to an inline −/+
-        // stepper. The unit label is fixed — no unit picker — and it's a glass capsule.
+        // stepper (a glass capsule). A tap toggles the stepper; a long press opens a
+        // popover unit picker (driven by explicit gestures, not a Button +
+        // .contextMenu, so the long press reliably lands on the glass chip).
         let chip = try excerpt(src, from: "private struct InlineQuantityChip", to: "// MARK: - Identify confirm card")
         XCTAssertTrue(chip.contains("Quantity.displayString(quantity)"))
         XCTAssertTrue(chip.contains("expanded.toggle()"))
         XCTAssertTrue(chip.contains("systemImage: \"minus\""))
         XCTAssertTrue(chip.contains("systemImage: \"plus\""))
         XCTAssertTrue(chip.contains("grocerLiquidGlass(in: Capsule()"))
-        XCTAssertFalse(chip.contains("Menu"),
-                       "the unit label is fixed — no inline unit picker")
+        XCTAssertTrue(chip.contains(".onLongPressGesture"),
+                      "long-pressing the chip opens the unit picker")
+        XCTAssertTrue(chip.contains(".popover(isPresented: $showUnitPicker"),
+                      "the unit picker is a popover")
+        XCTAssertTrue(chip.contains("GroceryUnits.all"),
+                      "the picker offers the same grocery-unit options as the stepper")
         XCTAssertFalse(chip.contains("QuantityStepperField"),
                        "the stepper is inline, not the shared unit-editing field")
     }
@@ -171,9 +177,9 @@ final class AddItemSourceGuardrailTests: XCTestCase {
         // The name is an editable TextField; tapping it starts editing.
         XCTAssertTrue(row.contains("TextField(\"Item\", text: $name"))
         XCTAssertTrue(row.contains("if !editing { editing = true }"))
-        // It scales + wraps to two lines while editing, one line when done.
-        XCTAssertTrue(row.contains(".lineLimit(editing ? 2 : 1)"))
-        XCTAssertTrue(row.contains(".minimumScaleFactor(editing ? 0.6 : 1)"))
+        // It grows to two lines while editing, one (truncating) line when done.
+        XCTAssertTrue(row.contains(".lineLimit(editing ? 1...2 : 1...1)"))
+        XCTAssertTrue(row.contains(".truncationMode(.tail)"))
         XCTAssertTrue(row.contains("onCommitName()"))
         XCTAssertTrue(src.contains("onCommitName: { recalcIfNeeded(item.id) }"))
 
@@ -214,9 +220,10 @@ final class AddItemSourceGuardrailTests: XCTestCase {
 
         // Priority rides through to the saved item…
         XCTAssertTrue(src.contains("priority: item.priority"))
-        // …and shows the CRITICAL chip on the row (normal shows nothing).
+        // …and shows a tappable critical marker on the row (normal shows nothing).
         let row = try excerpt(src, from: "private struct LineItemRow", to: "private struct ThinkingPill")
-        XCTAssertTrue(row.contains("PriorityLabel(priority: item.priority)"))
+        XCTAssertTrue(row.contains("item.priority == .critical"))
+        XCTAssertTrue(row.contains("exclamationmark.triangle.fill"))
     }
 
     func testInlineMarkerTogglesCriticalBothWays() throws {

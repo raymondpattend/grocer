@@ -203,6 +203,86 @@ final class CloudKitMappingTests: XCTestCase {
         XCTAssertNil(decoded.photoData)
     }
 
+    func testHouseholdRoundTripsListSortMode() throws {
+        let record = CKRecord(recordType: CK.RecordType.household, recordID: recordID("house"))
+        var household = makeHousehold()
+        household.listSortMode = .custom
+
+        household.apply(to: record)
+        XCTAssertEqual(record[CK.Field.listSortMode] as? String, ListSortMode.custom.rawValue)
+
+        let decoded = try XCTUnwrap(Household(record: record))
+        XCTAssertEqual(decoded.listSortMode, .custom)
+        XCTAssertEqual(decoded.sortMode, .custom)
+    }
+
+    func testHouseholdDefaultsSortModeToCategoryWhenFieldAbsent() throws {
+        let record = CKRecord(recordType: CK.RecordType.household, recordID: recordID("house"))
+        record[CK.Field.name] = "Family" as CKRecordValue
+        record[CK.Field.ownerMemberId] = "owner" as CKRecordValue
+
+        let decoded = try XCTUnwrap(Household(record: record))
+        XCTAssertNil(decoded.listSortMode)
+        XCTAssertEqual(decoded.sortMode, .category)
+    }
+
+    func testHouseholdApplyCanOmitListSortMode() throws {
+        let record = CKRecord(recordType: CK.RecordType.household, recordID: recordID("house"))
+        var household = makeHousehold()
+        household.listSortMode = .custom
+
+        household.apply(to: record, includeListSortMode: false)
+        XCTAssertNil(record[CK.Field.listSortMode])
+    }
+
+    func testGroceryItemRoundTripsSortOrder() throws {
+        let record = CKRecord(recordType: CK.RecordType.item, recordID: recordID("item"))
+        var item = makeItem()
+        item.sortOrder = 4096
+
+        item.apply(to: record)
+        XCTAssertEqual(record[CK.Field.sortOrder] as? Double, 4096)
+
+        let decoded = try XCTUnwrap(GroceryItem(record: record))
+        XCTAssertEqual(decoded.sortOrder, 4096)
+    }
+
+    func testGroceryItemApplyCanOmitSortOrder() throws {
+        let record = CKRecord(recordType: CK.RecordType.item, recordID: recordID("item"))
+        var item = makeItem()
+        item.sortOrder = 4096
+
+        item.applyMetadata(to: record, includeSortOrder: false)
+        XCTAssertNil(record[CK.Field.sortOrder])
+    }
+
+    func testGroceryItemWithoutSortOrderDecodesNil() throws {
+        let record = CKRecord(recordType: CK.RecordType.item, recordID: recordID("item"))
+        let item = makeItem() // sortOrder defaults to nil
+
+        item.apply(to: record)
+        XCTAssertNil(record[CK.Field.sortOrder])
+
+        let decoded = try XCTUnwrap(GroceryItem(record: record))
+        XCTAssertNil(decoded.sortOrder)
+    }
+
+    /// Minimal valid group for mapping tests.
+    private func makeHousehold() -> Household {
+        Household(
+            id: "house",
+            name: "Family",
+            ownerMemberId: "owner",
+            storeName: "Market",
+            icon: "basket.fill",
+            colorTheme: .teal,
+            createdAt: date,
+            updatedAt: date,
+            recordZoneName: nil,
+            recordOwnerName: nil
+        )
+    }
+
     /// Minimal valid item for mapping tests.
     private func makeItem() -> GroceryItem {
         GroceryItem(

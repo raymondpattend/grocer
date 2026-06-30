@@ -19,8 +19,53 @@ struct GroceryListView: View {
     @State private var showHeadsUp = false
     @State private var showStoreLink = false
     @State private var storeBannerHidden = false
+    @State private var showMultiList = false
+    @State private var combinedTrip: CombinedTripRef?
+    /// Drives drag-to-reorder when the list uses custom ("My Order") organization.
+    @State private var listEditMode: EditMode = .inactive
+
+    /// The group's shared list organization. Writing flips it for everyone via the
+    /// repo; leaving custom mode also exits any in-progress reordering.
+    private var sortModeBinding: Binding<ListSortMode> {
+        Binding(
+            get: { repo.currentSortMode },
+            set: { newValue in
+                Haptics.selection()
+                if newValue != .custom { listEditMode = .inactive }
+                repo.setListSortMode(newValue)
+            }
+        )
+    }
+
+    /// Hashable wrapper so a combined trip (a set of session ids) can drive a
+    /// `navigationDestination(item:)`.
+    private struct CombinedTripRef: Hashable {
+        let sessionIds: [String]
+    }
 
     private var tint: Color { repo.currentHousehold?.tint ?? .green }
+
+    /// The current group plus any other groups that shop at the same store —
+    /// candidates for a combined trip. Empty when the current group has no store
+    /// or no same-store siblings, which hides the multi-list entry point.
+    private var sameStoreGroups: [Household] {
+        guard let current = repo.currentHousehold,
+              let store = current.storeName?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !store.isEmpty else { return [] }
+        let matches = repo.households.filter { house in
+            house.id != current.id
+                && house.storeName?.trimmingCharacters(in: .whitespacesAndNewlines) == store
+        }
+        return matches.isEmpty ? [] : ([current] + matches)
+    }
+
+    /// True when the current list's active session is part of the running
+    /// combined trip — used to suppress the per-list banner in favor of the
+    /// combined one.
+    private var currentSessionInCombinedTrip: Bool {
+        guard repo.hasActiveCombinedTrip, let session = repo.activeSession else { return false }
+        return repo.combinedTripSessionIds.contains(session.id)
+    }
 
     /// The heads-up button only appears when there's something on the list to
     /// shop for, and only when the group has someone else to notify.
@@ -57,7 +102,22 @@ struct GroceryListView: View {
                 .listRowSeparator(.hidden)
             }
 
-            if let session = repo.activeSession {
+            if repo.hasActiveCombinedTrip {
+                CombinedSessionBanner(
+                    listCount: repo.combinedTripSessions.count,
+                    progress: repo.combinedProgress(sessionIds: repo.combinedTripSessionIds),
+                    shoppers: repo.combinedShoppers(sessionIds: repo.combinedTripSessionIds),
+                    tint: tint
+                ) {
+                    Haptics.selection()
+                    combinedTrip = CombinedTripRef(sessionIds: repo.combinedTripSessionIds)
+                }
+                .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 12, trailing: 0))
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+            }
+
+            if let session = repo.activeSession, !currentSessionInCombinedTrip {
                 ActiveSessionBanner(
                     session: session,
                     progress: repo.progress(for: session),
@@ -73,13 +133,25 @@ struct GroceryListView: View {
             }
 
             if repo.currentList != nil {
-                ForEach(repo.pendingItemGroups, id: \.category) { group in
+                if repo.currentSortMode == .custom {
                     Section {
-                        ForEach(group.items) { item in
+                        ForEach(repo.pendingItemsCustom) { item in
                             itemButton(item)
                         }
-                    } header: {
-                        CategoryHeader(category: group.category, count: group.items.count)
+                        .onMove { source, destination in
+                            Haptics.selection()
+                            repo.reorderPendingItems(from: source, to: destination)
+                        }
+                    }
+                } else {
+                    ForEach(repo.pendingItemGroups, id: \.category) { group in
+                        Section {
+                            ForEach(group.items) { item in
+                                itemButton(item)
+                            }
+                        } header: {
+                            CategoryHeader(category: group.category, count: group.items.count)
+                        }
                     }
                 }
 
@@ -125,6 +197,7 @@ struct GroceryListView: View {
             }
         }
         .listStyle(.insetGrouped)
+        .environment(\.editMode, $listEditMode)
         .scrollContentBackground(.hidden)
         .contentMargins(.top, 8, for: .scrollContent)
         .background(Color(.systemGroupedBackground))
@@ -139,6 +212,9 @@ struct GroceryListView: View {
         .postHogScreenView("Shopping List")
         .navigationDestination(item: $sessionForNav) { session in
             ShoppingSessionView(sessionId: session.id) { sessionForNav = nil }
+        }
+        .navigationDestination(item: $combinedTrip) { trip in
+            CombinedShoppingSessionView(sessionIds: trip.sessionIds) { combinedTrip = nil }
         }
         .navigationDestination(item: $selectedItem) { item in
             ItemDetailView(item: item)
@@ -158,6 +234,31 @@ struct GroceryListView: View {
         .toolbar {
             ToolbarItem(placement: .topBarLeading) { HapticBackButton() }
             ToolbarItemGroup(placement: .topBarTrailing) {
+                if repo.currentList != nil && !repo.pendingItems.isEmpty {
+                    Menu {
+                        Picker("Organize", selection: sortModeBinding) {
+                            Label("Categories", systemImage: "square.grid.2x2").tag(ListSortMode.category)
+                            Label("My order", systemImage: "line.3.horizontal").tag(ListSortMode.custom)
+                        }
+                        .pickerStyle(.inline)
+
+                        if repo.currentSortMode == .custom {
+                            Divider()
+                            Button {
+                                Haptics.tap()
+                                withAnimation(reduceMotion ? nil : .default) {
+                                    listEditMode = listEditMode.isEditing ? .inactive : .active
+                                }
+                            } label: {
+                                Label(listEditMode.isEditing ? "Done" : "Reorder items",
+                                      systemImage: listEditMode.isEditing ? "checkmark" : "arrow.up.arrow.down")
+                            }
+                        }
+                    } label: {
+                        Image(systemName: repo.currentSortMode == .custom ? "line.3.horizontal" : "arrow.up.arrow.down")
+                    }
+                    .accessibilityLabel("Organize list")
+                }
                 if canSendHeadsUp {
                     Button { Haptics.tap(); showHeadsUp = true } label: {
                         Image(systemName: "bell.and.waves.left.and.right")
@@ -202,15 +303,28 @@ struct GroceryListView: View {
             StartTripSheet(
                 groupName: repo.currentHousehold?.name ?? String(localized: "this list"),
                 itemCount: repo.pendingItems.count,
-                tint: tint
-            ) {
-                guard let list = repo.currentList else { return }
+                otherStoreListCount: sameStoreGroups.isEmpty ? 0 : sameStoreGroups.count - 1,
+                tint: tint,
+                onStart: {
+                    guard let list = repo.currentList else { return }
+                    Task {
+                        await repo.startShopping(list: list)
+                        sessionForNav = repo.activeSession
+                    }
+                },
+                onShopMultiple: sameStoreGroups.isEmpty ? nil : { showMultiList = true }
+            )
+            .presentationDetents([.height(sameStoreGroups.isEmpty ? 300 : 360)])
+        }
+        .sheet(isPresented: $showMultiList) {
+            MultiListSelectionSheet(candidates: sameStoreGroups, tint: tint) { lists in
                 Task {
-                    await repo.startShopping(list: list)
-                    sessionForNav = repo.activeSession
+                    let ids = await repo.startCombinedShopping(lists: lists)
+                    if ids.count >= 2 {
+                        combinedTrip = CombinedTripRef(sessionIds: ids)
+                    }
                 }
             }
-            .presentationDetents([.height(300)])
         }
     }
 
@@ -415,8 +529,13 @@ struct StartTripSheet: View {
     @Environment(\.dismiss) private var dismiss
     let groupName: String
     let itemCount: Int
+    /// Number of *other* same-store lists that could join this trip. Drives the
+    /// "Shop with other lists" affordance; zero hides it.
+    var otherStoreListCount: Int = 0
     var tint: Color = .green
     let onStart: () -> Void
+    /// Present only when there are same-store lists to combine.
+    var onShopMultiple: (() -> Void)? = nil
 
     var body: some View {
         NavigationStack {
@@ -439,23 +558,42 @@ struct StartTripSheet: View {
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
 
-                Button {
-                    Haptics.success()
-                    PostHogSDK.shared.capture("shopping_trip_started", properties: [
-                        "group_name": groupName,
-                        "item_count": itemCount,
-                    ])
-                    dismiss()
-                    onStart()
-                } label: {
-                    Label("Start Trip", systemImage: "cart.fill")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 6)
+                VStack(spacing: 12) {
+                    Button {
+                        Haptics.success()
+                        PostHogSDK.shared.capture("shopping_trip_started", properties: [
+                            "group_name": groupName,
+                            "item_count": itemCount,
+                        ])
+                        dismiss()
+                        onStart()
+                    } label: {
+                        Label("Start Trip", systemImage: "cart.fill")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 6)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(tint)
+                    .controlSize(.large)
+
+                    if let onShopMultiple, otherStoreListCount > 0 {
+                        Button {
+                            Haptics.selection()
+                            dismiss()
+                            onShopMultiple()
+                        } label: {
+                            Label("Shop with ^[\(otherStoreListCount) other list](inflect: true)",
+                                  systemImage: "square.stack.3d.up.fill")
+                                .font(.subheadline.weight(.semibold))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 4)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(tint)
+                        .controlSize(.large)
+                    }
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(tint)
-                .controlSize(.large)
                 .padding(.horizontal)
                 .padding(.bottom)
             }

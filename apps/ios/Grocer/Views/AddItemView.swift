@@ -230,9 +230,8 @@ struct AddItemSearchView: View {
             + (trimmedDraft.isEmpty ? 0 : 1)
     }
 
-    /// Distinct items anyone in the group has added before — the pool offered in
-    /// the History pane, latest first. Items already on the list are kept (and
-    /// flagged) so the button still appears for a brand-new group's first reuse.
+    /// Distinct items anyone in the group has added before — gates the History
+    /// button (the pane itself reads the live list straight from the repo).
     private var historySuggestions: [GroceryItemSuggestion] {
         repo.currentItemSuggestions
     }
@@ -259,7 +258,6 @@ struct AddItemSearchView: View {
         }
         .sheet(isPresented: $showHistory) {
             HistoryItemsView(
-                suggestions: historySuggestions,
                 tint: tint,
                 hasProposedItems: hasProposedItems,
                 onSelect: { name, quantity, category in
@@ -390,7 +388,8 @@ struct AddItemSearchView: View {
             }
         }
         .padding(.horizontal, 16)
-        .padding(.bottom, 16)
+        // Sits a touch lower (closer to the bottom edge) than the close button up top.
+        .padding(.bottom, 10)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: keyboardVisible)
         .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.86),
                    value: historySuggestions.isEmpty)
@@ -723,13 +722,19 @@ struct AddItemSearchView: View {
     /// the user taps "Add" with a line still in the field.
     private func commitActiveLine() {
         guard !trimmedDraft.isEmpty else { return }
-        commitLine(draftText)
+        // This runs as the field loses focus — including when the keyboard-down
+        // button dismisses the keyboard. Commit without the row-insertion spring so
+        // that spring doesn't sweep the keyboard's safe-area shift into a bouncy
+        // transaction, which made the floating controls and "Add" bar jump.
+        commitLine(draftText, animated: false)
         draftText = ""
     }
 
     /// Stage one typed line as a thinking row and start interpreting it. A line is
     /// always exactly one grocery item — it is never split, however it reads.
-    private func commitLine(_ raw: String) {
+    /// `animated` springs the row in (a Return commit); blur-driven commits pass
+    /// false so the insertion doesn't bounce the keyboard dismissal.
+    private func commitLine(_ raw: String, animated: Bool = true) {
         let priority: ItemPriority = Self.hasHighPriorityMarker(in: raw) ? .critical : .normal
         let name = Self.strippingPriorityMarkers(raw)
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -745,7 +750,9 @@ struct AddItemSearchView: View {
         )
         // A firm thud as the line is committed (Enter) and the row drops into thinking.
         Haptics.commit()
-        withAnimation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.86)) {
+        let insertion: Animation? = animated && !reduceMotion
+            ? .spring(response: 0.32, dampingFraction: 0.86) : nil
+        withAnimation(insertion) {
             items.append(item)
         }
         Task { await interpret(item.id, allowSplit: true) }
@@ -856,8 +863,9 @@ struct AddItemSearchView: View {
                 }
             }
         }
-        // A firm thud as the row(s) finish thinking and resolve.
-        Haptics.commit()
+        // A soft tick as the row(s) finish thinking and resolve — gentler than the
+        // firm commit thud, so an item settling in doesn't jolt.
+        Haptics.selection()
         enqueueOverCapPrompts(capPrompts)
         Task { await APIClient.shared.prewarmImages(resolved.map(\.name)) }
     }
@@ -1095,9 +1103,13 @@ struct AddItemSearchView: View {
 
     /// Collapse any expanded quantity stepper — called when the user focuses the
     /// input or taps away, so a stepper doesn't stay open while attention moves on.
-    private func collapseQuantitySteppers() {
+    /// `animated` is false on the keyboard-dismiss path so the collapse spring
+    /// doesn't bounce the keyboard's safe-area shift.
+    private func collapseQuantitySteppers(animated: Bool = true) {
         guard expandedQuantityItem != nil else { return }
-        withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.82)) {
+        let collapse: Animation? = animated && !reduceMotion
+            ? .spring(response: 0.3, dampingFraction: 0.82) : nil
+        withAnimation(collapse) {
             expandedQuantityItem = nil
         }
     }
@@ -1438,7 +1450,9 @@ struct AddItemSearchView: View {
     /// commits the active line.
     private func dismissKeyboard() {
         draftFocused = false
-        collapseQuantitySteppers()
+        // Collapse without a spring: this fires as the keyboard slides away, and a
+        // spring here gets swept into the dismissal and bounces the bottom controls.
+        collapseQuantitySteppers(animated: false)
         UIApplication.shared.sendAction(
             #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil
         )
@@ -1754,19 +1768,25 @@ private struct ThinkingPill: View {
     }
 }
 
-/// A liquid-glass quantity chip showing the amount + (fixed) label, e.g. "2 bags".
+/// A liquid-glass quantity chip showing the amount + label, e.g. "2 bags".
 /// Tapping it extends the chip in place to reveal an inline −/+ stepper for the
-/// amount; the unit label is not editable here. Stepping fires subtle haptics and
-/// clamps above zero (use the row's ✕ to remove an item).
+/// amount; long-pressing opens the shared grocery-unit picker to change the label
+/// (Cups, Oz, …). Stepping fires subtle haptics and clamps above zero (use the
+/// row's ✕ to remove an item).
 private struct InlineQuantityChip: View {
     @Binding var quantity: String
-    /// Proposed unit, used as the fixed label when the amount carries none.
+    /// Proposed unit, used as the label when the amount carries none.
     var unit: String
     var tint: Color
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Owned by the row's parent so focusing the input / tapping away can collapse it.
     @Binding var expanded: Bool
+
+    /// Drives the long-press unit picker popover and its "Custom…" alert.
+    @State private var showUnitPicker = false
+    @State private var showingCustomUnit = false
+    @State private var customUnit = ""
 
     private var parsed: Quantity { Quantity(parsing: quantity) }
 
@@ -1787,22 +1807,28 @@ private struct InlineQuantityChip: View {
                 stepButton(systemImage: "minus") { adjust(-1) }
             }
 
-            Button {
-                Haptics.tap()
-                withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.82)) {
-                    expanded.toggle()
+            Text(label)
+                .font(.subheadline.weight(.semibold))
+                .monospacedDigit()
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .contentTransition(.numericText())
+                .padding(.horizontal, expanded ? 4 : 10)
+                .frame(minWidth: expanded ? 44 : 0)
+                // Tap toggles the inline stepper; a long press opens the unit picker.
+                // Driven by explicit gestures (rather than a Button + .contextMenu)
+                // so the long press reliably lands on the interactive glass chip.
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    Haptics.tap()
+                    withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.82)) {
+                        expanded.toggle()
+                    }
                 }
-            } label: {
-                Text(label)
-                    .font(.subheadline.weight(.semibold))
-                    .monospacedDigit()
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .contentTransition(.numericText())
-                    .padding(.horizontal, expanded ? 4 : 10)
-                    .frame(minWidth: expanded ? 44 : 0)
-            }
-            .buttonStyle(.plain)
+                .onLongPressGesture(minimumDuration: 0.35) {
+                    Haptics.selection()
+                    showUnitPicker = true
+                }
 
             if expanded {
                 stepButton(systemImage: "plus") { adjust(1) }
@@ -1814,10 +1840,23 @@ private struct InlineQuantityChip: View {
         // Keep the chip at its intrinsic width so a long label ("1 bunch") never
         // gets squeezed/truncated by the flexible name field beside it.
         .fixedSize()
+        // The long-press picker (see the label's gestures) opens this popover of
+        // grocery units — the same options as the add-item stepper's unit menu.
+        .popover(isPresented: $showUnitPicker, arrowEdge: .top) {
+            unitPickerPopover
+        }
+        .alert("Custom unit", isPresented: $showingCustomUnit) {
+            TextField("Unit", text: $customUnit)
+                .textInputAutocapitalization(.never)
+            Button("Set") { setUnit(customUnit.trimmingCharacters(in: .whitespaces)) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Enter a unit like \u{201C}case\u{201D} or \u{201C}sticks\u{201D}.")
+        }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Text("Quantity"))
         .accessibilityValue(Text(label))
-        .accessibilityHint(Text("Tap to adjust"))
+        .accessibilityHint(Text("Tap to adjust, long press to change the unit"))
         .accessibilityAdjustableAction { direction in
             switch direction {
             case .increment: adjust(1)
@@ -1839,8 +1878,8 @@ private struct InlineQuantityChip: View {
         .transition(.opacity.combined(with: .scale(scale: 0.5)))
     }
 
-    /// Step the amount by the unit's natural increment, clamped above zero (the
-    /// unit label is fixed; removal lives on the row's ✕).
+    /// Step the amount by the unit's natural increment, clamped above zero (removal
+    /// lives on the row's ✕).
     private func adjust(_ direction: Double) {
         let u = effectiveUnit
         let step = GroceryUnits.step(for: u)
@@ -1850,6 +1889,74 @@ private struct InlineQuantityChip: View {
         withAnimation(reduceMotion ? nil : .snappy(duration: 0.2)) {
             quantity = Quantity(amount: next, unit: u).formatted
         }
+    }
+
+    /// Change the unit label from the long-press picker, reparsing and reformatting
+    /// the stored quantity string. Picking a real unit with no amount yet implies
+    /// one of it; "None" clears the label back to the proposed unit.
+    private func setUnit(_ unit: String) {
+        Haptics.selection()
+        var next = parsed
+        next.unit = unit
+        if !unit.isEmpty && next.amount == nil { next.amount = 1 }
+        withAnimation(reduceMotion ? nil : .snappy(duration: 0.2)) {
+            quantity = next.formatted
+        }
+    }
+
+    /// The long-press unit picker: a compact, scrollable list of the same grocery
+    /// units offered by the add-item stepper's unit menu (None, every
+    /// `GroceryUnits.all`, then Custom…), checkmarking the current label.
+    private var unitPickerPopover: some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                unitOption(title: String(localized: "None"), unit: "")
+                ForEach(GroceryUnits.all, id: \.self) { unit in
+                    unitOption(title: unit, unit: unit)
+                }
+                Divider().padding(.vertical, 4)
+                Button {
+                    showUnitPicker = false
+                    customUnit = effectiveUnit
+                    showingCustomUnit = true
+                } label: {
+                    Text("Custom\u{2026}")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                        .padding(.vertical, 9)
+                        .padding(.horizontal, 16)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.vertical, 6)
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .frame(width: 220, height: 300)
+        .presentationCompactAdaptation(.popover)
+    }
+
+    /// One row in the unit picker popover: the unit name with a trailing checkmark
+    /// when it's the current label. Picking it sets the unit and closes the popover.
+    private func unitOption(title: String, unit: String) -> some View {
+        Button {
+            setUnit(unit)
+            showUnitPicker = false
+        } label: {
+            HStack(spacing: 8) {
+                Text(title)
+                    .foregroundStyle(.primary)
+                Spacer(minLength: 0)
+                if unit == effectiveUnit {
+                    Image(systemName: "checkmark")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(tint)
+                }
+            }
+            .contentShape(Rectangle())
+            .padding(.vertical, 9)
+            .padding(.horizontal, 16)
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -2330,7 +2437,7 @@ private struct SeededGenerator {
 /// last-used quantity). Tapping a row reveals the shared quantity stepper to
 /// confirm the amount; "Add" stages it back in the add flow.
 private struct HistoryItemsView: View {
-    let suggestions: [GroceryItemSuggestion]
+    @Environment(GroceryRepository.self) private var repo
     var tint: Color
     /// Whether the add flow currently has at least one staged item — gates the
     /// header's confirm checkmark.
@@ -2344,6 +2451,10 @@ private struct HistoryItemsView: View {
     var onClose: () -> Void
 
     @State private var search = ""
+
+    /// Read live from the repo so removing an item updates the list immediately,
+    /// rather than against a snapshot captured when the sheet opened.
+    private var suggestions: [GroceryItemSuggestion] { repo.currentItemSuggestions }
 
     private var filtered: [GroceryItemSuggestion] {
         let query = search.trimmingCharacters(in: .whitespaces).lowercased()
@@ -2570,24 +2681,15 @@ private struct HistoryItemRow: View {
                     .strokeBorder(Color(.systemGray3), lineWidth: 2)
             }
         }
-        .contextMenu {
-            Button(role: .destructive) {
-                Haptics.warning()
-                onDeleteFromHistory()
-            } label: {
-                Label("Remove from History", systemImage: "trash")
-            }
-        }
         .alert("Already on your list", isPresented: $showAddAgainConfirm) {
             Button("Add Again") { performAdd(pendingQuantity) }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("\(suggestion.name) is already on your list. Add it again?")
         }
-        .confirmationDialog(
+        .alert(
             String(localized: "Remove \(suggestion.name) from History?"),
-            isPresented: $showRemoveFromHistoryConfirm,
-            titleVisibility: .visible
+            isPresented: $showRemoveFromHistoryConfirm
         ) {
             Button(String(localized: "Remove from History"), role: .destructive) {
                 Haptics.warning()

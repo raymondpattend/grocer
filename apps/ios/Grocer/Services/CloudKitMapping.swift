@@ -75,11 +75,19 @@ extension Household: CloudKitApplicable {
             createdAt: date(r, CK.Field.createdAt) ?? r.creationDate ?? Date(),
             updatedAt: date(r, CK.Field.updatedAt) ?? r.modificationDate ?? Date(),
             recordZoneName: r.recordID.zoneID.zoneName,
-            recordOwnerName: r.recordID.zoneID.ownerName
+            recordOwnerName: r.recordID.zoneID.ownerName,
+            listSortMode: string(r, CK.Field.listSortMode).flatMap(ListSortMode.init(rawValue:))
         )
     }
 
     func apply(to r: CKRecord) {
+        apply(to: r, includeListSortMode: true)
+    }
+
+    /// Production CloudKit may lag behind the app on the `listSortMode` field;
+    /// callers that know the schema is missing it can omit it and still save the
+    /// rest of the group. Mirrors `GroceryItem.applyMetadata(to:includeSortOrder:)`.
+    func apply(to r: CKRecord, includeListSortMode: Bool) {
         r[CK.Field.name] = name as CKRecordValue
         r[CK.Field.ownerMemberId] = ownerMemberId as CKRecordValue
         r[CK.Field.storeName] = storeName as CKRecordValue?
@@ -90,6 +98,9 @@ extension Household: CloudKitApplicable {
         r[CK.Field.colorTheme] = colorTheme.rawValue as CKRecordValue
         r[CK.Field.createdAt] = createdAt as CKRecordValue
         r[CK.Field.updatedAt] = updatedAt as CKRecordValue
+        if includeListSortMode {
+            r[CK.Field.listSortMode] = listSortMode?.rawValue as CKRecordValue?
+        }
     }
 }
 
@@ -202,7 +213,8 @@ extension GroceryItem: CloudKitApplicable {
             completedAt: date(r, CK.Field.completedAt),
             deletedAt: date(r, CK.Field.deletedAt),
             activeSessionId: string(r, CK.Field.activeSessionId),
-            photoData: assetData(r, CK.Field.photo)
+            photoData: assetData(r, CK.Field.photo),
+            sortOrder: double(r, CK.Field.sortOrder)
         )
     }
 
@@ -215,7 +227,10 @@ extension GroceryItem: CloudKitApplicable {
     /// separately so it can skip re-uploading an unchanged photo on routine item
     /// saves (status/quantity changes), since a CKAsset re-uploads in full on
     /// every save that includes its key.
-    func applyMetadata(to r: CKRecord) {
+    ///
+    /// `includeSortOrder` lets the outbox omit `sortOrder` when production
+    /// CloudKit hasn't deployed the field yet, so items still sync without it.
+    func applyMetadata(to r: CKRecord, includeSortOrder: Bool = true) {
         r[CK.Field.householdId] = householdId as CKRecordValue
         r[CK.Field.listId] = listId as CKRecordValue
         r[CK.Field.itemName] = name as CKRecordValue
@@ -233,6 +248,9 @@ extension GroceryItem: CloudKitApplicable {
         r[CK.Field.completedAt] = completedAt as CKRecordValue?
         r[CK.Field.deletedAt] = deletedAt as CKRecordValue?
         r[CK.Field.activeSessionId] = activeSessionId as CKRecordValue?
+        if includeSortOrder {
+            r[CK.Field.sortOrder] = sortOrder as CKRecordValue?
+        }
     }
 
     /// Writes (or clears) the photo asset. Kept separate from `applyMetadata` so
