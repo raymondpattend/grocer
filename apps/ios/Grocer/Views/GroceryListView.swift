@@ -31,7 +31,7 @@ struct GroceryListView: View {
             get: { repo.currentSortMode },
             set: { newValue in
                 Haptics.selection()
-                if newValue != .custom { listEditMode = .inactive }
+                listEditMode = newValue == .custom ? .active : .inactive
                 repo.setListSortMode(newValue)
             }
         )
@@ -65,6 +65,10 @@ struct GroceryListView: View {
     private var currentSessionInCombinedTrip: Bool {
         guard repo.hasActiveCombinedTrip, let session = repo.activeSession else { return false }
         return repo.combinedTripSessionIds.contains(session.id)
+    }
+
+    private var showMemberAvatars: Bool {
+        repo.currentMembers.count >= 2
     }
 
     /// The heads-up button only appears when there's something on the list to
@@ -163,16 +167,6 @@ struct GroceryListView: View {
                     .listRowSeparator(.hidden)
                 }
 
-                if !repo.pendingItems.isEmpty {
-                    Text("^[\(repo.pendingItems.count) item](inflect: true)")
-                        .font(.footnote)
-                        .foregroundStyle(.tertiary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 8)
-                        .padding(.bottom, 20)
-                        .listRowBackground(Color.clear)
-                        .listRowSeparator(.hidden)
-                }
             } else if repo.currentHousehold != nil {
                 // A group is selected but its list hasn't arrived yet — e.g.
                 // a freshly joined shared group whose records are still
@@ -235,46 +229,41 @@ struct GroceryListView: View {
             ToolbarItem(placement: .topBarLeading) { HapticBackButton() }
             ToolbarItemGroup(placement: .topBarTrailing) {
                 if repo.currentList != nil && !repo.pendingItems.isEmpty {
-                    Menu {
-                        Picker("Organize", selection: sortModeBinding) {
-                            Label("Categories", systemImage: "square.grid.2x2").tag(ListSortMode.category)
-                            Label("My order", systemImage: "line.3.horizontal").tag(ListSortMode.custom)
-                        }
-                        .pickerStyle(.inline)
-
-                        if repo.currentSortMode == .custom {
-                            Divider()
-                            Button {
-                                Haptics.tap()
-                                withAnimation(reduceMotion ? nil : .default) {
-                                    listEditMode = listEditMode.isEditing ? .inactive : .active
-                                }
-                            } label: {
-                                Label(listEditMode.isEditing ? "Done" : "Reorder items",
-                                      systemImage: listEditMode.isEditing ? "checkmark" : "arrow.up.arrow.down")
-                            }
-                        }
+                    Button {
+                        sortModeBinding.wrappedValue = repo.currentSortMode == .custom ? .category : .custom
                     } label: {
-                        Image(systemName: repo.currentSortMode == .custom ? "line.3.horizontal" : "arrow.up.arrow.down")
+                        Image(systemName: repo.currentSortMode == .custom ? "square.grid.2x2" : "line.3.horizontal")
                     }
-                    .accessibilityLabel("Organize list")
+                    .accessibilityLabel(repo.currentSortMode == .custom ? "Switch to categories" : "Switch to my order")
                 }
-                if canSendHeadsUp {
-                    Button { Haptics.tap(); showHeadsUp = true } label: {
-                        Image(systemName: "bell.and.waves.left.and.right")
+
+                Menu {
+                    if canSendHeadsUp {
+                        Button { Haptics.tap(); showHeadsUp = true } label: {
+                            Label("Give heads-up", systemImage: "bell.and.waves.left.and.right")
+                        }
                     }
-                    .accessibilityLabel("Give the group a heads-up")
+
+                    if repo.isOwnerOfCurrentGroup && repo.currentHousehold != nil {
+                        Button { Haptics.tap(); showingInvite = true } label: {
+                            Label("Invite to list", systemImage: "person.crop.circle.badge.plus")
+                        }
+                    }
+
+                    if !repo.currentCompletedTrips.isEmpty {
+                        Button { Haptics.tap(); showingHistory = true } label: {
+                            Label("Trip history", systemImage: "clock.arrow.circlepath")
+                        }
+                    }
+
+                    Button { Haptics.tap(); showingSettings = true } label: {
+                        Label("Settings", systemImage: "gearshape")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
                 }
-                if repo.isOwnerOfCurrentGroup && repo.currentHousehold != nil {
-                    Button { Haptics.tap(); showingInvite = true } label: { Image(systemName: "person.crop.circle.badge.plus") }
-                        .accessibilityLabel("Invite to list")
-                }
-                if !repo.currentCompletedTrips.isEmpty {
-                    Button { Haptics.tap(); showingHistory = true } label: { Image(systemName: "clock.arrow.circlepath") }
-                        .accessibilityLabel("Trip history")
-                }
-                Button { Haptics.tap(); showingSettings = true } label: { Image(systemName: "gearshape") }
-                    .accessibilityLabel("Settings")
+                .simultaneousGesture(TapGesture().onEnded { Haptics.tap() })
+                .accessibilityLabel("More options")
             }
         }
         .fullScreenCover(isPresented: $showingAddSearch) {
@@ -295,7 +284,10 @@ struct GroceryListView: View {
             storeBannerHidden = false
             openAddItemsIfRequested()
         }
-        .onAppear { openAddItemsIfRequested() }
+        .onAppear {
+            openAddItemsIfRequested()
+            listEditMode = repo.currentSortMode == .custom ? .active : .inactive
+        }
         .onReceive(NotificationCenter.default.publisher(for: GroupNavigationCoordinator.openGroupNotification)) { _ in
             openAddItemsIfRequested()
         }
@@ -366,7 +358,8 @@ struct GroceryListView: View {
         } label: {
             GroceryItemRow(
                 item: item,
-                member: repo.member(for: item)
+                member: repo.member(for: item),
+                showAvatar: showMemberAvatars
             )
         }
         .buttonStyle(.plain)
@@ -406,6 +399,7 @@ struct GroceryListView: View {
 struct GroceryItemRow: View {
     let item: GroceryItem
     var member: HouseholdMember?
+    var showAvatar: Bool = true
 
     var body: some View {
         HStack(spacing: 12) {
@@ -439,7 +433,9 @@ struct GroceryItemRow: View {
 
             PriorityLabel(priority: item.priority)
 
-            MemberAvatarView(member: member, size: 28)
+            if showAvatar {
+                MemberAvatarView(member: member, size: 28)
+            }
 
         }
         .padding(.horizontal, 14)

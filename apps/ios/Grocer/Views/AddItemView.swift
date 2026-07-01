@@ -578,10 +578,10 @@ struct AddItemSearchView: View {
                 Haptics.tap()
                 attemptClose()
             } label: {
-                Image(systemName: "xmark")
+                Image(systemName: "chevron.left")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .frame(width: 44, height: 44)
+                    .frame(width: 48, height: 48)
                     .contentShape(Rectangle())
                     .grocerLiquidGlass(in: Circle(), interactive: true)
             }
@@ -646,7 +646,8 @@ struct AddItemSearchView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, 20)
+        .padding(.top, 40)
+        .padding(.bottom, 20)
         .padding(.horizontal, 4)
     }
 
@@ -1584,7 +1585,7 @@ private struct LineItemRow: View {
     var onRemovePriority: () -> Void
 
     @FocusState private var editing: Bool
-    @State private var showCriticalPopover = false
+    @State private var showCriticalAlert = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -1632,10 +1633,12 @@ private struct LineItemRow: View {
             .contentShape(Rectangle())
             .simultaneousGesture(TapGesture().onEnded { if !editing { editing = true } })
 
+            Spacer(minLength: 8)
+
             if item.priority == .critical {
                 Button {
                     Haptics.tap()
-                    showCriticalPopover = true
+                    showCriticalAlert = true
                 } label: {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.subheadline.weight(.semibold))
@@ -1645,29 +1648,16 @@ private struct LineItemRow: View {
                         .grocerLiquidGlass(in: Circle(), interactive: true)
                 }
                 .buttonStyle(.plain)
-                .popover(isPresented: $showCriticalPopover, arrowEdge: .top) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Marked as critical")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        Button {
-                            Haptics.tap()
-                            onRemovePriority()
-                            showCriticalPopover = false
-                        } label: {
-                            Text("Remove critical priority")
-                                .font(.caption2)
-                                .foregroundStyle(.red)
-                        }
-                        .buttonStyle(.plain)
+                .alert("Critical Item", isPresented: $showCriticalAlert) {
+                    Button("Remove Critical", role: .destructive) {
+                        Haptics.tap()
+                        onRemovePriority()
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .presentationCompactAdaptation(.popover)
+                    Button("OK", role: .cancel) {}
+                } message: {
+                    Text("This item is marked as critical. It will be highlighted so shoppers know it's especially important and shouldn't be skipped or substituted.")
                 }
             }
-
-            Spacer(minLength: 8)
 
             // The quantity yields the row to the name field while it's being edited
             // (fades out), so long names get the full width.
@@ -2899,7 +2889,7 @@ private struct ComposeTextField: UIViewRepresentable {
     func makeUIView(context: Context) -> BackspacingTextField {
         let field = BackspacingTextField()
         field.delegate = context.coordinator
-        field.placeholder = String(localized: "Just type naturally…")
+        field.placeholder = String(localized: "Milk, Cheese, Eggs…")
         field.autocapitalizationType = .words
         field.returnKeyType = .next
         field.backgroundColor = .clear

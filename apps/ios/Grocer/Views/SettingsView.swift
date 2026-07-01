@@ -933,22 +933,24 @@ struct InviteToGroupSheet: View {
     }
 
     var body: some View {
-        VStack(spacing: 30) {
+        VStack(spacing: 16) {
             HStack {
                 Spacer()
                 closeButton
             }
             .padding(.horizontal, 20)
-            .padding(.top, 16)
+            .padding(.top, 8)
 
-            Text("Shopping is better together")
-                .font(.system(size: 40, weight: .bold, design: .rounded))
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.horizontal, 24)
+            VStack(spacing: 30) {
+                Text("Shopping is better together")
+                    .font(.system(size: 40, weight: .bold, design: .rounded))
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 24)
 
-            shareCard
-                .padding(.horizontal, 48)
+                shareCard
+                    .padding(.horizontal, 48)
+            }
         }
         .safeAreaInset(edge: .bottom) {
             HStack(spacing: 12) {
@@ -978,7 +980,6 @@ struct InviteToGroupSheet: View {
             .padding(.bottom, 8)
         }
         .presentationDetents([.height(512)])
-        .presentationDragIndicator(.visible)
         .sheet(isPresented: $showingContacts) {
             InviteContactsView()
         }
@@ -1217,7 +1218,6 @@ struct HeadsUpSheet: View {
             .padding(.bottom, 8)
         }
         .presentationDetents([.height(440)])
-        .presentationDragIndicator(.visible)
         .alert("Couldn\u{2019}t send heads-up", isPresented: Binding(
             get: { sendError != nil }, set: { if !$0 { sendError = nil } }
         )) {
@@ -1232,7 +1232,6 @@ struct HeadsUpSheet: View {
             .font(.system(size: 64, weight: .semibold))
             .foregroundStyle(tint.gradient)
             .frame(width: 120, height: 120)
-            .background(Circle().fill(tint.opacity(0.12)))
             .accessibilityHidden(true)
     }
 
