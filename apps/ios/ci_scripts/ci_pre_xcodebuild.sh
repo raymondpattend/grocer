@@ -15,3 +15,8 @@ set -e
 BUILD_NUMBER="$(date -u +%Y%m%d%H%M)"
 cd "$CI_PRIMARY_REPOSITORY_PATH/apps/ios"
 agvtool new-version -all "$BUILD_NUMBER"
+# Echo the applied value so the build number is visible in the Xcode Cloud
+# logs; agvtool what-version reads it back from the project to confirm the
+# stamp actually took (not just what we asked for).
+echo "CFBundleVersion set to $BUILD_NUMBER"
+agvtool what-version -terse
