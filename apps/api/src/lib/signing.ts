@@ -1,11 +1,17 @@
+import { Effect } from "effect";
 import type { Context } from "hono";
 import type { Env } from "../env.js";
+import { ResponseError } from "../effect/errors.js";
 
 /**
  * HMAC request signing shared by the app-signed endpoints (Live Activity and
  * retention). The iOS client signs `${timestamp}.${method}.${pathname}.${body}`
  * with `LIVE_ACTIVITY_API_SECRET` and sends the headers below. Also houses the
  * tiny D1-backed rate limiter so both route groups share one implementation.
+ *
+ * Both public checks are Effects that succeed (request passes) or fail with a
+ * {@link ResponseError} the Hono↔Effect bridge renders — so a route guard is
+ * just `yield* authenticateSignedRequest(c); yield* enforceRateLimit(c, …)`.
  */
 
 export const SIGNATURE_HEADER = "x-grocer-signature";
@@ -41,38 +47,55 @@ function constantTimeEqualHex(a: string, b: string): boolean {
   return diff === 0;
 }
 
-/** Verifies the HMAC signature on an app-signed request. Returns an error
- *  Response when invalid, or null when the request is authentic. */
-export async function authenticateSignedRequest(
+/** Verifies the HMAC signature on an app-signed request. Fails with a
+ *  {@link ResponseError} (503/401) when invalid; succeeds when authentic. */
+export function authenticateSignedRequest(
   c: Context<{ Bindings: Env }>,
-): Promise<Response | null> {
-  const secret = c.env.LIVE_ACTIVITY_API_SECRET?.trim();
-  if (!secret) {
-    console.error("[signing] LIVE_ACTIVITY_API_SECRET is not configured");
-    return c.json({ ok: false, error: "Request auth is not configured" }, 503);
-  }
+): Effect.Effect<void, ResponseError> {
+  return Effect.gen(function* () {
+    const secret = c.env.LIVE_ACTIVITY_API_SECRET?.trim();
+    if (!secret) {
+      console.error("[signing] LIVE_ACTIVITY_API_SECRET is not configured");
+      return yield* new ResponseError({
+        status: 503,
+        body: { ok: false, error: "Request auth is not configured" },
+      });
+    }
 
-  const timestamp = c.req.header(TIMESTAMP_HEADER);
-  const signature = c.req.header(SIGNATURE_HEADER);
-  if (!timestamp || !signature) {
-    return c.json({ ok: false, error: "Missing request signature" }, 401);
-  }
+    const timestamp = c.req.header(TIMESTAMP_HEADER);
+    const signature = c.req.header(SIGNATURE_HEADER);
+    if (!timestamp || !signature) {
+      return yield* new ResponseError({
+        status: 401,
+        body: { ok: false, error: "Missing request signature" },
+      });
+    }
 
-  const timestampSeconds = Number(timestamp);
-  const nowSeconds = Math.floor(Date.now() / 1000);
-  if (!Number.isFinite(timestampSeconds)
-      || Math.abs(nowSeconds - timestampSeconds) > MAX_CLOCK_SKEW_SECONDS) {
-    return c.json({ ok: false, error: "Stale request signature" }, 401);
-  }
+    const timestampSeconds = Number(timestamp);
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    if (
+      !Number.isFinite(timestampSeconds) ||
+      Math.abs(nowSeconds - timestampSeconds) > MAX_CLOCK_SKEW_SECONDS
+    ) {
+      return yield* new ResponseError({
+        status: 401,
+        body: { ok: false, error: "Stale request signature" },
+      });
+    }
 
-  const url = new URL(c.req.url);
-  const method = c.req.method.toUpperCase();
-  const body = method === "GET" ? "" : await c.req.raw.clone().text();
-  const expected = await hmacHex(secret, `${timestamp}.${method}.${url.pathname}.${body}`);
-  if (!constantTimeEqualHex(signature, expected)) {
-    return c.json({ ok: false, error: "Invalid request signature" }, 401);
-  }
-  return null;
+    const url = new URL(c.req.url);
+    const method = c.req.method.toUpperCase();
+    const body = method === "GET" ? "" : yield* Effect.promise(() => c.req.raw.clone().text());
+    const expected = yield* Effect.promise(() =>
+      hmacHex(secret, `${timestamp}.${method}.${url.pathname}.${body}`),
+    );
+    if (!constantTimeEqualHex(signature, expected)) {
+      return yield* new ResponseError({
+        status: 401,
+        body: { ok: false, error: "Invalid request signature" },
+      });
+    }
+  });
 }
 
 async function consumeRateLimit(
@@ -109,20 +132,26 @@ async function consumeRateLimit(
   return true;
 }
 
-/** Per-device token-bucket rate limit, keyed by `${scope}:${deviceId}`. */
-export async function enforceRateLimit(
+/** Per-device token-bucket rate limit, keyed by `${scope}:${deviceId}`. Fails
+ *  with a 429 {@link ResponseError} once the bucket is exhausted. */
+export function enforceRateLimit(
   c: Context<{ Bindings: Env }>,
   scope: string,
   limit: number,
   windowSeconds: number,
-): Promise<Response | null> {
-  const deviceId = c.req.header(DEVICE_HEADER)
-    ?? c.req.header("CF-Connecting-IP")
-    ?? "unknown";
-  const key = `${scope}:${deviceId}`;
-  const ok = await consumeRateLimit(c.env.DB, key, limit, windowSeconds);
-  if (!ok) {
-    return c.json({ ok: false, error: "Rate limit exceeded" }, 429);
-  }
-  return null;
+): Effect.Effect<void, ResponseError> {
+  return Effect.gen(function* () {
+    const deviceId =
+      c.req.header(DEVICE_HEADER) ?? c.req.header("CF-Connecting-IP") ?? "unknown";
+    const key = `${scope}:${deviceId}`;
+    const ok = yield* Effect.promise(() =>
+      consumeRateLimit(c.env.DB, key, limit, windowSeconds),
+    );
+    if (!ok) {
+      return yield* new ResponseError({
+        status: 429,
+        body: { ok: false, error: "Rate limit exceeded" },
+      });
+    }
+  });
 }

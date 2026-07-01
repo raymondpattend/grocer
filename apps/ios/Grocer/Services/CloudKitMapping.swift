@@ -7,6 +7,22 @@ protocol CloudKitApplicable {
     func apply(to record: CKRecord)
 }
 
+/// Merges a winning local record's changed fields onto the server's copy for a
+/// `.serverRecordChanged` conflict retry, preserving every server field the
+/// local device didn't change — so a concurrent editor's edits to independent
+/// fields (e.g. a partner's quantity/notes edit while this device only changed
+/// shopping status) survive instead of being clobbered.
+///
+/// `changedKeys == nil` means "all of the local record's fields": the
+/// conservative full-record fallback used for writes whose changed fields
+/// aren't tracked, matching the pre-merge behaviour.
+func mergeCloudFields(from local: CKRecord, changedKeys: Set<String>?, onto server: CKRecord) {
+    let keys = changedKeys ?? Set(local.allKeys())
+    for key in keys {
+        server[key] = local[key]
+    }
+}
+
 private func string(_ r: CKRecord, _ key: String) -> String? { r[key] as? String }
 private func date(_ r: CKRecord, _ key: String) -> Date? { r[key] as? Date }
 private func double(_ r: CKRecord, _ key: String) -> Double? { r[key] as? Double }

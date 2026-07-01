@@ -67,7 +67,7 @@ final class UpgradeSuccessFlowTests: XCTestCase {
         let overlay = try excerpt(
             root,
             from: "private struct UpgradedToProOverlay",
-            to: "// MARK: - Joined Group Sheet"
+            to: "// MARK: - Shared small components"
         )
         XCTAssertTrue(overlay.contains(".onAppear"),
                       "Auto-dismiss must be kicked off when the overlay appears")

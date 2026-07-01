@@ -1,0 +1,26 @@
+# SwiftFormat configuration for the Grocer iOS app.
+# Run with:  swift-format is NOT this tool — install SwiftFormat (nicklockwood):
+#   brew install swiftformat
+#   swiftformat apps/ios/Grocer apps/ios/GrocerWidget apps/ios/GrocerTests
+#
+# NOTE: several tests assert on exact source text (the "source guardrail"
+# pattern in GrocerTests). Run the guardrail suite after formatting so a
+# reflow that moves a pinned line is caught.
+
+--swiftversion 5.9
+
+# Match the existing house style.
+--indent 4
+--maxwidth none
+--wraparguments before-first
+--wrapparameters before-first
+--wrapcollections before-first
+--commas inline
+--trimwhitespace always
+--stripunusedargs closure-only
+--self remove
+--importgrouping testable-bottom
+
+# Keep diffs small: don't touch things the codebase deliberately does.
+--disable redundantReturn, wrapMultilineStatementBraces, blankLinesAtStartOfScope
+--enable isEmpty, sortImports, redundantParens, spaceAroundOperators

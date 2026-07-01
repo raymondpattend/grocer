@@ -55,25 +55,34 @@ struct CombinedSessionSummaryView: View {
                 }
 
                 if !foundItems.isEmpty {
-                    itemCard(
+                    TripSummaryItemCard(
                         title: String(localized: "Found"),
                         systemImage: "checkmark.circle.fill",
                         iconColor: .grocerGreen,
-                        items: foundItems
+                        items: foundItems,
+                        groupBadge: groupBadge
                     )
                 }
 
                 if !notFoundItems.isEmpty {
-                    itemCard(
+                    TripSummaryItemCard(
                         title: String(localized: "Not Found"),
                         systemImage: "xmark.circle.fill",
                         iconColor: .secondary,
-                        items: notFoundItems
+                        items: notFoundItems,
+                        groupBadge: groupBadge
                     )
                 }
 
                 if !foundItems.isEmpty || hasOutOfStock {
-                    cleanupCard
+                    TripCleanupCard(
+                        clearFound: $clearFound,
+                        keepOutOfStock: $keepOutOfStock,
+                        showClearFound: !foundItems.isEmpty,
+                        hasOutOfStock: hasOutOfStock,
+                        tint: tint,
+                        plural: true
+                    )
                 }
             }
             .padding(.horizontal, 16)
@@ -135,9 +144,9 @@ struct CombinedSessionSummaryView: View {
             }
 
             HStack(spacing: 8) {
-                statPill("\(foundItems.count)", label: String(localized: "found"), color: .grocerGreen)
+                TripStatPill(value: "\(foundItems.count)", label: String(localized: "found"), color: .grocerGreen)
                 if !notFoundItems.isEmpty {
-                    statPill("\(notFoundItems.count)", label: String(localized: "not found"), color: .grocerSlate)
+                    TripStatPill(value: "\(notFoundItems.count)", label: String(localized: "not found"), color: .grocerSlate)
                 }
             }
         }
@@ -161,18 +170,10 @@ struct CombinedSessionSummaryView: View {
         return String(localized: "multiple stores")
     }
 
-    private func statPill(_ value: String, label: String, color: Color) -> some View {
-        HStack(spacing: 4) {
-            Text(value)
-                .font(.subheadline.bold())
-                .foregroundStyle(color)
-            Text(label)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(color.opacity(0.1), in: Capsule())
+    /// The per-row "which list" badge for the shared summary item card.
+    private func groupBadge(for item: GroceryItem) -> TripSummaryItemCard.GroupBadge? {
+        guard let house = repo.households.first(where: { $0.id == item.householdId }) else { return nil }
+        return .init(name: house.name, icon: house.icon, tint: house.tint)
     }
 
     // MARK: - Retry card (partial finish)
@@ -210,140 +211,6 @@ struct CombinedSessionSummaryView: View {
         }
     }
 
-    // MARK: - Item Cards
-
-    private func itemCard(title: String, systemImage: String, iconColor: Color, items: [GroceryItem]) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Image(systemName: systemImage).foregroundStyle(iconColor)
-                Text(title)
-                Text("·")
-                Text("\(items.count)")
-                Spacer()
-            }
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 14)
-
-            VStack(spacing: 0) {
-                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                    itemRow(item)
-                    if index < items.count - 1 {
-                        Divider().padding(.leading, 62)
-                    }
-                }
-            }
-            .background(Color(.secondarySystemGroupedBackground),
-                        in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(Color(.separator).opacity(0.5), lineWidth: 1)
-            }
-        }
-    }
-
-    private func itemRow(_ item: GroceryItem) -> some View {
-        HStack(spacing: 12) {
-            ProductImageView(itemName: item.name, size: 36)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(item.name)
-                    .font(.subheadline.weight(.medium))
-                    .lineLimit(1)
-                HStack(spacing: 6) {
-                    if let house = repo.households.first(where: { $0.id == item.householdId }) {
-                        Label(house.name, systemImage: house.icon)
-                            .font(.caption2.weight(.semibold))
-                            .lineLimit(1)
-                            .foregroundStyle(house.tint)
-                    }
-                    if let qty = item.quantity, !qty.isEmpty {
-                        Text(Quantity.displayString(qty))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-
-            Spacer(minLength: 8)
-
-            statusBadge(item)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-    }
-
-    @ViewBuilder
-    private func statusBadge(_ item: GroceryItem) -> some View {
-        let (label, color): (String, Color) = {
-            switch item.status {
-            case .found: return (String(localized: "Found"), .grocerGreen)
-            case .replaced:
-                let name = item.replacementItemName ?? String(localized: "alternative")
-                return (String(localized: "Replaced · \(name)"), .blue)
-            case .outOfStock: return (String(localized: "Out of stock"), .grocerRed)
-            case .skipped: return (String(localized: "Skipped"), .orange)
-            default: return (String(localized: "Not Found"), .secondary)
-            }
-        }()
-
-        Text(label)
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(color)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .background(color.opacity(0.14), in: Capsule())
-            .lineLimit(1)
-    }
-
-    // MARK: - Cleanup Card
-
-    private var cleanupCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Image(systemName: "slider.horizontal.3").foregroundStyle(.secondary)
-                Text("Cleanup")
-                Spacer()
-            }
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 14)
-
-            VStack(spacing: 0) {
-                if !foundItems.isEmpty {
-                    Toggle("Remove found items from the lists", isOn: $clearFound)
-                        .font(.subheadline)
-                        .tint(tint)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 13)
-                        .onChange(of: clearFound) { _, _ in Haptics.selection() }
-                    if hasOutOfStock {
-                        Divider().padding(.leading, 14)
-                    }
-                }
-                if hasOutOfStock {
-                    Toggle("Keep out-of-stock items for next trip", isOn: $keepOutOfStock)
-                        .font(.subheadline)
-                        .tint(tint)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 13)
-                        .onChange(of: keepOutOfStock) { _, _ in Haptics.selection() }
-                }
-            }
-            .background(Color(.secondarySystemGroupedBackground),
-                        in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(Color(.separator).opacity(0.5), lineWidth: 1)
-            }
-
-            Text("Skipped and remaining items always stay on your lists.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 14)
-        }
-    }
-
     // MARK: - Finish
 
     private func finishTrip() async {
@@ -367,19 +234,19 @@ struct CombinedSessionSummaryView: View {
             failed = await repo.finishCombinedShopping(sessionIds: targets)
         }
         failedSessionIds = failed
-        isFinishing = false
         if failed.isEmpty {
-            // Ending already landed; cleanup is local + an outbox flush per
-            // list, so it doesn't need to block the shopper from leaving.
-            Task {
-                await repo.completeCombinedTripCleanup(
-                    sessionIds: sessionIds,
-                    clearCompleted: clearFound,
-                    keepOutOfStock: keepOutOfStock
-                )
-            }
+            // Ending landed; now apply and *durably persist* the cleanup choices
+            // before dismissing. Keep Done disabled and dismissal blocked through
+            // it so a suspend/kill right after the tap can't drop the choices.
+            await repo.completeCombinedTripCleanup(
+                sessionIds: sessionIds,
+                clearCompleted: clearFound,
+                keepOutOfStock: keepOutOfStock
+            )
+            isFinishing = false
             onDone()
         } else {
+            isFinishing = false
             Haptics.warning()
         }
     }

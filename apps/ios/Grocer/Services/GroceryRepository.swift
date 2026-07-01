@@ -4,106 +4,6 @@ import Network
 import Observation
 import WidgetKit
 
-private enum PendingCloudOperation: String, Codable {
-    case save
-    case delete
-}
-
-private enum PendingCloudRecord: Codable, Equatable {
-    case household(Household)
-    case member(HouseholdMember)
-    case list(GroceryList)
-    case item(GroceryItem)
-    case session(ShoppingSession)
-    case tripItem(ShoppingTripItem)
-    case event(ItemEvent)
-
-    var recordType: String {
-        switch self {
-        case .household: return CK.RecordType.household
-        case .member: return CK.RecordType.member
-        case .list: return CK.RecordType.list
-        case .item: return CK.RecordType.item
-        case .session: return CK.RecordType.session
-        case .tripItem: return CK.RecordType.tripItem
-        case .event: return CK.RecordType.event
-        }
-    }
-
-    var recordName: String {
-        switch self {
-        case .household(let value): return value.id
-        case .member(let value): return "\(value.id)_\(value.householdId)"
-        case .list(let value): return value.id
-        case .item(let value): return value.id
-        case .session(let value): return value.id
-        case .tripItem(let value): return value.id
-        case .event(let value): return value.id
-        }
-    }
-
-    var householdId: String? {
-        switch self {
-        case .household(let value): return value.id
-        case .member(let value): return value.householdId
-        case .list(let value): return value.householdId
-        case .item(let value): return value.householdId
-        case .session(let value): return value.householdId
-        case .tripItem(let value): return value.householdId
-        case .event(let value): return value.householdId
-        }
-    }
-
-    var key: String {
-        "\(recordType):\(recordName):\(householdId ?? "")"
-    }
-
-    var snapshot: CloudSnapshot {
-        var snapshot = CloudSnapshot()
-        switch self {
-        case .household(let value): snapshot.households = [value]
-        case .member(let value): snapshot.members = [value]
-        case .list(let value): snapshot.lists = [value]
-        case .item(let value): snapshot.items = [value]
-        case .session(let value): snapshot.sessions = [value]
-        case .tripItem(let value): snapshot.tripItems = [value]
-        case .event(let value): snapshot.events = [value]
-        }
-        return snapshot
-    }
-
-    var deletion: CloudRecordDeletion {
-        CloudRecordDeletion(
-            recordName: recordName,
-            recordType: recordType,
-            zone: CloudZoneRef(scope: "local", zoneName: "", ownerName: "")
-        )
-    }
-
-    func apply(to record: CKRecord) {
-        switch self {
-        case .household(let value): value.apply(to: record)
-        case .member(let value): value.apply(to: record)
-        case .list(let value): value.apply(to: record)
-        case .item(let value): value.apply(to: record)
-        case .session(let value): value.apply(to: record)
-        case .tripItem(let value): value.apply(to: record)
-        case .event(let value): value.apply(to: record)
-        }
-    }
-}
-
-private struct PendingCloudWrite: Codable, Equatable {
-    var operation: PendingCloudOperation
-    var record: PendingCloudRecord
-    var revision: Int
-    var enqueuedAt: Date
-    var failureCount: Int? = nil
-    var retryAfter: Date? = nil
-    var lastError: String? = nil
-
-    var key: String { record.key }
-}
 
 struct GroceryItemInput {
     var name: String
@@ -156,108 +56,6 @@ enum CloudKitEnvironment {
     }
 }
 
-private final class LocalSyncStore {
-    private let fileManager = FileManager.default
-    private let snapshotURL: URL
-    private let outboxURL: URL
-    private let systemFieldsURL: URL
-    private let queue = DispatchQueue(label: "org.narro.grocer.local-sync-store", qos: .utility)
-
-    init() {
-        let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? fileManager.temporaryDirectory
-        let root = base.appendingPathComponent("GrocerSync", isDirectory: true)
-        // Scope the cache per CloudKit environment so Development and Production
-        // data never mix on the same device.
-        let directory = root.appendingPathComponent(CloudKitEnvironment.current, isDirectory: true)
-        try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        snapshotURL = directory.appendingPathComponent("snapshot.json")
-        outboxURL = directory.appendingPathComponent("outbox.json")
-        systemFieldsURL = directory.appendingPathComponent("systemfields.json")
-
-        // Remove the legacy un-scoped cache from older builds so it can't be
-        // read by the wrong environment again.
-        try? fileManager.removeItem(at: root.appendingPathComponent("snapshot.json"))
-        try? fileManager.removeItem(at: root.appendingPathComponent("outbox.json"))
-    }
-
-    func loadSnapshot() -> CloudSnapshot? {
-        guard let data = try? Data(contentsOf: snapshotURL) else { return nil }
-        return try? Self.decoder.decode(CloudSnapshot.self, from: data)
-    }
-
-    func saveSnapshot(_ snapshot: CloudSnapshot) {
-        queue.async { [snapshotURL] in
-            guard let data = try? Self.encoder.encode(snapshot) else { return }
-            try? data.write(to: snapshotURL, options: .atomic)
-        }
-    }
-
-    func loadOutbox() -> [String: PendingCloudWrite] {
-        guard let data = try? Data(contentsOf: outboxURL),
-              let writes = try? Self.decoder.decode([PendingCloudWrite].self, from: data) else {
-            return [:]
-        }
-        var byKey: [String: PendingCloudWrite] = [:]
-        for write in writes {
-            if let existing = byKey[write.key], existing.revision > write.revision {
-                continue
-            }
-            byKey[write.key] = write
-        }
-        return byKey
-    }
-
-    func saveOutbox(_ writes: [String: PendingCloudWrite]) {
-        let ordered = writes.values.sorted { $0.enqueuedAt < $1.enqueuedAt }
-        queue.async { [outboxURL] in
-            guard let data = try? Self.encoder.encode(ordered) else { return }
-            try? data.write(to: outboxURL, options: .atomic)
-        }
-    }
-
-    func loadSystemFields() -> [String: Data] {
-        guard let data = try? Data(contentsOf: systemFieldsURL),
-              let fields = try? Self.decoder.decode([String: Data].self, from: data) else {
-            return [:]
-        }
-        return fields
-    }
-
-    func saveSystemFields(_ fields: [String: Data]) {
-        queue.async { [systemFieldsURL] in
-            guard let data = try? Self.encoder.encode(fields) else { return }
-            try? data.write(to: systemFieldsURL, options: .atomic)
-        }
-    }
-
-    /// Runs `work` on the persistence queue *after* every write enqueued so far
-    /// has completed (the queue is serial/FIFO). Used to advance CloudKit change
-    /// tokens only once the matching snapshot is durably on disk.
-    func runAfterPendingWrites(_ work: @escaping @Sendable () -> Void) {
-        queue.async(execute: work)
-    }
-
-    func reset() {
-        queue.sync {
-            try? fileManager.removeItem(at: snapshotURL)
-            try? fileManager.removeItem(at: outboxURL)
-            try? fileManager.removeItem(at: systemFieldsURL)
-        }
-    }
-
-    private static let encoder: JSONEncoder = {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        return encoder
-    }()
-
-    private static let decoder: JSONDecoder = {
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return decoder
-    }()
-}
 
 /// Central observable store for the family grocery space.
 ///
@@ -1962,7 +1760,7 @@ final class GroceryRepository {
     @discardableResult
     func addItem(name: String, quantity: String?, category: GroceryCategory,
                  notes: String?, priority: ItemPriority = .normal,
-                 replacementPreference: String?) -> GroceryItem? {
+                 replacementPreference: String?, toListId: String? = nil) -> GroceryItem? {
         addItems([
             GroceryItemInput(
                 name: name,
@@ -1972,14 +1770,25 @@ final class GroceryRepository {
                 priority: priority,
                 replacementPreference: replacementPreference
             )
-        ]).first
+        ], toListId: toListId).first
     }
 
     @discardableResult
     func addItems(_ inputs: [GroceryItemInput]) -> [GroceryItem] {
-        guard let household = currentHousehold, let list = currentList else { return [] }
+        addItems(inputs, toListId: nil)
+    }
+
+    /// Adds items to an explicit list, independent of the ambient selected group.
+    /// Passing `nil` targets the current selection. Combined trips pass the
+    /// specific list id so adding to one group doesn't switch the whole app's
+    /// selected group as a side effect.
+    @discardableResult
+    func addItems(_ inputs: [GroceryItemInput], toListId listId: String?) -> [GroceryItem] {
+        guard let resolvedListId = listId ?? currentList?.id,
+              let list = lists.first(where: { $0.id == resolvedListId }),
+              let household = householdById[list.householdId] else { return [] }
         let now = Date()
-        let member = currentMember
+        let member = member(for: household)
         let session = activeSession(for: list.id)
 
         // Items still needed on this list, keyed by lowercased name. An add whose
@@ -2104,7 +1913,7 @@ final class GroceryRepository {
         updated.activeSessionId = nil
         updated.updatedAt = Date()
         replaceInWorkingSet(updated)
-        persist(updated)
+        persist(updated, changedKeys: Self.itemShoppingStateKeys)
         logEvent(.itemEdited, householdId: item.householdId, itemId: item.id,
                  sessionId: activeSession(for: item.listId)?.id,
                  metadata: ["name": updated.name, "status": updated.status.rawValue])
@@ -2119,7 +1928,7 @@ final class GroceryRepository {
         updated.deletedAt = now
         updated.activeSessionId = activeSession(for: item.listId)?.id
         replaceInWorkingSet(updated)
-        persist(updated)
+        persist(updated, changedKeys: Self.itemShoppingStateKeys)
         logEvent(.itemRemoved, householdId: item.householdId, itemId: item.id,
                  sessionId: activeSession(for: item.listId)?.id, metadata: ["name": item.name])
     }
@@ -2203,7 +2012,7 @@ final class GroceryRepository {
         }
         if status == .replaced { updated.replacementItemName = replacement }
         replaceInWorkingSet(updated)
-        persist(updated)
+        persist(updated, changedKeys: Self.itemShoppingStateKeys)
 
         let eventType: ItemEventType
         switch status {
@@ -2333,6 +2142,12 @@ final class GroceryRepository {
     /// `finishShopping`), so this is just local item mutation plus a flush.
     func completeTripCleanup(_ session: ShoppingSession, clearCompleted: Bool, keepOutOfStock: Bool) async {
         applyCleanup(session: session, clearCompleted: clearCompleted, keepOutOfStock: keepOutOfStock)
+        // Guarantee the shopper's cleanup choices are durably on disk *before* we
+        // reach for the network: applyCleanup enqueues the local snapshot/outbox
+        // writes synchronously, and this barrier waits for them to land, so a
+        // suspend/kill right after the summary is dismissed can't lose them. The
+        // CloudKit flush is best-effort and safe to run after local durability.
+        await localStore.flush()
         await flushOutboxNow()
     }
 
@@ -2580,7 +2395,7 @@ final class GroceryRepository {
             item.activeSessionId = nil
             return item
         }
-        changed.forEach { persist($0) }
+        changed.forEach { persist($0, changedKeys: Self.itemShoppingStateKeys) }
     }
 
     /// Writes an immutable per-item snapshot of a trip so its contents stay
@@ -3205,6 +3020,13 @@ final class GroceryRepository {
         enqueueSave(.item(item))
     }
 
+    /// Persists an item write scoped to the fields the caller actually changed,
+    /// so a `.serverRecordChanged` conflict merges only those keys and preserves
+    /// a concurrent editor's independent fields. See `itemShoppingStateKeys`.
+    private func persist(_ item: GroceryItem, changedKeys: Set<String>) {
+        enqueueSave(.item(item), changedKeys: changedKeys)
+    }
+
     private func persist(_ session: ShoppingSession) {
         enqueueSave(.session(session))
     }
@@ -3227,12 +3049,25 @@ final class GroceryRepository {
         enqueueSave(.event(event))
     }
 
-    private func enqueueSave(_ record: PendingCloudRecord) {
+    /// The GroceryItem fields a shopping-status transition changes. Scoping
+    /// these writes to this group lets a `.serverRecordChanged` merge preserve a
+    /// concurrent editor's independent content edits (name/quantity/notes/…).
+    private static let itemShoppingStateKeys: Set<String> = [
+        CK.Field.status,
+        CK.Field.updatedAt,
+        CK.Field.activeSessionId,
+        CK.Field.completedAt,
+        CK.Field.deletedAt,
+        CK.Field.replacementItemName,
+    ]
+
+    private func enqueueSave(_ record: PendingCloudRecord, changedKeys: Set<String>? = nil) {
         enqueueWrite(PendingCloudWrite(
             operation: .save,
             record: record,
             revision: nextOutboxRevision(),
-            enqueuedAt: Date()
+            enqueuedAt: Date(),
+            changedKeys: changedKeys
         ))
     }
 
@@ -3250,9 +3085,25 @@ final class GroceryRepository {
             saveLocalSnapshotDeferredIfNeeded()
             return
         }
+        var write = write
+        // Coalescing onto an existing pending save for this record must accumulate
+        // both writes' changed fields, so a later conflict merge can't drop an
+        // earlier edit. A nil (full-record) write dominates a field-scoped one.
+        if let existing = pendingCloudWrites[write.key],
+           existing.operation == .save, write.operation == .save {
+            write.changedKeys = Self.mergedChangedKeys(existing.changedKeys, write.changedKeys)
+        }
         pendingCloudWrites[write.key] = write
         saveLocalSnapshotDeferredIfNeeded()
         scheduleOutboxFlushDeferredIfNeeded()
+    }
+
+    /// Unions two changed-key sets. `nil` means "all fields" and therefore
+    /// dominates: a full-record write coalesced with a field-scoped one must
+    /// stay full-record so no field is dropped on a later conflict merge.
+    private static func mergedChangedKeys(_ lhs: Set<String>?, _ rhs: Set<String>?) -> Set<String>? {
+        guard let lhs, let rhs else { return nil }
+        return lhs.union(rhs)
     }
 
     private func hasPendingWrite(for record: PendingCloudRecord) -> Bool {
@@ -4025,9 +3876,19 @@ final class GroceryRepository {
             print("[Repo] ↻ conflict: keeping completed session over stale cancellation for \(recordName)")
         }
 
-        // Local wins (newer, equal, or untimestamped): write our fields onto the
-        // server's record — which carries the latest tag — and re-save once.
-        applyFields(of: write.record, to: serverRecord)
+        // Local wins (newer, equal, or untimestamped): merge our changes onto the
+        // server's record — which carries the latest tag and any concurrent edits
+        // to other fields — and re-save once.
+        if let changedKeys = write.changedKeys {
+            // Field-scoped write: overwrite only the keys this device changed, so
+            // a concurrent editor's independent fields on the server survive.
+            let localRecord = CKRecord(recordType: serverRecord.recordType, recordID: serverRecord.recordID)
+            applyFields(of: write.record, to: localRecord)
+            mergeCloudFields(from: localRecord, changedKeys: changedKeys, onto: serverRecord)
+        } else {
+            // Change set unknown: apply the full record (pre-merge behaviour).
+            applyFields(of: write.record, to: serverRecord)
+        }
         if let householdId = write.record.householdId, write.record.recordType != CK.RecordType.household {
             setHouseholdParent(serverRecord, householdId: householdId)
         }
@@ -4093,7 +3954,12 @@ final class GroceryRepository {
             if localCompletedBeatsStaleCancellation {
                 print("[Repo] ↻ conflict: keeping completed session over stale cancellation for \(r.recordID.recordName)")
             }
-            for key in r.allKeys() { serverRecord[key] = r[key] }
+            // Merge our fields onto the server's record (which carries the latest
+            // tag). This direct-save path has no per-field change tracking, so
+            // every key present on our record is treated as ours — routing through
+            // the shared merge keeps both conflict paths consistent and still
+            // preserves any server field we don't set.
+            mergeCloudFields(from: r, changedKeys: nil, onto: serverRecord)
             print("[Repo] ↻ retrying save for \(r.recordType) \(r.recordID.recordName) after conflict")
             return await saveBestEffort(serverRecord, retried: true)
         } catch let error as CKError where Self.isZoneGone(error) {

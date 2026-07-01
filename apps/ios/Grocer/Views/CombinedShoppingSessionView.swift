@@ -179,7 +179,7 @@ struct CombinedShoppingSessionView: View {
             }
         }
         .fullScreenCover(item: $addTarget) { target in
-            AddItemSearchView(tint: addTargetTint(listId: target.id))
+            AddItemSearchView(tint: addTargetTint(listId: target.id), targetListId: target.id)
         }
         .navigationDestination(isPresented: $showFinish) {
             CombinedSessionSummaryView(sessionIds: finishingIds, endingTask: endingTask) { onExit() }
@@ -277,13 +277,12 @@ struct CombinedShoppingSessionView: View {
         }
     }
 
-    /// Adding routes through the current selection (AddItemSearchView writes to
-    /// `currentList`), so switch to the chosen group before presenting. The added
-    /// item surfaces under "Added During Trip" because its `createdAt` is after
-    /// that session started.
+    /// Presents the add flow targeting the chosen group's list explicitly, so no
+    /// global selection change is needed (the add UI writes to `targetListId`,
+    /// not the ambient `currentList`). The added item surfaces under "Added
+    /// During Trip" because its `createdAt` is after that session started.
     private func selectAddTarget(_ session: ShoppingSession) {
         Haptics.tap()
-        repo.selectHousehold(session.householdId)
         addTarget = AddTarget(id: session.listId)
     }
 
@@ -349,10 +348,10 @@ struct CombinedShoppingSessionView: View {
                 .tint(tint)
                 .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: progress.remaining)
             HStack(spacing: 16) {
-                stat("\(progress.remaining)", String(localized: "left"))
-                stat("\(progress.found)", String(localized: "found"))
-                if progress.replaced > 0 { stat("\(progress.replaced)", String(localized: "replaced")) }
-                if progress.outOfStock > 0 { stat("\(progress.outOfStock)", String(localized: "unavailable")) }
+                TripStat("\(progress.remaining)", String(localized: "left"))
+                TripStat("\(progress.found)", String(localized: "found"))
+                if progress.replaced > 0 { TripStat("\(progress.replaced)", String(localized: "replaced")) }
+                if progress.outOfStock > 0 { TripStat("\(progress.outOfStock)", String(localized: "unavailable")) }
             }
             .font(.subheadline)
             .contentTransition(.numericText())
@@ -379,13 +378,6 @@ struct CombinedShoppingSessionView: View {
         if stores.count == 1, let only = stores.first { return only }
         if stores.isEmpty { return String(localized: "Store not set") }
         return String(localized: "Multiple stores")
-    }
-
-    private func stat(_ value: String, _ label: String) -> some View {
-        HStack(spacing: 4) {
-            Text(value).bold()
-            Text(label).foregroundStyle(.secondary)
-        }
     }
 
     // MARK: - Completed section

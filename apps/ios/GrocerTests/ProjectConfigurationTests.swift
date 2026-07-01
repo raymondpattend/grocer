@@ -30,12 +30,14 @@ final class ProjectConfigurationTests: XCTestCase {
     }
 
     func testCloudKitEnvironmentScopingProtectsDevelopmentAndProductionCaches() throws {
-        let repo = try source("Grocer/Services/GroceryRepository.swift")
+        let outbox = try source("Grocer/Services/OutboxStore.swift")
         let cloud = try source("Grocer/Services/CloudKitService.swift")
         let sharedData = try source("Grocer/Shared/WidgetSharedData.swift")
 
-        XCTAssertTrue(repo.contains("CloudKitEnvironment.current"))
-        XCTAssertTrue(repo.contains("root.appendingPathComponent(CloudKitEnvironment.current"))
+        // The local snapshot/outbox cache (LocalSyncStore) scopes its directory
+        // per CloudKit environment so dev and prod records never mix on device.
+        XCTAssertTrue(outbox.contains("CloudKitEnvironment.current"))
+        XCTAssertTrue(outbox.contains("root.appendingPathComponent(CloudKitEnvironment.current"))
         XCTAssertTrue(cloud.contains("[Self.changeTokenKeyPrefix, CloudKitEnvironment.current"))
         XCTAssertTrue(cloud.contains("[\"grocer.cloudkit.knownSharedZones\", CloudKitEnvironment.current]"))
         // The subscription-registered flags must be environment-scoped too, or a

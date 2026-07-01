@@ -22,7 +22,10 @@ final class SyncSourceGuardrailTests: XCTestCase {
         XCTAssertTrue(accumulate.contains("error.code == .changeTokenExpired"))
         XCTAssertTrue(accumulate.contains("clearChangeToken(for: zoneRef)"))
         XCTAssertTrue(accumulate.contains("result.markFullZone(zoneRef)"))
-        XCTAssertTrue(accumulate.contains("var changeToken: CKServerChangeToken?"))
+        // The paged fetch walks a mutable change token forward from the start
+        // token (nil on a full refetch) and commits the latest one after persist.
+        XCTAssertTrue(accumulate.contains("var changeToken = startToken"))
+        XCTAssertTrue(accumulate.contains("changeToken = changes.changeToken"))
     }
 
     func testSharedZoneDisappearanceRequiresTwoConsecutiveMisses() throws {
@@ -114,7 +117,9 @@ final class SyncSourceGuardrailTests: XCTestCase {
 
         XCTAssertTrue(deleteItem.contains("updated.status = .removed"))
         XCTAssertTrue(deleteItem.contains("updated.deletedAt = now"))
-        XCTAssertTrue(deleteItem.contains("persist(updated)"))
+        // Soft delete still persists an item write (not enqueueDelete); it is now
+        // field-scoped so a concurrent edit survives the conflict merge.
+        XCTAssertTrue(deleteItem.contains("persist(updated, changedKeys: Self.itemShoppingStateKeys)"))
         XCTAssertFalse(deleteItem.contains("enqueueDelete(.item"))
     }
 
@@ -131,13 +136,24 @@ final class SyncSourceGuardrailTests: XCTestCase {
         )
     }
 
-    func testKnownGapConflictRetryStillBlindlyOverwritesServerFields() throws {
-        XCTExpectFailure("Conflict retry should become semantic/field-aware instead of copying every local key onto the server record.")
+    func testConflictRetryMergesFieldsInsteadOfBlindOverwrite() throws {
         let repo = try source("Grocer/Services/GroceryRepository.swift")
         let saveBestEffort = try excerpt(repo, from: "private func saveBestEffort", to: "private func saveMemberBestEffort")
 
+        // The blind full-record clobber is gone; the retry routes through the
+        // shared field-aware merge.
         XCTAssertFalse(saveBestEffort.contains("for key in r.allKeys() { serverRecord[key] = r[key] }"))
-        XCTAssertTrue(saveBestEffort.localizedCaseInsensitiveContains("merge"))
+        XCTAssertTrue(saveBestEffort.contains("mergeCloudFields"))
+
+        // The outbox conflict path is field-aware too: a `.serverRecordChanged`
+        // retry merges only the keys the local device changed onto the server.
+        let resolveConflict = try excerpt(repo, from: "private func resolveConflict", to: "private func fetchAndSave")
+        XCTAssertTrue(resolveConflict.contains("mergeCloudFields"))
+        XCTAssertTrue(resolveConflict.contains("write.changedKeys"))
+
+        // Shopping-status writes are scoped so a partner's concurrent content
+        // edit (quantity/notes/…) survives the merge instead of being clobbered.
+        XCTAssertTrue(repo.contains("persist(updated, changedKeys: Self.itemShoppingStateKeys)"))
     }
 
     func testParticipantLeaveRemovesCloudKitShareMembership() throws {
@@ -235,7 +251,8 @@ final class SyncSourceGuardrailTests: XCTestCase {
 
     func testOutboxRetriesHaveDurableBackoffMetadata() throws {
         let repo = try source("Grocer/Services/GroceryRepository.swift")
-        let pendingWrite = try excerpt(repo, from: "private struct PendingCloudWrite", to: "struct GroceryItemInput")
+        let outbox = try source("Grocer/Services/OutboxStore.swift")
+        let pendingWrite = try excerpt(outbox, from: "struct PendingCloudWrite", to: "final class LocalSyncStore")
         let retry = try excerpt(repo, from: "private func markWriteDeferred", to: "private struct SaveFailureResolution")
 
         XCTAssertTrue(pendingWrite.contains("failureCount"))
@@ -245,6 +262,26 @@ final class SyncSourceGuardrailTests: XCTestCase {
         XCTAssertTrue(retry.contains("CKErrorRetryAfterKey"))
         XCTAssertTrue(repo.contains("eligiblePendingWrites"))
         XCTAssertTrue(repo.contains("scheduleOutboxFlush()"))
+    }
+
+    func testTripCleanupIsDurablyPersistedBeforeDismissal() throws {
+        let repo = try source("Grocer/Services/GroceryRepository.swift")
+        let outbox = try source("Grocer/Services/OutboxStore.swift")
+        let summary = try source("Grocer/Views/SessionSummaryView.swift")
+
+        // LocalSyncStore exposes an awaitable flush barrier for durability.
+        XCTAssertTrue(outbox.contains("func flush() async"))
+
+        // completeTripCleanup awaits the local durable write before returning, so
+        // a suspend/kill after the summary is dismissed can't drop the choices.
+        let cleanup = try excerpt(repo, from: "func completeTripCleanup(", to: "func cancelShopping")
+        XCTAssertTrue(cleanup.contains("await localStore.flush()"))
+
+        // The summary awaits cleanup (with a finishing state) before dismissing,
+        // rather than firing it in a detached Task and calling onDone() at once.
+        XCTAssertTrue(summary.contains("private func finishTrip() async"))
+        XCTAssertTrue(summary.contains("await repo.completeTripCleanup"))
+        XCTAssertTrue(summary.contains("Task { await finishTrip() }"))
     }
 
     func testRecoverableCloudKitFailuresDoNotSurfaceSyncIssueChip() throws {
@@ -313,17 +350,18 @@ final class SyncSourceGuardrailTests: XCTestCase {
 
     func testItemHistorySupportsRemoval() throws {
         let add = try source("Grocer/Views/AddItemView.swift")
+        let history = try source("Grocer/Views/AddItem/HistoryItemsView.swift")
         let repo = try source("Grocer/Services/GroceryRepository.swift")
 
         // A history card can be removed; the confirmation is an iOS alert (not a
         // bottom action-sheet "popup"), wired through to the repo, which forgets
         // every record for that name so the suggestion reliably disappears.
-        XCTAssertTrue(add.contains("struct HistoryItemRow"))
-        XCTAssertTrue(add.contains("onDeleteFromHistory"))
+        XCTAssertTrue(history.contains("struct HistoryItemRow"))
+        XCTAssertTrue(history.contains("onDeleteFromHistory"))
         XCTAssertTrue(add.contains("deleteFromHistory(name:"))
-        XCTAssertTrue(add.contains("Remove from History"))
-        XCTAssertTrue(add.contains("isPresented: $showRemoveFromHistoryConfirm"))
-        XCTAssertFalse(add.contains(".confirmationDialog"))
+        XCTAssertTrue(history.contains("Remove from History"))
+        XCTAssertTrue(history.contains("isPresented: $showRemoveFromHistoryConfirm"))
+        XCTAssertFalse(history.contains(".confirmationDialog"))
         XCTAssertTrue(repo.contains("func removeCurrentItemSuggestion(named name: String)"))
 
         // Removal must forget every record for the name — not skip the ones still

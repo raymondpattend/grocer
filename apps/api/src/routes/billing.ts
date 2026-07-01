@@ -1,6 +1,8 @@
+import { Effect } from "effect";
 import { Hono } from "hono";
 import Stripe from "stripe";
 import type { Env } from "../env.js";
+import { runHandler } from "../effect/http.js";
 import { APP_ICON_DATA_URI } from "./appIcon.js";
 
 const REVENUECAT_USER_METADATA_KEY = "user_id";
@@ -97,136 +99,166 @@ export function createBillingRoute(overrides: Partial<BillingDeps> = {}) {
   // SetupIntent. The Payment Element collects a card, `confirmSetup` saves it,
   // and the subscription is created on the success page from the succeeded
   // SetupIntent — so we never ship users to Stripe's hosted checkout UI.
-  route.get("/checkout", async (c) => {
-    const input = parseCheckoutParams(c.req.query("packageId"), c.req.query("uid"));
-    if (!input.ok) {
-      return c.html(errorPage("Checkout unavailable", input.error), 400);
-    }
+  route.get("/checkout", (c) =>
+    runHandler(
+      c,
+      Effect.gen(function* () {
+        const input = parseCheckoutParams(c.req.query("packageId"), c.req.query("uid"));
+        if (!input.ok) {
+          return c.html(errorPage("Checkout unavailable", input.error), 400);
+        }
 
-    const plan = planForPackageId(input.packageId);
-    if (!plan) {
-      return c.html(errorPage("Plan unavailable", "This plan is not available for web checkout."), 400);
-    }
+        const plan = planForPackageId(input.packageId);
+        if (!plan) {
+          return c.html(errorPage("Plan unavailable", "This plan is not available for web checkout."), 400);
+        }
 
-    // The trial variant only earns a trial if the resolved plan is eligible
-    // (has a configured trialDays), so an unexpected `trial=1` can't conjure a
-    // trial on a plan that should never have one.
-    const wantsTrial = c.req.query("trial") === "1" && plan.trialDays != null;
+        // The trial variant only earns a trial if the resolved plan is eligible
+        // (has a configured trialDays), so an unexpected `trial=1` can't conjure a
+        // trial on a plan that should never have one.
+        const wantsTrial = c.req.query("trial") === "1" && plan.trialDays != null;
 
-    const priceId = c.env[plan.priceEnv]?.trim();
-    if (!priceId) {
-      return c.html(errorPage("Checkout unavailable", "This plan is not configured yet."), 500);
-    }
+        const priceId = c.env[plan.priceEnv]?.trim();
+        if (!priceId) {
+          return c.html(errorPage("Checkout unavailable", "This plan is not configured yet."), 500);
+        }
 
-    const publishableKey = c.env.STRIPE_PUBLISHABLE_KEY?.trim();
-    if (!publishableKey) {
-      return c.html(errorPage("Checkout unavailable", "Payments are not configured yet."), 500);
-    }
+        const publishableKey = c.env.STRIPE_PUBLISHABLE_KEY?.trim();
+        if (!publishableKey) {
+          return c.html(errorPage("Checkout unavailable", "Payments are not configured yet."), 500);
+        }
 
-    const stripe = deps.getStripe(c.env);
-    const customer = await findOrCreateCustomer(stripe, input.uid);
-    const url = new URL(c.req.url);
+        const stripe = deps.getStripe(c.env);
+        const customer = yield* Effect.promise(() => findOrCreateCustomer(stripe, input.uid));
+        const url = new URL(c.req.url);
 
-    const alreadyActive = await findActiveSubscription(stripe, customer.id);
-    if (alreadyActive) {
-      const successUrl = new URL("/checkout/success", url.origin);
-      successUrl.searchParams.set("already_active", "1");
-      successUrl.searchParams.set("uid", input.uid);
-      return c.redirect(successUrl.toString(), 303);
-    }
+        const alreadyActive = yield* Effect.promise(() =>
+          findActiveSubscription(stripe, customer.id),
+        );
+        if (alreadyActive) {
+          const successUrl = new URL("/checkout/success", url.origin);
+          successUrl.searchParams.set("already_active", "1");
+          successUrl.searchParams.set("uid", input.uid);
+          return c.redirect(successUrl.toString(), 303);
+        }
 
-    const price = await stripe.prices.retrieve(priceId);
-    // Restrict to cards only — this keeps the bank/ACH option out of the
-    // Payment Element while still allowing Apple Pay (a card-backed wallet)
-    // through the Express Checkout Element.
-    const setupIntent = await stripe.setupIntents.create({
-      customer: customer.id,
-      usage: "off_session",
-      payment_method_types: ["card"],
-      metadata: checkoutMetadata(input.uid, plan, wantsTrial),
-    });
+        const price = yield* Effect.promise(() => stripe.prices.retrieve(priceId));
+        // Restrict to cards only — this keeps the bank/ACH option out of the
+        // Payment Element while still allowing Apple Pay (a card-backed wallet)
+        // through the Express Checkout Element.
+        const setupIntent = yield* Effect.promise(() =>
+          stripe.setupIntents.create({
+            customer: customer.id,
+            usage: "off_session",
+            payment_method_types: ["card"],
+            metadata: checkoutMetadata(input.uid, plan, wantsTrial),
+          }),
+        );
 
-    if (!setupIntent.client_secret) {
-      return c.html(errorPage("Checkout unavailable", "Stripe did not return a checkout secret."), 500);
-    }
+        if (!setupIntent.client_secret) {
+          return c.html(errorPage("Checkout unavailable", "Stripe did not return a checkout secret."), 500);
+        }
 
-    return c.html(
-      checkoutPage({
-        publishableKey,
-        clientSecret: setupIntent.client_secret,
-        plan,
-        price: priceSummary(price),
-        uid: input.uid,
-        origin: url.origin,
-        trialDays: wantsTrial ? plan.trialDays ?? 0 : 0,
+        return c.html(
+          checkoutPage({
+            publishableKey,
+            clientSecret: setupIntent.client_secret,
+            plan,
+            price: priceSummary(price),
+            uid: input.uid,
+            origin: url.origin,
+            trialDays: wantsTrial ? plan.trialDays ?? 0 : 0,
+          }),
+        );
       }),
-    );
-  });
+    ),
+  );
 
-  route.get("/checkout/success", async (c) => {
-    const stripe = deps.getStripe(c.env);
+  route.get("/checkout/success", (c) =>
+    runHandler(
+      c,
+      Effect.gen(function* () {
+        const stripe = deps.getStripe(c.env);
 
-    const alreadyActive = c.req.query("already_active") === "1";
-    if (alreadyActive) {
-      const uid = c.req.query("uid")?.trim() ?? "";
-      if (!UUID_RE.test(uid)) {
-        return c.html(errorPage("Purchase not completed", "Invalid uid."), 400);
-      }
+        const alreadyActive = c.req.query("already_active") === "1";
+        if (alreadyActive) {
+          const uid = c.req.query("uid")?.trim() ?? "";
+          if (!UUID_RE.test(uid)) {
+            return c.html(errorPage("Purchase not completed", "Invalid uid."), 400);
+          }
 
-      const customer = await findCustomer(stripe, uid);
-      if (!customer) {
-        return c.html(errorPage("Purchase not completed", "No billing customer found."), 404);
-      }
+          const customer = yield* Effect.promise(() => findCustomer(stripe, uid));
+          if (!customer) {
+            return c.html(errorPage("Purchase not completed", "No billing customer found."), 404);
+          }
 
-      const activeSubscription = await findActiveSubscription(stripe, customer.id);
-      if (!activeSubscription) {
-        return c.html(errorPage("Purchase not completed", "No active subscription was found."), 400);
-      }
+          const activeSubscription = yield* Effect.promise(() =>
+            findActiveSubscription(stripe, customer.id),
+          );
+          if (!activeSubscription) {
+            return c.html(errorPage("Purchase not completed", "No active subscription was found."), 400);
+          }
 
-      return c.html(successPage("Your subscription is already active."));
-    }
+          return c.html(successPage("Your subscription is already active."));
+        }
 
-    const setupIntentId = c.req.query("setup_intent");
-    const redirectStatus = c.req.query("redirect_status");
-    if (!setupIntentId) {
-      return c.html(errorPage("Purchase not completed", "Missing Stripe setup details."), 400);
-    }
-    if (redirectStatus && redirectStatus !== "succeeded") {
-      return c.html(errorPage("Purchase not completed", "The payment was not completed."), 400);
-    }
+        const setupIntentId = c.req.query("setup_intent");
+        const redirectStatus = c.req.query("redirect_status");
+        if (!setupIntentId) {
+          return c.html(errorPage("Purchase not completed", "Missing Stripe setup details."), 400);
+        }
+        if (redirectStatus && redirectStatus !== "succeeded") {
+          return c.html(errorPage("Purchase not completed", "The payment was not completed."), 400);
+        }
 
-    const result = await createSubscriptionFromSetupIntent(stripe, c.env, setupIntentId);
-    if (!result.ok) {
-      return c.html(errorPage("Purchase not completed", result.error), 400);
-    }
+        const result = yield* Effect.promise(() =>
+          createSubscriptionFromSetupIntent(stripe, c.env, setupIntentId),
+        );
+        if (!result.ok) {
+          return c.html(errorPage("Purchase not completed", result.error), 400);
+        }
 
-    return c.html(successPage("You're all set."));
-  });
+        return c.html(successPage("You're all set."));
+      }),
+    ),
+  );
 
-  route.get("/checkout/cancelled", async (c) => {
-    return c.html(errorPage("Checkout cancelled", "No purchase was made. You can close this page and return to Grocer."));
-  });
+  route.get("/checkout/cancelled", (c) =>
+    runHandler(
+      c,
+      Effect.gen(function* () {
+        return c.html(errorPage("Checkout cancelled", "No purchase was made. You can close this page and return to Grocer."));
+      }),
+    ),
+  );
 
-  route.get("/api/billing/portal", async (c) => {
-    const uid = c.req.query("uid")?.trim() ?? "";
-    if (!UUID_RE.test(uid)) {
-      return c.json({ ok: false, error: "Invalid uid" }, 400);
-    }
+  route.get("/api/billing/portal", (c) =>
+    runHandler(
+      c,
+      Effect.gen(function* () {
+        const uid = c.req.query("uid")?.trim() ?? "";
+        if (!UUID_RE.test(uid)) {
+          return c.json({ ok: false, error: "Invalid uid" }, 400);
+        }
 
-    const stripe = deps.getStripe(c.env);
-    const customer = await findCustomer(stripe, uid);
-    if (!customer) {
-      return c.json({ ok: false, error: "No billing customer found" }, 404);
-    }
+        const stripe = deps.getStripe(c.env);
+        const customer = yield* Effect.promise(() => findCustomer(stripe, uid));
+        if (!customer) {
+          return c.json({ ok: false, error: "No billing customer found" }, 404);
+        }
 
-    const url = new URL(c.req.url);
-    const session = await stripe.billingPortal.sessions.create({
-      customer: customer.id,
-      return_url: url.origin,
-    });
+        const url = new URL(c.req.url);
+        const session = yield* Effect.promise(() =>
+          stripe.billingPortal.sessions.create({
+            customer: customer.id,
+            return_url: url.origin,
+          }),
+        );
 
-    return c.redirect(session.url, 303);
-  });
+        return c.redirect(session.url, 303);
+      }),
+    ),
+  );
 
   return route;
 }

@@ -1,0 +1,58 @@
+# SwiftLint configuration for the Grocer iOS app.
+#   brew install swiftlint
+#   cd apps/ios && swiftlint lint --quiet
+#
+# Tuned to surface real issues without fighting the existing house style.
+
+included:
+  - Grocer
+  - GrocerWidget
+  - GrocerTests
+
+excluded:
+  - Grocer.xcodeproj
+
+analyzer_rules:
+  - unused_declaration
+  - unused_import
+
+opt_in_rules:
+  - empty_count
+  - first_where
+  - last_where
+  - contains_over_first_not_nil
+  - toggle_bool
+  - force_unwrapping
+  - redundant_nil_coalescing
+  - closure_spacing
+  - explicit_init
+  - fatal_error_message
+
+disabled_rules:
+  - todo
+  - line_length          # long localized strings + SwiftUI modifiers run wide
+  - trailing_comma
+  - nesting
+
+# These giant files are the subject of the in-progress "split" refactors; keep
+# the thresholds generous so the linter doesn't drown the real findings until
+# the splits land.
+file_length:
+  warning: 4500
+  error: 6000
+
+type_body_length:
+  warning: 1200
+  error: 2000
+
+function_body_length:
+  warning: 120
+  error: 300
+
+identifier_name:
+  min_length: 2
+  excluded: [id, at, to, ip, ok, x, y]
+
+force_cast: warning
+force_try: warning
+force_unwrapping: warning

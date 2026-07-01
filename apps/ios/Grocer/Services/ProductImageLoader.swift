@@ -115,7 +115,7 @@ final class ProductImageLoader {
 
     // MARK: - Off-main-thread loading
 
-    nonisolated fileprivate static func pixelKey(for maxPixel: CGFloat) -> Int {
+    nonisolated static func pixelKey(for maxPixel: CGFloat) -> Int {
         max(Int(ceil(maxPixel)), 1)
     }
 
@@ -374,128 +374,5 @@ final class ProductImageLoader {
         let safe = name.lowercased()
             .replacingOccurrences(of: "[^a-z0-9]+", with: "-", options: .regularExpression)
         return cacheDirectory.appendingPathComponent("\(safe).png")
-    }
-}
-
-/// SwiftUI view that loads and displays a product image with a skeleton shimmer
-/// while loading.
-struct ProductImageView: View {
-    @Environment(\.displayScale) private var displayScale
-
-    let itemName: String
-    var size: CGFloat = 48
-
-    @State private var image: UIImage?
-    @State private var isLoading = true
-
-    private struct LoadToken: Equatable {
-        var key: String
-        var maxPixel: Int
-    }
-
-    private var imageKey: String {
-        itemName.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private var loadToken: LoadToken {
-        LoadToken(key: imageKey, maxPixel: ProductImageLoader.pixelKey(for: size * displayScale))
-    }
-
-    var body: some View {
-        Group {
-            if let image {
-                Image(uiImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .frame(width: size, height: size)
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    .transition(.opacity.animation(.easeIn(duration: 0.2)))
-            } else if isLoading {
-                ShimmerRect(cornerRadius: 10)
-                    .frame(width: size, height: size)
-            } else {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color(.systemGray6))
-                    .frame(width: size, height: size)
-                    .overlay {
-                        Image(systemName: "basket.fill")
-                            .foregroundStyle(.tertiary)
-                            .font(.system(size: size * 0.35))
-                    }
-            }
-        }
-        .accessibilityHidden(true)
-        .task(id: loadToken) {
-            image = nil
-            isLoading = true
-            for await frame in ProductImageLoader.shared.imageStream(for: itemName, maxPixel: CGFloat(loadToken.maxPixel)) {
-                guard !Task.isCancelled else { return }
-                withAnimation(.easeIn(duration: 0.2)) { image = frame.image }
-                isLoading = !frame.isFinal
-            }
-            guard !Task.isCancelled else { return }
-            isLoading = false
-        }
-    }
-}
-
-// MARK: - Reusable shimmer primitives
-
-/// A rounded-rect skeleton block with a sweeping shimmer gradient.
-struct ShimmerRect: View {
-    var cornerRadius: CGFloat = 8
-    @State private var phase: CGFloat = -1.5
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            .fill(Color(.systemGray5))
-            .overlay {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [.clear, Color.white.opacity(reduceMotion ? 0 : 0.4), .clear],
-                            startPoint: UnitPoint(x: phase, y: 0.5),
-                            endPoint: UnitPoint(x: phase + 1, y: 0.5)
-                        )
-                    )
-            }
-            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-            .accessibilityHidden(true)
-            .onAppear {
-                guard !reduceMotion else { return }
-                withAnimation(.linear(duration: 1.2).repeatForever(autoreverses: false)) {
-                    phase = 1.5
-                }
-            }
-    }
-}
-
-/// A circular skeleton block with a sweeping shimmer.
-struct ShimmerCircle: View {
-    @State private var phase: CGFloat = -1.5
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        Circle()
-            .fill(Color(.systemGray5))
-            .overlay {
-                Circle()
-                    .fill(
-                        LinearGradient(
-                            colors: [.clear, Color.white.opacity(reduceMotion ? 0 : 0.4), .clear],
-                            startPoint: UnitPoint(x: phase, y: 0.5),
-                            endPoint: UnitPoint(x: phase + 1, y: 0.5)
-                        )
-                    )
-            }
-            .clipShape(Circle())
-            .accessibilityHidden(true)
-            .onAppear {
-                guard !reduceMotion else { return }
-                withAnimation(.linear(duration: 1.2).repeatForever(autoreverses: false)) {
-                    phase = 1.5
-                }
-            }
     }
 }

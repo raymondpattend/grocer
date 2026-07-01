@@ -329,10 +329,10 @@ struct ShoppingSessionView: View {
                 .tint(tint)
                 .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: progress.remaining)
             HStack(spacing: 16) {
-                stat("\(progress.remaining)", String(localized: "left"))
-                stat("\(progress.found)", String(localized: "found"))
-                if progress.replaced > 0 { stat("\(progress.replaced)", String(localized: "replaced")) }
-                if progress.outOfStock > 0 { stat("\(progress.outOfStock)", String(localized: "unavailable")) }
+                TripStat("\(progress.remaining)", String(localized: "left"))
+                TripStat("\(progress.found)", String(localized: "found"))
+                if progress.replaced > 0 { TripStat("\(progress.replaced)", String(localized: "replaced")) }
+                if progress.outOfStock > 0 { TripStat("\(progress.outOfStock)", String(localized: "unavailable")) }
             }
             .font(.subheadline)
             .contentTransition(.numericText())
@@ -349,13 +349,6 @@ struct ShoppingSessionView: View {
         }
         .padding(.vertical, 4)
         .listRowSeparator(.hidden)
-    }
-
-    private func stat(_ value: String, _ label: String) -> some View {
-        HStack(spacing: 4) {
-            Text(value).bold()
-            Text(label).foregroundStyle(.secondary)
-        }
     }
 
     // MARK: - Completed section (tappable disclosure)

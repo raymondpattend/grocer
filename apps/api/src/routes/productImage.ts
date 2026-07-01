@@ -1,6 +1,10 @@
+import { Effect } from "effect";
 import { Hono } from "hono";
 import { captureException } from "@sentry/cloudflare";
 import type { Env } from "../env.js";
+import { JsonBodyError, ResponseError } from "../effect/errors.js";
+import { runHandler } from "../effect/http.js";
+import { attemptPromise, fromPromise } from "../effect/interop.js";
 import {
   captureAiEmbedding,
   captureAiGeneration,
@@ -17,8 +21,8 @@ import { aiRateLimit } from "../lib/aiRateLimit.js";
 
 export const productImageRoute = new Hono<{ Bindings: Env }>();
 
-productImageRoute.use("/product-image", aiRateLimit());
-productImageRoute.use("/product-image/prewarm", aiRateLimit());
+productImageRoute.use("/product-image", aiRateLimit({ scope: "image", costly: true }));
+productImageRoute.use("/product-image/prewarm", aiRateLimit({ scope: "image", costly: true }));
 
 const SIMILARITY_THRESHOLD = 0.92;
 const OPENAI_EMBEDDINGS_URL = "https://api.openai.com/v1/embeddings";
@@ -221,163 +225,218 @@ function rejectionResponse(): Response {
  *
  * Concurrent requests for the same item coalesce into a single generation.
  */
-productImageRoute.get("/product-image", async (c) => {
-  const name = c.req.query("name")?.trim();
-  if (!name) {
-    return c.json({ ok: false, error: "Missing query parameter: name" }, 400);
-  }
+/**
+ * Vectorize near-match lookup for an already-embedded query. Resolves to a
+ * ready-to-return edge-cached image `Response` when a stored image is similar
+ * enough, or `undefined` to fall through to the cold path. Its leaf calls are
+ * catchable failures so the caller can degrade a vector-search hiccup to a
+ * cache miss.
+ */
+function vectorQuery(
+  c: { executionCtx: ExecutionContext; env: Env },
+  cache: Cache,
+  cacheKey: Request,
+  name: string,
+  queryVec: number[],
+): Effect.Effect<Response | undefined, unknown> {
+  return Effect.gen(function* () {
+    const matches = yield* attemptPromise(() =>
+      c.env.IMAGE_INDEX.query(queryVec, { topK: 1, returnMetadata: "all" }),
+    );
 
-  const key = normalize(name);
-  const exactKey = r2Key(name);
-
-  // 0. Shared Cloudflare edge cache. The cache key is the *normalized* name, so
-  // every device — and every spelling/casing variant ("Carrots", "carrots",
-  // "Carrots ") — resolves to one globally-cached entry served straight from the
-  // colo without touching R2 or Vectorize. This is what makes a cached image
-  // load fast on a device that didn't generate it.
-  const cache = caches.default;
-  const cacheKey = edgeCacheKey(c.req.url, key);
-  const edgeHit = await cache.match(cacheKey);
-  if (edgeHit) {
-    return edgeHit;
-  }
-
-  // 1. Exact R2 cache hit (fastest origin path)
-  const exactHit = await c.env.IMAGES.get(exactKey);
-  if (exactHit) {
-    return cacheAtEdge(c, cache, cacheKey, imageResponse(exactHit.body));
-  }
-
-  // 2. Embed the query and search Vectorize for a near-match
-  const hasVectorize = typeof c.env.IMAGE_INDEX?.query === "function";
-  let queryVec: number[] | undefined;
-  const traceId = createAiTraceId("product-image");
-
-  if (hasVectorize) {
-    try {
-      queryVec = await embed(c.env, name, {
-        executionCtx: c.executionCtx,
-        traceId,
-        spanName: "product_image_lookup_embedding",
-      });
-
-      const matches = await c.env.IMAGE_INDEX.query(queryVec, {
-        topK: 1,
-        returnMetadata: "all",
-      });
-
-      const best = matches.matches?.[0];
-      if (best && best.score >= SIMILARITY_THRESHOLD) {
-        const cachedKey = (best.metadata as Record<string, string>)?.r2Key;
-        if (cachedKey) {
-          const cached = await c.env.IMAGES.get(cachedKey);
-          if (cached) {
-            console.log(
-              `Vector hit: "${name}" → "${best.id}" (score=${best.score.toFixed(3)})`,
-            );
-            return cacheAtEdge(c, cache, cacheKey, imageResponse(cached.body));
-          }
+    const best = matches.matches?.[0];
+    if (best && best.score >= SIMILARITY_THRESHOLD) {
+      const cachedKey = (best.metadata as Record<string, string>)?.r2Key;
+      if (cachedKey) {
+        const cached = yield* attemptPromise(() => c.env.IMAGES.get(cachedKey));
+        if (cached) {
+          console.log(
+            `Vector hit: "${name}" → "${best.id}" (score=${best.score.toFixed(3)})`,
+          );
+          return cacheAtEdge(c, cache, cacheKey, imageResponse(cached.body));
         }
       }
-    } catch (err) {
-      console.warn("Vector search skipped:", err);
     }
-  }
-
-  // 3. Cold path. Before paying for an image, run ONE cheap text call that both
-  // (a) rejects non-product/abuse names (people, places, jokes, gibberish) while
-  // allowing any real shopping-list item, and (b) canonicalizes the name so
-  // variants ("Whole Milk", "2% milk", "Organic Milk") collapse onto a single
-  // generated image. This only runs on a full cache miss.
-  const classification = await classifyGroceryName(c.env, name, {
-    executionCtx: c.executionCtx,
-    traceId,
+    return undefined;
   });
-  if (!classification.isGrocery) {
-    console.log(`Rejected non-grocery image request: "${name}"`);
-    return cacheAtEdge(c, cache, cacheKey, rejectionResponse());
-  }
+}
 
-  // Key the generation on the canonical name. Fall back to the raw name if the
-  // canonical normalizes to nothing.
-  const canonicalName = normalize(classification.canonicalName) ? classification.canonicalName : name;
-  const canonical = normalize(canonicalName);
-  const canonicalKey = r2Key(canonicalName);
+productImageRoute.get("/product-image", (c) =>
+  runHandler(
+    c,
+    Effect.gen(function* () {
+      const name = c.req.query("name")?.trim();
+      if (!name) {
+        return c.json({ ok: false, error: "Missing query parameter: name" }, 400);
+      }
 
-  // The canonical image may already exist even though the raw name missed every
-  // cache above (e.g. "2% milk" canonicalizes to an already-generated "milk").
-  if (canonical !== key) {
-    const canonicalHit = await c.env.IMAGES.get(canonicalKey);
-    if (canonicalHit) {
-      return cacheAtEdge(c, cache, cacheKey, imageResponse(canonicalHit.body));
-    }
-  }
+      const key = normalize(name);
+      const exactKey = r2Key(name);
 
-  // Reuse the raw query vector when the name didn't change; otherwise leave it
-  // undefined so persistImage embeds the canonical name off the critical path
-  // (keeps the cold streaming path fast — no second embed before generation).
-  const canonicalVec = canonical === key ? queryVec : undefined;
+      // 0. Shared Cloudflare edge cache. The cache key is the *normalized* name, so
+      // every device — and every spelling/casing variant ("Carrots", "carrots",
+      // "Carrots ") — resolves to one globally-cached entry served straight from the
+      // colo without touching R2 or Vectorize. This is what makes a cached image
+      // load fast on a device that didn't generate it.
+      const cache = caches.default;
+      const cacheKey = edgeCacheKey(c.req.url, key);
+      const edgeHit = yield* fromPromise(() => cache.match(cacheKey));
+      if (edgeHit) {
+        return edgeHit;
+      }
 
-  // Clients can opt into a Server-Sent Events stream (`?stream=1`) that relays
-  // OpenAI's partial images so the UI renders a progressively-sharpening preview
-  // instead of waiting ~10s for the finished PNG. Cache/R2/vector hits above
-  // always return a plain `image/png`, so a streaming client must branch on the
-  // response Content-Type.
-  if (c.req.query("stream") === "1") {
-    return generateAndStream(c, c.env, canonicalName, canonicalKey, cacheKey, canonicalVec, hasVectorize, traceId, name);
-  }
+      // 1. Exact R2 cache hit (fastest origin path)
+      const exactHit = yield* fromPromise(() => c.env.IMAGES.get(exactKey));
+      if (exactHit) {
+        return cacheAtEdge(c, cache, cacheKey, imageResponse(exactHit.body));
+      }
 
-  // Non-stream path: coalesce concurrent generation requests for the same
-  // canonical key within this isolate (the R2 lock handles cross-isolate).
-  const existing = inFlight.get(canonical);
-  if (existing) {
-    console.log(`Coalescing duplicate request for "${canonicalName}"`);
-    // The in-flight generation already captures its own failures; a rejection
-    // here is a transient generation error, not a server fault, so degrade to a
-    // 502 instead of letting it bubble to the global handler as a 500.
-    let bytes: Uint8Array | null = null;
-    try {
-      bytes = await existing;
-    } catch {
-      return c.json({ ok: false, error: "Image generation failed" }, 502);
-    }
-    if (bytes) {
-      return cacheAtEdge(c, cache, cacheKey, imageResponse(new Uint8Array(bytes)));
-    }
-    return c.json({ ok: false, error: "Image generation failed" }, 502);
-  }
+      // 2. Embed the query and search Vectorize for a near-match
+      const hasVectorize = typeof c.env.IMAGE_INDEX?.query === "function";
+      let queryVec: number[] | undefined;
+      const traceId = createAiTraceId("product-image");
 
-  const generation = generateAndCache(
-    c.env,
-    canonicalName,
-    canonicalKey,
-    canonicalVec,
-    hasVectorize,
-    {
-      executionCtx: c.executionCtx,
-      traceId,
-      requestedName: name,
-    },
-  );
-  inFlight.set(canonical, generation);
+      if (hasVectorize) {
+        // Embed + vector search fail *soft*: any error just skips the cache
+        // layer and falls through to the cold path (mirrors the old try/catch).
+        queryVec = yield* attemptPromise(() =>
+          embed(c.env, name, {
+            executionCtx: c.executionCtx,
+            traceId,
+            spanName: "product_image_lookup_embedding",
+          }),
+        ).pipe(
+          Effect.catchAll((err) =>
+            Effect.sync(() => {
+              console.warn("Vector search skipped:", err);
+              return undefined;
+            }),
+          ),
+        );
 
-  try {
-    const bytes = await generation;
-    if (!bytes) {
-      return c.json({ ok: false, error: "Image generation failed" }, 502);
-    }
-    return cacheAtEdge(c, cache, cacheKey, imageResponse(bytes));
-  } catch (err) {
-    // generateAndCache already captured this failure before re-throwing. A
-    // thrown error here is a transient subrequest fault (e.g. a Cloudflare
-    // "internal error; reference = …" on the OpenAI/R2 call), so degrade to a
-    // 502 rather than letting it surface as an unhandled 500. (GROCER-API-4)
-    console.error("Image generation threw:", err);
-    return c.json({ ok: false, error: "Image generation failed" }, 502);
-  } finally {
-    inFlight.delete(canonical);
-  }
-});
+        if (queryVec) {
+          const vectorHit = yield* vectorQuery(c, cache, cacheKey, name, queryVec).pipe(
+            Effect.catchAll((err) =>
+              Effect.sync((): Response | undefined => {
+                console.warn("Vector search skipped:", err);
+                return undefined;
+              }),
+            ),
+          );
+          if (vectorHit) return vectorHit;
+        }
+      }
+
+      // 3. Cold path. Before paying for an image, run ONE cheap text call that both
+      // (a) rejects non-product/abuse names (people, places, jokes, gibberish) while
+      // allowing any real shopping-list item, and (b) canonicalizes the name so
+      // variants ("Whole Milk", "2% milk", "Organic Milk") collapse onto a single
+      // generated image. This only runs on a full cache miss.
+      const classification = yield* fromPromise(() =>
+        classifyGroceryName(c.env, name, {
+          executionCtx: c.executionCtx,
+          traceId,
+        }),
+      );
+      if (!classification.isGrocery) {
+        console.log(`Rejected non-grocery image request: "${name}"`);
+        return cacheAtEdge(c, cache, cacheKey, rejectionResponse());
+      }
+
+      // Key the generation on the canonical name. Fall back to the raw name if the
+      // canonical normalizes to nothing.
+      const canonicalName = normalize(classification.canonicalName)
+        ? classification.canonicalName
+        : name;
+      const canonical = normalize(canonicalName);
+      const canonicalKey = r2Key(canonicalName);
+
+      // The canonical image may already exist even though the raw name missed every
+      // cache above (e.g. "2% milk" canonicalizes to an already-generated "milk").
+      if (canonical !== key) {
+        const canonicalHit = yield* fromPromise(() => c.env.IMAGES.get(canonicalKey));
+        if (canonicalHit) {
+          return cacheAtEdge(c, cache, cacheKey, imageResponse(canonicalHit.body));
+        }
+      }
+
+      // Reuse the raw query vector when the name didn't change; otherwise leave it
+      // undefined so persistImage embeds the canonical name off the critical path
+      // (keeps the cold streaming path fast — no second embed before generation).
+      const canonicalVec = canonical === key ? queryVec : undefined;
+
+      // Clients can opt into a Server-Sent Events stream (`?stream=1`) that relays
+      // OpenAI's partial images so the UI renders a progressively-sharpening preview
+      // instead of waiting ~10s for the finished PNG. Cache/R2/vector hits above
+      // always return a plain `image/png`, so a streaming client must branch on the
+      // response Content-Type.
+      if (c.req.query("stream") === "1") {
+        return generateAndStream(
+          c,
+          c.env,
+          canonicalName,
+          canonicalKey,
+          cacheKey,
+          canonicalVec,
+          hasVectorize,
+          traceId,
+          name,
+        );
+      }
+
+      // Non-stream path: coalesce concurrent generation requests for the same
+      // canonical key within this isolate (the R2 lock handles cross-isolate).
+      const existing = inFlight.get(canonical);
+      if (existing) {
+        console.log(`Coalescing duplicate request for "${canonicalName}"`);
+        // The in-flight generation already captures its own failures; a rejection
+        // here is a transient generation error, not a server fault, so degrade to a
+        // 502 instead of letting it bubble to the global handler as a 500.
+        const bytes = yield* attemptPromise(() => existing).pipe(
+          Effect.catchAll(() => Effect.succeed<Uint8Array | null>(null)),
+        );
+        if (bytes) {
+          return cacheAtEdge(c, cache, cacheKey, imageResponse(new Uint8Array(bytes)));
+        }
+        return c.json({ ok: false, error: "Image generation failed" }, 502);
+      }
+
+      const generation = generateAndCache(
+        c.env,
+        canonicalName,
+        canonicalKey,
+        canonicalVec,
+        hasVectorize,
+        {
+          executionCtx: c.executionCtx,
+          traceId,
+          requestedName: name,
+        },
+      );
+      inFlight.set(canonical, generation);
+
+      return yield* attemptPromise(() => generation).pipe(
+        Effect.map((bytes) =>
+          bytes
+            ? cacheAtEdge(c, cache, cacheKey, imageResponse(bytes))
+            : c.json({ ok: false, error: "Image generation failed" }, 502),
+        ),
+        Effect.catchAll((err) =>
+          Effect.sync(() => {
+            // generateAndCache already captured this failure before re-throwing. A
+            // thrown error here is a transient subrequest fault (e.g. a Cloudflare
+            // "internal error; reference = …" on the OpenAI/R2 call), so degrade to a
+            // 502 rather than letting it surface as an unhandled 500. (GROCER-API-4)
+            console.error("Image generation threw:", err);
+            return c.json({ ok: false, error: "Image generation failed" }, 502);
+          }),
+        ),
+        // Always clear the in-isolate coalescing entry, even on interruption.
+        Effect.ensuring(Effect.sync(() => inFlight.delete(canonical))),
+      );
+    }),
+  ),
+);
 
 /**
  * POST /product-image/prewarm  { "names": ["Bananas", "Whole milk", ...] }
@@ -386,24 +445,30 @@ productImageRoute.get("/product-image", async (c) => {
  * immediately (202). By the time the user scrolls to the item, the image is a
  * cache hit. Used for add-time prewarming and bulk parse-list imports.
  */
-productImageRoute.post("/product-image/prewarm", async (c) => {
-  let body: { names?: unknown };
-  try {
-    body = await c.req.json();
-  } catch {
-    return c.json({ ok: false, error: "Invalid JSON body" }, 400);
-  }
+productImageRoute.post("/product-image/prewarm", (c) =>
+  runHandler(
+    c,
+    Effect.gen(function* () {
+      const body = yield* Effect.tryPromise({
+        try: () => c.req.json<{ names?: unknown }>(),
+        catch: (cause) => new JsonBodyError({ cause }),
+      });
 
-  const names = Array.isArray(body.names)
-    ? body.names.filter((n): n is string => typeof n === "string")
-    : [];
-  if (names.length === 0) {
-    return c.json({ ok: false, error: "Missing or empty 'names' array" }, 400);
-  }
+      const names = Array.isArray(body.names)
+        ? body.names.filter((n): n is string => typeof n === "string")
+        : [];
+      if (names.length === 0) {
+        return yield* new ResponseError({
+          status: 400,
+          body: { ok: false, error: "Missing or empty 'names' array" },
+        });
+      }
 
-  c.executionCtx.waitUntil(prewarmProductImages(c.env, names, 8, c.executionCtx));
-  return c.json({ ok: true, queued: names.length }, 202);
-});
+      c.executionCtx.waitUntil(prewarmProductImages(c.env, names, 8, c.executionCtx));
+      return c.json({ ok: true, queued: names.length }, 202);
+    }),
+  ),
+);
 
 export async function prewarmProductImages(
   env: Env,

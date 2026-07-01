@@ -5,20 +5,45 @@ compatibility_flags = ["nodejs_compat"]
 
 # ---------------------------------------------------------------------------
 # AI rate limiters — applied to /identify-item, /parse-list, /product-image.
-# Two windows enforce both burst (10 RPS) and sustained (100/min) limits.
-# namespace_id values are arbitrary unique integers per account.
+# The limiter keys on the Cloudflare-provided connecting IP (which the edge
+# sets from the real TCP source and a client cannot forge) as the HARD ceiling,
+# so the caller-supplied x-grocer-distinct-id header can no longer be spoofed or
+# rotated to bypass the limit — it only narrows a caller's budget on top of the
+# per-IP cap. See lib/aiRateLimit.ts. namespace_id values are arbitrary unique
+# integers per account.
 # ---------------------------------------------------------------------------
+
+# Per-IP burst — absorbs a list opening many product-image loads at once.
 [[unsafe.bindings]]
 name = "AI_RL_PER_10S"
 type = "ratelimit"
 namespace_id = "2001"
-simple = { limit = 100, period = 10 }
+simple = { limit = 60, period = 10 }
 
+# Per-IP sustained — the hard ceiling across all AI routes (generous enough to
+# cover several users behind one CGNAT/VPN egress IP).
 [[unsafe.bindings]]
 name = "AI_RL_PER_MIN"
 type = "ratelimit"
 namespace_id = "2002"
-simple = { limit = 100, period = 60 }
+simple = { limit = 300, period = 60 }
+
+# Per-distinct-id fair-share cap — a smaller per-user budget layered on top so a
+# single user can't monopolise a shared IP's ceiling. Only applies when the
+# (untrusted) header is present, so it can never raise a caller's limit.
+[[unsafe.bindings]]
+name = "AI_RL_ID_PER_MIN"
+type = "ratelimit"
+namespace_id = "2003"
+simple = { limit = 120, period = 60 }
+
+# Tighter per-IP cap for the OpenAI image-generation routes (/product-image and
+# its prewarm), which can mint a paid image per novel item name.
+[[unsafe.bindings]]
+name = "AI_RL_IMAGE_PER_MIN"
+type = "ratelimit"
+namespace_id = "2004"
+simple = { limit = 150, period = 60 }
 
 
 routes = [

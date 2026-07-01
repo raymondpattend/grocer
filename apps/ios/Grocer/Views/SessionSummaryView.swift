@@ -15,7 +15,7 @@ struct SessionSummaryView: View {
 
     @State private var clearFound = true
     @State private var keepOutOfStock = true
-    @State private var finished = false
+    @State private var isFinishing = false
 
     private var progress: SessionProgress { repo.progress(for: session) }
 
@@ -45,7 +45,7 @@ struct SessionSummaryView: View {
                 heroSection
 
                 if !foundItems.isEmpty {
-                    itemCard(
+                    TripSummaryItemCard(
                         title: String(localized: "Found"),
                         systemImage: "checkmark.circle.fill",
                         iconColor: .grocerGreen,
@@ -54,7 +54,7 @@ struct SessionSummaryView: View {
                 }
 
                 if !notFoundItems.isEmpty {
-                    itemCard(
+                    TripSummaryItemCard(
                         title: String(localized: "Not Found"),
                         systemImage: "xmark.circle.fill",
                         iconColor: .secondary,
@@ -63,7 +63,14 @@ struct SessionSummaryView: View {
                 }
 
                 if !foundItems.isEmpty || hasOutOfStock {
-                    cleanupCard
+                    TripCleanupCard(
+                        clearFound: $clearFound,
+                        keepOutOfStock: $keepOutOfStock,
+                        showClearFound: !foundItems.isEmpty,
+                        hasOutOfStock: hasOutOfStock,
+                        tint: tint,
+                        plural: false
+                    )
                 }
             }
             .padding(.horizontal, 16)
@@ -75,19 +82,28 @@ struct SessionSummaryView: View {
         .navigationBarBackButtonHidden(true)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             Button {
-                finishTrip()
+                Task { await finishTrip() }
             } label: {
-                Text("Done")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 6)
+                HStack(spacing: 8) {
+                    if isFinishing { ProgressView() }
+                    Text(doneButtonTitle)
+                        .font(.headline)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
             }
             .grocerGlassButton(prominent: true)
             .tint(tint)
             .controlSize(.large)
             .padding()
+            .disabled(isFinishing)
         }
+        .interactiveDismissDisabled(isFinishing)
         .postHogScreenView("Session Summary")
+    }
+
+    private var doneButtonTitle: String {
+        isFinishing ? String(localized: "Finishing...") : String(localized: "Done")
     }
 
     // MARK: - Hero
@@ -115,9 +131,9 @@ struct SessionSummaryView: View {
             }
 
             HStack(spacing: 8) {
-                statPill("\(foundItems.count)", label: String(localized: "found"), color: .grocerGreen)
+                TripStatPill(value: "\(foundItems.count)", label: String(localized: "found"), color: .grocerGreen)
                 if !notFoundItems.isEmpty {
-                    statPill("\(notFoundItems.count)", label: String(localized: "not found"), color: .grocerSlate)
+                    TripStatPill(value: "\(notFoundItems.count)", label: String(localized: "not found"), color: .grocerSlate)
                 }
             }
         }
@@ -131,152 +147,12 @@ struct SessionSummaryView: View {
         }
     }
 
-    private func statPill(_ value: String, label: String, color: Color) -> some View {
-        HStack(spacing: 4) {
-            Text(value)
-                .font(.subheadline.bold())
-                .foregroundStyle(color)
-            Text(label)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(color.opacity(0.1), in: Capsule())
-    }
-
-    // MARK: - Item Cards
-
-    private func itemCard(title: String, systemImage: String, iconColor: Color, items: [GroceryItem]) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Image(systemName: systemImage).foregroundStyle(iconColor)
-                Text(title)
-                Text("·")
-                Text("\(items.count)")
-                Spacer()
-            }
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 14)
-
-            VStack(spacing: 0) {
-                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                    itemRow(item)
-                    if index < items.count - 1 {
-                        Divider().padding(.leading, 62)
-                    }
-                }
-            }
-            .background(Color(.secondarySystemGroupedBackground),
-                        in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(Color(.separator).opacity(0.5), lineWidth: 1)
-            }
-        }
-    }
-
-    private func itemRow(_ item: GroceryItem) -> some View {
-        HStack(spacing: 12) {
-            ProductImageView(itemName: item.name, size: 36)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(item.name)
-                    .font(.subheadline.weight(.medium))
-                    .lineLimit(1)
-                if let qty = item.quantity, !qty.isEmpty {
-                    Text(Quantity.displayString(qty))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            Spacer(minLength: 8)
-
-            statusBadge(item)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-    }
-
-    @ViewBuilder
-    private func statusBadge(_ item: GroceryItem) -> some View {
-        let (label, color): (String, Color) = {
-            switch item.status {
-            case .found: return (String(localized: "Found"), .grocerGreen)
-            case .replaced:
-                let name = item.replacementItemName ?? String(localized: "alternative")
-                return (String(localized: "Replaced · \(name)"), .blue)
-            case .outOfStock: return (String(localized: "Out of stock"), .grocerRed)
-            case .skipped: return (String(localized: "Skipped"), .orange)
-            default: return (String(localized: "Not Found"), .secondary)
-            }
-        }()
-
-        Text(label)
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(color)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .background(color.opacity(0.14), in: Capsule())
-            .lineLimit(1)
-    }
-
-    // MARK: - Cleanup Card
-
-    private var cleanupCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Image(systemName: "slider.horizontal.3").foregroundStyle(.secondary)
-                Text("Cleanup")
-                Spacer()
-            }
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 14)
-
-            VStack(spacing: 0) {
-                if !foundItems.isEmpty {
-                    Toggle("Remove found items from the list", isOn: $clearFound)
-                        .font(.subheadline)
-                        .tint(tint)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 13)
-                        .onChange(of: clearFound) { _, _ in Haptics.selection() }
-                    if hasOutOfStock {
-                        Divider().padding(.leading, 14)
-                    }
-                }
-                if hasOutOfStock {
-                    Toggle("Keep out-of-stock items for next trip", isOn: $keepOutOfStock)
-                        .font(.subheadline)
-                        .tint(tint)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 13)
-                        .onChange(of: keepOutOfStock) { _, _ in Haptics.selection() }
-                }
-            }
-            .background(Color(.secondarySystemGroupedBackground),
-                        in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(Color(.separator).opacity(0.5), lineWidth: 1)
-            }
-
-            Text("Skipped and remaining items always stay on your list.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 14)
-        }
-    }
-
     // MARK: - Finish
 
-    private func finishTrip() {
-        guard !finished else { return }
+    private func finishTrip() async {
+        guard !isFinishing else { return }
         Haptics.success()
-        finished = true
+        isFinishing = true
         PostHogSDK.shared.capture("shopping_trip_finished", properties: [
             "items_found": progress.found,
             "items_replaced": progress.replaced,
@@ -285,12 +161,12 @@ struct SessionSummaryView: View {
             "total_items": progress.total,
             "store_name": session.storeName ?? "unknown",
         ])
-        // Ending already started on the previous screen; cleanup is local +
-        // an outbox flush. Neither needs to block the shopper from leaving.
-        Task {
-            await endingTask?.value
-            await repo.completeTripCleanup(session, clearCompleted: clearFound, keepOutOfStock: keepOutOfStock)
-        }
+        // Wait out the ending work started on the previous screen, then apply and
+        // *durably persist* the cleanup choices before dismissing. Awaiting here
+        // (with Done disabled and dismissal blocked) is what keeps a suspend/kill
+        // right after the tap from silently dropping the shopper's choices.
+        await endingTask?.value
+        await repo.completeTripCleanup(session, clearCompleted: clearFound, keepOutOfStock: keepOutOfStock)
         onDone()
     }
 }

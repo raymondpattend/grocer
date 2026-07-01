@@ -148,4 +148,27 @@ describe("runRetentionSweep", () => {
     expect(r.failed).toBe(1);
     expect(invalidateNotificationToken).toHaveBeenCalledWith(env.DB, "tok-1");
   });
+
+  it("survives a transient D1 write failure mid-delivery instead of crashing the sweep", async () => {
+    // Regression guard: the follow-up D1 writes (invalidate + logApns) live in
+    // the same try/catch as the send, so a transient failure is swallowed by a
+    // compensating "failed" log and the sweep keeps going — it must not reject.
+    retentionCandidates.mockResolvedValue([candidate()]);
+    sendRetentionNotification.mockResolvedValue({
+      ok: false,
+      statusCode: 410,
+      tokenExpired: true,
+      reason: "Unregistered",
+    });
+    invalidateNotificationToken.mockRejectedValue(new Error("d1 unavailable"));
+
+    const r = await runRetentionSweep(env);
+    expect(r.sent).toBe(0);
+    expect(r.failed).toBe(1);
+    // A compensating "failed" APNs-log row is still written.
+    expect(logApns).toHaveBeenCalledWith(
+      env.DB,
+      expect.objectContaining({ outcome: "failed" }),
+    );
+  });
 });

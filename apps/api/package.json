@@ -19,6 +19,7 @@
     "@grocer/shared": "workspace:*",
     "@sentry/cloudflare": "^10.56.0",
     "@sentry/hono": "^10.56.0",
+    "effect": "^3.21.4",
     "grafana-openai-monitoring": "^0.0.4",
     "hono": "^4.6.3",
     "openai": "^6.42.0",

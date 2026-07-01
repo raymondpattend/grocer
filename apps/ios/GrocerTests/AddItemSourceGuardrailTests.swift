@@ -33,6 +33,26 @@ final class AddItemSourceGuardrailTests: XCTestCase {
         XCTAssertTrue(body.contains("closeButton"))
     }
 
+    func testAddFlowWritesToExplicitTargetListWithoutGlobalSelectionSideEffect() throws {
+        let src = try addItemSource()
+
+        // The add flow can target an explicit list and routes its write through it
+        // (rather than always writing to the ambient `currentList`).
+        XCTAssertTrue(src.contains("var targetListId: String?"),
+                      "AddItemSearchView should accept an explicit target list")
+        XCTAssertTrue(src.contains("toListId: targetListId"),
+                      "the committed add should route to the explicit target list")
+
+        // The combined trip presents the add flow with an explicit target and must
+        // NOT mutate the global selected group as a side effect of adding.
+        let combined = try source("Grocer/Views/CombinedShoppingSessionView.swift")
+        let selectAdd = try excerpt(combined, from: "private func selectAddTarget", to: "private func addTargetTint")
+        XCTAssertFalse(selectAdd.contains("selectHousehold"),
+                       "adding during a combined trip must not switch the app's selected group")
+        XCTAssertTrue(combined.contains("targetListId: target.id"),
+                      "the combined add flow should pass the chosen list explicitly")
+    }
+
     func testInterpretRunsOnlyOnCommitNotWhileTyping() throws {
         let src = try addItemSource()
 
@@ -155,7 +175,7 @@ final class AddItemSourceGuardrailTests: XCTestCase {
         // stepper (a glass capsule). A tap toggles the stepper; a long press opens a
         // popover unit picker (driven by explicit gestures, not a Button +
         // .contextMenu, so the long press reliably lands on the glass chip).
-        let chip = try excerpt(src, from: "private struct InlineQuantityChip", to: "// MARK: - Identify confirm card")
+        let chip = try excerpt(src, from: "private struct InlineQuantityChip", to: "extension View {")
         XCTAssertTrue(chip.contains("Quantity.displayString(quantity)"))
         XCTAssertTrue(chip.contains("expanded.toggle()"))
         XCTAssertTrue(chip.contains("systemImage: \"minus\""))

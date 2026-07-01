@@ -1,5 +1,5 @@
+import { Effect } from "effect";
 import { Hono } from "hono";
-import type { Context } from "hono";
 import {
   EndLiveActivityRequestSchema,
   HeadsUpRequestSchema,
@@ -11,7 +11,10 @@ import {
   type LiveActivityContent,
 } from "@grocer/shared";
 import type { Env } from "../env.js";
-import { parseBody } from "../lib/validate.js";
+import { decodeJsonBody } from "../effect/body.js";
+import { runGuard, runHandler } from "../effect/http.js";
+import { fromPromise } from "../effect/interop.js";
+import { Telemetry } from "../effect/services.js";
 import {
   activityAttributesType,
   sendHeadsUpNotification,
@@ -37,29 +40,66 @@ import {
   upsertActivityToken,
   upsertDeviceToken,
 } from "../db/liveActivityTokens.js";
-import { createPostHogClient } from "../lib/posthog.js";
-import {
-  authenticateSignedRequest,
-  enforceRateLimit,
-} from "../lib/signing.js";
+import { authenticateSignedRequest, enforceRateLimit } from "../lib/signing.js";
 
 export const liveActivityRoute = new Hono<{ Bindings: Env }>();
 
+type DeliveryOutcome = "sent" | "failed";
+
+/**
+ * Sends one APNs push and records its outcome, resolving to whether it counted
+ * as sent or failed. Extracted from the five near-identical fan-out loops the
+ * route used to repeat by hand — each caller now just supplies the send call and
+ * its result-logging closures, keeping every `logApns` write byte-identical.
+ * A thrown send logs a failure; a token Apple rejected is invalidated before the
+ * failure is logged.
+ */
+function deliverPush(input: {
+  send: () => Promise<ApnsResult>;
+  onThrow: (err: unknown) => Promise<unknown>;
+  onSent: (result: ApnsResult) => Promise<unknown>;
+  onFailed: (result: ApnsResult) => Promise<unknown>;
+  onExpiredToken?: (result: ApnsResult) => Promise<unknown>;
+}): Effect.Effect<DeliveryOutcome> {
+  return Effect.tryPromise({ try: input.send, catch: (err) => err }).pipe(
+    Effect.matchEffect({
+      onFailure: (err) =>
+        fromPromise(() => input.onThrow(err)).pipe(Effect.as("failed" as const)),
+      onSuccess: (result) =>
+        Effect.gen(function* () {
+          if (result.ok) {
+            yield* fromPromise(() => input.onSent(result));
+            return "sent" as const;
+          }
+          if (result.tokenExpired && input.onExpiredToken) {
+            yield* fromPromise(() => input.onExpiredToken!(result));
+          }
+          yield* fromPromise(() => input.onFailed(result));
+          return "failed" as const;
+        }),
+    }),
+  );
+}
+
+/** Fan a push out to every device in parallel and total the sent/failed counts.
+ *  Unbounded to match the original `Promise.all` — a household's device set is
+ *  tiny (family size). */
+function fanOut<T>(
+  items: readonly T[],
+  deliver: (item: T) => Effect.Effect<DeliveryOutcome>,
+): Effect.Effect<{ sent: number; failed: number }> {
+  return Effect.forEach(items, deliver, { concurrency: "unbounded" }).pipe(
+    Effect.map((outcomes) => ({
+      sent: outcomes.filter((o) => o === "sent").length,
+      failed: outcomes.filter((o) => o === "failed").length,
+    })),
+  );
+}
+
 /** Live Activity callers authenticate with the `x-grocer-signature` HMAC header. */
-async function authenticateLiveActivityRequest(c: Context<{ Bindings: Env }>) {
-  return authenticateSignedRequest(c);
-}
-
-async function consumeRateLimit(
-  c: Context<{ Bindings: Env }>,
-  scope: string,
-  limit: number,
-  windowSeconds: number,
-) {
-  return enforceRateLimit(c, scope, limit, windowSeconds);
-}
-
-function rateLimitConfig(pathname: string): { scope: string; limit: number; windowSeconds: number } {
+function rateLimitConfig(
+  pathname: string,
+): { scope: string; limit: number; windowSeconds: number } {
   if (pathname.includes("/debug/")) return { scope: "debug", limit: 10, windowSeconds: 60 };
   if (pathname.endsWith("/start") || pathname.endsWith("/update") || pathname.endsWith("/end")) {
     return { scope: "fanout", limit: 30, windowSeconds: 60 };
@@ -67,47 +107,55 @@ function rateLimitConfig(pathname: string): { scope: string; limit: number; wind
   return { scope: "register", limit: 90, windowSeconds: 60 };
 }
 
-async function reconcileHouseholdRecipients(
-  c: Context<{ Bindings: Env }>,
+function reconcileHouseholdRecipients(
+  db: D1Database,
   householdId: string,
   recipientMemberIds?: string[],
-) {
-  const disabled = await disableHouseholdRegistrationsExceptMembers(
-    c.env.DB,
-    householdId,
-    recipientMemberIds,
-  );
-  if (disabled > 0) {
-    console.log(
-      `[notifications] disabled stale household registrations ` +
-        `household=${householdId} disabledRows=${disabled}`,
+): Effect.Effect<void> {
+  return Effect.gen(function* () {
+    const disabled = yield* fromPromise(() =>
+      disableHouseholdRegistrationsExceptMembers(db, householdId, recipientMemberIds),
     );
-  }
+    if (disabled > 0) {
+      console.log(
+        `[notifications] disabled stale household registrations ` +
+          `household=${householdId} disabledRows=${disabled}`,
+      );
+    }
+  });
 }
 
-async function reconcileSessionRecipients(
-  c: Context<{ Bindings: Env }>,
+function reconcileSessionRecipients(
+  db: D1Database,
   input: { householdId: string; sessionId: string; recipientMemberIds?: string[] },
-) {
-  const disabled = await invalidateSessionActivityTokensExceptMembers(c.env.DB, {
-    householdId: input.householdId,
-    sessionId: input.sessionId,
-    activeMemberIds: input.recipientMemberIds,
-  });
-  if (disabled > 0) {
-    console.log(
-      `[live-activity] invalidated stale session activity tokens ` +
-        `household=${input.householdId} session=${input.sessionId} disabledRows=${disabled}`,
+): Effect.Effect<void> {
+  return Effect.gen(function* () {
+    const disabled = yield* fromPromise(() =>
+      invalidateSessionActivityTokensExceptMembers(db, {
+        householdId: input.householdId,
+        sessionId: input.sessionId,
+        activeMemberIds: input.recipientMemberIds,
+      }),
     );
-  }
+    if (disabled > 0) {
+      console.log(
+        `[live-activity] invalidated stale session activity tokens ` +
+          `household=${input.householdId} session=${input.sessionId} disabledRows=${disabled}`,
+      );
+    }
+  });
 }
 
 liveActivityRoute.use("/live-activity/*", async (c, next) => {
-  const authError = await authenticateLiveActivityRequest(c);
-  if (authError) return authError;
-  const { scope, limit, windowSeconds } = rateLimitConfig(new URL(c.req.url).pathname);
-  const rateLimitError = await consumeRateLimit(c, scope, limit, windowSeconds);
-  if (rateLimitError) return rateLimitError;
+  const rejection = await runGuard(
+    c,
+    Effect.gen(function* () {
+      yield* authenticateSignedRequest(c);
+      const { scope, limit, windowSeconds } = rateLimitConfig(new URL(c.req.url).pathname);
+      yield* enforceRateLimit(c, scope, limit, windowSeconds);
+    }),
+  );
+  if (rejection) return rejection;
   await next();
 });
 
@@ -140,8 +188,8 @@ function toContent(
   };
 }
 
-async function sendShoppingTripNotificationFanout(
-  c: Context<{ Bindings: Env }>,
+function sendShoppingTripNotificationFanout(
+  env: Env,
   input: {
     householdId: string;
     sessionId: string;
@@ -157,102 +205,94 @@ async function sendShoppingTripNotificationFanout(
     outOfStockCount?: number;
     replacedCount?: number;
   },
-): Promise<{ sent: number; failed: number }> {
-  await reconcileHouseholdRecipients(c, input.householdId, input.recipientMemberIds);
+): Effect.Effect<{ sent: number; failed: number }> {
+  return Effect.gen(function* () {
+    yield* reconcileHouseholdRecipients(env.DB, input.householdId, input.recipientMemberIds);
 
-  const devices = await eligibleNotificationTokens(
-    c.env.DB,
-    input.householdId,
-    input.sourceDeviceId,
-    input.recipientMemberIds,
-  );
+    const devices = yield* fromPromise(() =>
+      eligibleNotificationTokens(
+        env.DB,
+        input.householdId,
+        input.sourceDeviceId,
+        input.recipientMemberIds,
+      ),
+    );
 
-  console.log(
-    `[notifications] fanout event=${input.event} household=${input.householdId} ` +
-    `excludeDevice=${input.sourceDeviceId ?? "none"} eligibleDevices=${devices.length}`,
-  );
+    console.log(
+      `[notifications] fanout event=${input.event} household=${input.householdId} ` +
+        `excludeDevice=${input.sourceDeviceId ?? "none"} eligibleDevices=${devices.length}`,
+    );
 
-  let sent = 0;
-  let failed = 0;
-  const logEvent = input.event === "started" ? "start_notification" : "end_notification";
+    const logEvent = input.event === "started" ? "start_notification" : "end_notification";
 
-  await Promise.all(
-    devices.map(async (device) => {
+    return yield* fanOut(devices, (device) => {
       const token = device.push_notification_token!;
-      let result: ApnsResult;
-      try {
-        result = await sendShoppingTripNotification(c.env, token, input);
-      } catch (err) {
-        failed++;
-        await logApns(c.env.DB, {
-          sessionId: input.sessionId,
-          deviceId: device.device_id,
-          event: logEvent,
-          outcome: "failed",
-          detail: String(err),
-        });
-        return;
-      }
-
-      if (result.ok) {
-        sent++;
-        await logApns(c.env.DB, {
-          sessionId: input.sessionId,
-          deviceId: device.device_id,
-          event: logEvent,
-          outcome: "sent",
-          statusCode: result.statusCode,
-          apnsId: result.apnsId,
-        });
-      } else {
-        failed++;
-        if (result.tokenExpired) {
-          await invalidateNotificationToken(c.env.DB, token);
-        }
-        await logApns(c.env.DB, {
-          sessionId: input.sessionId,
-          deviceId: device.device_id,
-          event: logEvent,
-          outcome: result.tokenExpired ? "expired" : "failed",
-          statusCode: result.statusCode,
-          apnsId: result.apnsId,
-          detail: result.reason ?? result.detail,
-        });
-      }
-    }),
-  );
-
-  return { sent, failed };
+      return deliverPush({
+        send: () => sendShoppingTripNotification(env, token, input),
+        onThrow: (err) =>
+          logApns(env.DB, {
+            sessionId: input.sessionId,
+            deviceId: device.device_id,
+            event: logEvent,
+            outcome: "failed",
+            detail: String(err),
+          }),
+        onSent: (result) =>
+          logApns(env.DB, {
+            sessionId: input.sessionId,
+            deviceId: device.device_id,
+            event: logEvent,
+            outcome: "sent",
+            statusCode: result.statusCode,
+            apnsId: result.apnsId,
+          }),
+        onExpiredToken: () => invalidateNotificationToken(env.DB, token),
+        onFailed: (result) =>
+          logApns(env.DB, {
+            sessionId: input.sessionId,
+            deviceId: device.device_id,
+            event: logEvent,
+            outcome: result.tokenExpired ? "expired" : "failed",
+            statusCode: result.statusCode,
+            apnsId: result.apnsId,
+            detail: result.reason ?? result.detail,
+          }),
+      });
+    });
+  });
 }
 
 // ---------------------------------------------------------------------------
 // POST /live-activity/register-token
 // Registers (or refreshes) a device's push-to-start token + LA preference.
 // ---------------------------------------------------------------------------
-liveActivityRoute.post("/live-activity/register-token", async (c) => {
-  const parsed = await parseBody(c, RegisterTokenRequestSchema);
-  if ("error" in parsed) return parsed.error;
+liveActivityRoute.post("/live-activity/register-token", (c) =>
+  runHandler(
+    c,
+    Effect.gen(function* () {
+      const data = yield* decodeJsonBody(c, RegisterTokenRequestSchema);
 
-  await upsertDeviceToken(c.env.DB, parsed.data);
+      yield* fromPromise(() => upsertDeviceToken(c.env.DB, data));
 
-  const posthog = createPostHogClient(c.env);
-  posthog.capture({
-    distinctId: parsed.data.memberId,
-    event: "device registered",
-    properties: {
-      household_id: parsed.data.householdId,
-      platform: parsed.data.platform ?? "iOS",
-      app_version: parsed.data.appVersion,
-      live_activities_enabled: parsed.data.familyLiveActivitiesEnabled,
-      has_push_to_start_token: !!parsed.data.pushToStartToken,
-      has_push_notification_token: !!parsed.data.pushNotificationToken,
-      $groups: { household: parsed.data.householdId },
-    },
-  });
-  c.executionCtx.waitUntil(posthog.shutdown());
+      const telemetry = yield* Telemetry;
+      yield* telemetry.capture({
+        distinctId: data.memberId,
+        event: "device registered",
+        properties: {
+          household_id: data.householdId,
+          platform: data.platform ?? "iOS",
+          app_version: data.appVersion,
+          live_activities_enabled: data.familyLiveActivitiesEnabled,
+          has_push_to_start_token: !!data.pushToStartToken,
+          has_push_notification_token: !!data.pushNotificationToken,
+          $groups: { household: data.householdId },
+        },
+      });
 
-  return c.json({ ok: true });
-});
+      return c.json({ ok: true });
+    }),
+  ),
+);
 
 // ---------------------------------------------------------------------------
 // POST /live-activity/sync-registrations
@@ -260,522 +300,514 @@ liveActivityRoute.post("/live-activity/register-token", async (c) => {
 // disabling rows for groups the device has left. Self-healing cleanup for the
 // stale-registration leak where non-members keep receiving a group's pushes.
 // ---------------------------------------------------------------------------
-liveActivityRoute.post("/live-activity/sync-registrations", async (c) => {
-  const parsed = await parseBody(c, SyncRegistrationsRequestSchema);
-  if ("error" in parsed) return parsed.error;
+liveActivityRoute.post("/live-activity/sync-registrations", (c) =>
+  runHandler(
+    c,
+    Effect.gen(function* () {
+      const data = yield* decodeJsonBody(c, SyncRegistrationsRequestSchema);
 
-  const disabled = await disableStaleDeviceRegistrations(
-    c.env.DB,
-    parsed.data.deviceId,
-    parsed.data.householdIds,
-  );
+      const disabled = yield* fromPromise(() =>
+        disableStaleDeviceRegistrations(c.env.DB, data.deviceId, data.householdIds),
+      );
 
-  console.log(
-    `[notifications] sync-registrations device=${parsed.data.deviceId} ` +
-      `activeHouseholds=${parsed.data.householdIds.length} disabledRows=${disabled}`,
-  );
+      console.log(
+        `[notifications] sync-registrations device=${data.deviceId} ` +
+          `activeHouseholds=${data.householdIds.length} disabledRows=${disabled}`,
+      );
 
-  return c.json({ ok: true, disabled });
-});
+      return c.json({ ok: true, disabled });
+    }),
+  ),
+);
 
 // ---------------------------------------------------------------------------
 // POST /live-activity/heads-up
 // "I'm about to shop" — fans out a Time Sensitive alert to every other member
 // of the group. No shopping session is involved.
 // ---------------------------------------------------------------------------
-liveActivityRoute.post("/live-activity/heads-up", async (c) => {
-  const parsed = await parseBody(c, HeadsUpRequestSchema);
-  if ("error" in parsed) return parsed.error;
-  const body = parsed.data;
+liveActivityRoute.post("/live-activity/heads-up", (c) =>
+  runHandler(
+    c,
+    Effect.gen(function* () {
+      const body = yield* decodeJsonBody(c, HeadsUpRequestSchema);
 
-  await reconcileHouseholdRecipients(c, body.householdId, body.recipientMemberIds);
+      yield* reconcileHouseholdRecipients(c.env.DB, body.householdId, body.recipientMemberIds);
 
-  const devices = await eligibleNotificationTokens(
-    c.env.DB,
-    body.householdId,
-    body.sourceDeviceId,
-    body.recipientMemberIds,
-  );
+      const devices = yield* fromPromise(() =>
+        eligibleNotificationTokens(
+          c.env.DB,
+          body.householdId,
+          body.sourceDeviceId,
+          body.recipientMemberIds,
+        ),
+      );
 
-  console.log(
-    `[notifications] heads-up household=${body.householdId} ` +
-    `excludeDevice=${body.sourceDeviceId ?? "none"} eligibleDevices=${devices.length}`,
-  );
+      console.log(
+        `[notifications] heads-up household=${body.householdId} ` +
+          `excludeDevice=${body.sourceDeviceId ?? "none"} eligibleDevices=${devices.length}`,
+      );
 
-  let sent = 0;
-  let failed = 0;
-
-  await Promise.all(
-    devices.map(async (device) => {
-      const token = device.push_notification_token!;
-      let result: ApnsResult;
-      try {
-        result = await sendHeadsUpNotification(c.env, token, {
-          householdId: body.householdId,
-          shopperName: body.shopperName,
-          storeName: body.storeName,
+      const { sent, failed } = yield* fanOut(devices, (device) => {
+        const token = device.push_notification_token!;
+        return deliverPush({
+          send: () =>
+            sendHeadsUpNotification(c.env, token, {
+              householdId: body.householdId,
+              shopperName: body.shopperName,
+              storeName: body.storeName,
+            }),
+          onThrow: (err) =>
+            logApns(c.env.DB, {
+              deviceId: device.device_id,
+              event: "heads_up_notification",
+              outcome: "failed",
+              detail: String(err),
+            }),
+          onSent: (result) =>
+            logApns(c.env.DB, {
+              deviceId: device.device_id,
+              event: "heads_up_notification",
+              outcome: "sent",
+              statusCode: result.statusCode,
+              apnsId: result.apnsId,
+            }),
+          onExpiredToken: () => invalidateNotificationToken(c.env.DB, token),
+          onFailed: (result) =>
+            logApns(c.env.DB, {
+              deviceId: device.device_id,
+              event: "heads_up_notification",
+              outcome: result.tokenExpired ? "expired" : "failed",
+              statusCode: result.statusCode,
+              apnsId: result.apnsId,
+              detail: result.reason ?? result.detail,
+            }),
         });
-      } catch (err) {
-        failed++;
-        await logApns(c.env.DB, {
-          deviceId: device.device_id,
-          event: "heads_up_notification",
-          outcome: "failed",
-          detail: String(err),
-        });
-        return;
-      }
+      });
 
-      if (result.ok) {
-        sent++;
-        await logApns(c.env.DB, {
-          deviceId: device.device_id,
-          event: "heads_up_notification",
-          outcome: "sent",
-          statusCode: result.statusCode,
-          apnsId: result.apnsId,
-        });
-      } else {
-        failed++;
-        if (result.tokenExpired) {
-          await invalidateNotificationToken(c.env.DB, token);
-        }
-        await logApns(c.env.DB, {
-          deviceId: device.device_id,
-          event: "heads_up_notification",
-          outcome: result.tokenExpired ? "expired" : "failed",
-          statusCode: result.statusCode,
-          apnsId: result.apnsId,
-          detail: result.reason ?? result.detail,
-        });
-      }
+      const telemetry = yield* Telemetry;
+      yield* telemetry.capture({
+        distinctId: body.sourceDeviceId ?? body.householdId,
+        event: "shopping heads up sent",
+        properties: {
+          household_id: body.householdId,
+          store_name: body.storeName ?? null,
+          devices_notified: sent,
+          devices_notification_failed: failed,
+          $groups: { household: body.householdId },
+        },
+      });
+
+      return c.json({ ok: true, sent, failed });
     }),
-  );
-
-  const posthog = createPostHogClient(c.env);
-  posthog.capture({
-    distinctId: body.sourceDeviceId ?? body.householdId,
-    event: "shopping heads up sent",
-    properties: {
-      household_id: body.householdId,
-      store_name: body.storeName ?? null,
-      devices_notified: sent,
-      devices_notification_failed: failed,
-      $groups: { household: body.householdId },
-    },
-  });
-  c.executionCtx.waitUntil(posthog.shutdown());
-
-  return c.json({ ok: true, sent, failed });
-});
+  ),
+);
 
 // ---------------------------------------------------------------------------
 // POST /live-activity/register-update-token
 // A running activity's per-activity update token, so we can update/end it.
 // ---------------------------------------------------------------------------
-liveActivityRoute.post("/live-activity/register-update-token", async (c) => {
-  const parsed = await parseBody(c, RegisterUpdateTokenRequestSchema);
-  if ("error" in parsed) return parsed.error;
-
-  await upsertActivityToken(c.env.DB, parsed.data);
-  return c.json({ ok: true });
-});
+liveActivityRoute.post("/live-activity/register-update-token", (c) =>
+  runHandler(
+    c,
+    Effect.gen(function* () {
+      const data = yield* decodeJsonBody(c, RegisterUpdateTokenRequestSchema);
+      yield* fromPromise(() => upsertActivityToken(c.env.DB, data));
+      return c.json({ ok: true });
+    }),
+  ),
+);
 
 // ---------------------------------------------------------------------------
 // POST /live-activity/start
 // Fan out push-to-start to every eligible device in the household.
 // ---------------------------------------------------------------------------
-liveActivityRoute.post("/live-activity/start", async (c) => {
-  const parsed = await parseBody(c, StartLiveActivityRequestSchema);
-  if ("error" in parsed) return parsed.error;
-  const body = parsed.data;
-  const content = toContent(body);
+liveActivityRoute.post("/live-activity/start", (c) =>
+  runHandler(
+    c,
+    Effect.gen(function* () {
+      const body = yield* decodeJsonBody(c, StartLiveActivityRequestSchema);
+      const content = toContent(body);
 
-  // Persist a snapshot for retries/diagnostics (CloudKit stays authoritative).
-  await saveSessionSnapshot(c.env.DB, {
-    sessionId: body.sessionId,
-    householdId: body.householdId,
-    content,
-    status: "Active",
-    startedAt: body.startedAt,
-  });
-
-  await reconcileHouseholdRecipients(c, body.householdId, body.recipientMemberIds);
-
-  const devices = await eligibleStartTokens(
-    c.env.DB,
-    body.householdId,
-    body.sourceDeviceId,
-    body.recipientMemberIds,
-  );
-
-  console.log(
-    `[live-activity] start fanout household=${body.householdId} ` +
-      `session=${body.sessionId} excludeDevice=${body.sourceDeviceId ?? "none"} ` +
-      `eligibleDevices=${devices.length}`,
-  );
-
-  let sent = 0;
-  let failed = 0;
-  await Promise.all(
-    devices.map(async (device) => {
-      const token = device.push_to_start_token!;
-      let result: ApnsResult;
-      try {
-        result = await sendStart(c.env, token, {
+      // Persist a snapshot for retries/diagnostics (CloudKit stays authoritative).
+      yield* fromPromise(() =>
+        saveSessionSnapshot(c.env.DB, {
+          sessionId: body.sessionId,
+          householdId: body.householdId,
           content,
-          attributesType: activityAttributesType(c.env),
-          attributes: {
-            householdId: body.householdId,
-            sessionId: body.sessionId,
-            startedByMemberId: body.startedByMemberId ?? null,
-          },
-        });
-      } catch (err) {
-        failed++;
-        await logApns(c.env.DB, {
-          sessionId: body.sessionId,
-          deviceId: device.device_id,
-          event: "start",
-          outcome: "failed",
-          detail: String(err),
-        });
-        return;
-      }
+          status: "Active",
+          startedAt: body.startedAt,
+        }),
+      );
 
-      if (result.ok) {
-        sent++;
-        await logApns(c.env.DB, {
-          sessionId: body.sessionId,
-          deviceId: device.device_id,
-          event: "start",
-          outcome: "sent",
-          statusCode: result.statusCode,
-          apnsId: result.apnsId,
+      yield* reconcileHouseholdRecipients(c.env.DB, body.householdId, body.recipientMemberIds);
+
+      const devices = yield* fromPromise(() =>
+        eligibleStartTokens(
+          c.env.DB,
+          body.householdId,
+          body.sourceDeviceId,
+          body.recipientMemberIds,
+        ),
+      );
+
+      console.log(
+        `[live-activity] start fanout household=${body.householdId} ` +
+          `session=${body.sessionId} excludeDevice=${body.sourceDeviceId ?? "none"} ` +
+          `eligibleDevices=${devices.length}`,
+      );
+
+      const { sent, failed } = yield* fanOut(devices, (device) => {
+        const token = device.push_to_start_token!;
+        return deliverPush({
+          send: () =>
+            sendStart(c.env, token, {
+              content,
+              attributesType: activityAttributesType(c.env),
+              attributes: {
+                householdId: body.householdId,
+                sessionId: body.sessionId,
+                startedByMemberId: body.startedByMemberId ?? null,
+              },
+            }),
+          onThrow: (err) =>
+            logApns(c.env.DB, {
+              sessionId: body.sessionId,
+              deviceId: device.device_id,
+              event: "start",
+              outcome: "failed",
+              detail: String(err),
+            }),
+          onSent: (result) =>
+            logApns(c.env.DB, {
+              sessionId: body.sessionId,
+              deviceId: device.device_id,
+              event: "start",
+              outcome: "sent",
+              statusCode: result.statusCode,
+              apnsId: result.apnsId,
+            }),
+          onExpiredToken: () => invalidatePushToStartToken(c.env.DB, token),
+          onFailed: (result) =>
+            logApns(c.env.DB, {
+              sessionId: body.sessionId,
+              deviceId: device.device_id,
+              event: "start",
+              outcome: result.tokenExpired ? "expired" : "failed",
+              statusCode: result.statusCode,
+              apnsId: result.apnsId,
+              detail: result.reason ?? result.detail,
+            }),
         });
-      } else {
-        failed++;
-        if (result.tokenExpired) {
-          await invalidatePushToStartToken(c.env.DB, token);
-        }
-        await logApns(c.env.DB, {
-          sessionId: body.sessionId,
-          deviceId: device.device_id,
-          event: "start",
-          outcome: result.tokenExpired ? "expired" : "failed",
-          statusCode: result.statusCode,
-          apnsId: result.apnsId,
-          detail: result.reason ?? result.detail,
-        });
-      }
+      });
+
+      const notifications = yield* sendShoppingTripNotificationFanout(c.env, {
+        householdId: body.householdId,
+        sessionId: body.sessionId,
+        sourceDeviceId: body.sourceDeviceId,
+        recipientMemberIds: body.recipientMemberIds,
+        event: "started",
+        startedByMemberId: body.startedByMemberId,
+        shopperName: body.shopperName,
+        storeName: body.storeName,
+        itemsFound: body.itemsFound,
+        itemsRemaining: body.itemsRemaining,
+        totalItems: body.totalItems,
+        outOfStockCount: body.outOfStockCount,
+        replacedCount: body.replacedCount,
+      });
+
+      const telemetry = yield* Telemetry;
+      yield* telemetry.capture({
+        distinctId: body.startedByMemberId ?? body.householdId,
+        event: "shopping trip started",
+        properties: {
+          session_id: body.sessionId,
+          household_id: body.householdId,
+          store_name: body.storeName ?? null,
+          total_items: body.totalItems,
+          devices_live_activity_sent: sent,
+          devices_live_activity_failed: failed,
+          devices_notified: notifications.sent,
+          devices_notification_failed: notifications.failed,
+          $groups: { household: body.householdId },
+        },
+      });
+
+      return c.json({
+        ok: true,
+        sent,
+        failed,
+        notificationsSent: notifications.sent,
+        notificationsFailed: notifications.failed,
+      });
     }),
-  );
-
-  const notifications = await sendShoppingTripNotificationFanout(c, {
-    householdId: body.householdId,
-    sessionId: body.sessionId,
-    sourceDeviceId: body.sourceDeviceId,
-    recipientMemberIds: body.recipientMemberIds,
-    event: "started",
-    startedByMemberId: body.startedByMemberId,
-    shopperName: body.shopperName,
-    storeName: body.storeName,
-    itemsFound: body.itemsFound,
-    itemsRemaining: body.itemsRemaining,
-    totalItems: body.totalItems,
-    outOfStockCount: body.outOfStockCount,
-    replacedCount: body.replacedCount,
-  });
-
-  const posthog = createPostHogClient(c.env);
-  posthog.capture({
-    distinctId: body.startedByMemberId ?? body.householdId,
-    event: "shopping trip started",
-    properties: {
-      session_id: body.sessionId,
-      household_id: body.householdId,
-      store_name: body.storeName ?? null,
-      total_items: body.totalItems,
-      devices_live_activity_sent: sent,
-      devices_live_activity_failed: failed,
-      devices_notified: notifications.sent,
-      devices_notification_failed: notifications.failed,
-      $groups: { household: body.householdId },
-    },
-  });
-  c.executionCtx.waitUntil(posthog.shutdown());
-
-  return c.json({
-    ok: true,
-    sent,
-    failed,
-    notificationsSent: notifications.sent,
-    notificationsFailed: notifications.failed,
-  });
-});
+  ),
+);
 
 // ---------------------------------------------------------------------------
 // POST /live-activity/update
 // Push an update to every running activity for this session.
 // ---------------------------------------------------------------------------
-liveActivityRoute.post("/live-activity/update", async (c) => {
-  const parsed = await parseBody(c, UpdateLiveActivityRequestSchema);
-  if ("error" in parsed) return parsed.error;
-  const body = parsed.data;
-  const content = toContent(body);
+liveActivityRoute.post("/live-activity/update", (c) =>
+  runHandler(
+    c,
+    Effect.gen(function* () {
+      const body = yield* decodeJsonBody(c, UpdateLiveActivityRequestSchema);
+      const content = toContent(body);
 
-  await saveSessionSnapshot(c.env.DB, {
-    sessionId: body.sessionId,
-    householdId: body.householdId,
-    content,
-    status: "Active",
-  });
-
-  await reconcileSessionRecipients(c, {
-    householdId: body.householdId,
-    sessionId: body.sessionId,
-    recipientMemberIds: body.recipientMemberIds,
-  });
-
-  const activities = await activityTokensForSession(
-    c.env.DB,
-    body.sessionId,
-    body.householdId,
-    body.recipientMemberIds,
-  );
-
-  let sent = 0;
-  let failed = 0;
-  await Promise.all(
-    activities.map(async (a) => {
-      let result: ApnsResult;
-      try {
-        result = await sendUpdate(c.env, a.update_token, content);
-      } catch (err) {
-        failed++;
-        await logApns(c.env.DB, {
+      yield* fromPromise(() =>
+        saveSessionSnapshot(c.env.DB, {
           sessionId: body.sessionId,
-          deviceId: a.device_id,
-          event: "update",
-          outcome: "failed",
-          detail: String(err),
-        });
-        return;
-      }
+          householdId: body.householdId,
+          content,
+          status: "Active",
+        }),
+      );
 
-      if (result.ok) {
-        sent++;
-        await logApns(c.env.DB, {
-          sessionId: body.sessionId,
-          deviceId: a.device_id,
-          event: "update",
-          outcome: "sent",
-          statusCode: result.statusCode,
-          apnsId: result.apnsId,
-        });
-      } else {
-        failed++;
-        if (result.tokenExpired) await invalidateUpdateToken(c.env.DB, a.update_token);
-        await logApns(c.env.DB, {
-          sessionId: body.sessionId,
-          deviceId: a.device_id,
-          event: "update",
-          outcome: result.tokenExpired ? "expired" : "failed",
-          statusCode: result.statusCode,
-          detail: result.reason ?? result.detail,
-        });
-      }
+      yield* reconcileSessionRecipients(c.env.DB, {
+        householdId: body.householdId,
+        sessionId: body.sessionId,
+        recipientMemberIds: body.recipientMemberIds,
+      });
+
+      const activities = yield* fromPromise(() =>
+        activityTokensForSession(
+          c.env.DB,
+          body.sessionId,
+          body.householdId,
+          body.recipientMemberIds,
+        ),
+      );
+
+      const { sent, failed } = yield* fanOut(activities, (a) =>
+        deliverPush({
+          send: () => sendUpdate(c.env, a.update_token, content),
+          onThrow: (err) =>
+            logApns(c.env.DB, {
+              sessionId: body.sessionId,
+              deviceId: a.device_id,
+              event: "update",
+              outcome: "failed",
+              detail: String(err),
+            }),
+          onSent: (result) =>
+            logApns(c.env.DB, {
+              sessionId: body.sessionId,
+              deviceId: a.device_id,
+              event: "update",
+              outcome: "sent",
+              statusCode: result.statusCode,
+              apnsId: result.apnsId,
+            }),
+          onExpiredToken: () => invalidateUpdateToken(c.env.DB, a.update_token),
+          onFailed: (result) =>
+            logApns(c.env.DB, {
+              sessionId: body.sessionId,
+              deviceId: a.device_id,
+              event: "update",
+              outcome: result.tokenExpired ? "expired" : "failed",
+              statusCode: result.statusCode,
+              detail: result.reason ?? result.detail,
+            }),
+        }),
+      );
+
+      const telemetry = yield* Telemetry;
+      yield* telemetry.capture({
+        distinctId: body.householdId,
+        event: "shopping trip updated",
+        properties: {
+          session_id: body.sessionId,
+          household_id: body.householdId,
+          items_found: body.itemsFound,
+          items_remaining: body.itemsRemaining,
+          total_items: body.totalItems,
+          out_of_stock_count: body.outOfStockCount,
+          replaced_count: body.replacedCount,
+          devices_updated: sent,
+          devices_update_failed: failed,
+          $groups: { household: body.householdId },
+        },
+      });
+
+      return c.json({ ok: true, sent, failed });
     }),
-  );
-
-  const posthog = createPostHogClient(c.env);
-  posthog.capture({
-    distinctId: body.householdId,
-    event: "shopping trip updated",
-    properties: {
-      session_id: body.sessionId,
-      household_id: body.householdId,
-      items_found: body.itemsFound,
-      items_remaining: body.itemsRemaining,
-      total_items: body.totalItems,
-      out_of_stock_count: body.outOfStockCount,
-      replaced_count: body.replacedCount,
-      devices_updated: sent,
-      devices_update_failed: failed,
-      $groups: { household: body.householdId },
-    },
-  });
-  c.executionCtx.waitUntil(posthog.shutdown());
-
-  return c.json({ ok: true, sent, failed });
-});
+  ),
+);
 
 // ---------------------------------------------------------------------------
 // POST /live-activity/end
 // End every running activity for this session with a completed/cancelled state.
 // ---------------------------------------------------------------------------
-liveActivityRoute.post("/live-activity/end", async (c) => {
-  const parsed = await parseBody(c, EndLiveActivityRequestSchema);
-  if ("error" in parsed) return parsed.error;
-  const body = parsed.data;
+liveActivityRoute.post("/live-activity/end", (c) =>
+  runHandler(
+    c,
+    Effect.gen(function* () {
+      const body = yield* decodeJsonBody(c, EndLiveActivityRequestSchema);
 
-  const status = body.status === "completed" ? "Completed" : "Cancelled";
-  const content: LiveActivityContent = {
-    storeName: body.storeName ?? null,
-    shopperName: body.shopperName ?? "",
-    status,
-    itemsFound: body.itemsFound,
-    itemsRemaining: body.itemsRemaining,
-    totalItems: body.totalItems,
-    outOfStockCount: body.outOfStockCount,
-    replacedCount: body.replacedCount,
-    lastHandledItemName: null,
-    lastHandledItemStatus: null,
-  };
+      const status = body.status === "completed" ? "Completed" : "Cancelled";
+      const content: LiveActivityContent = {
+        storeName: body.storeName ?? null,
+        shopperName: body.shopperName ?? "",
+        status,
+        itemsFound: body.itemsFound,
+        itemsRemaining: body.itemsRemaining,
+        totalItems: body.totalItems,
+        outOfStockCount: body.outOfStockCount,
+        replacedCount: body.replacedCount,
+        lastHandledItemName: null,
+        lastHandledItemStatus: null,
+      };
 
-  await saveSessionSnapshot(c.env.DB, {
-    sessionId: body.sessionId,
-    householdId: body.householdId,
-    content,
-    status,
-  });
-
-  await reconcileSessionRecipients(c, {
-    householdId: body.householdId,
-    sessionId: body.sessionId,
-    recipientMemberIds: body.recipientMemberIds,
-  });
-
-  const activities = await activityTokensForSession(
-    c.env.DB,
-    body.sessionId,
-    body.householdId,
-    body.recipientMemberIds,
-  );
-
-  let sent = 0;
-  let failed = 0;
-  await Promise.all(
-    activities.map(async (a) => {
-      let result: ApnsResult;
-      try {
-        result = await sendEnd(c.env, a.update_token, content);
-      } catch (err) {
-        failed++;
-        await logApns(c.env.DB, {
+      yield* fromPromise(() =>
+        saveSessionSnapshot(c.env.DB, {
           sessionId: body.sessionId,
-          deviceId: a.device_id,
-          event: "end",
-          outcome: "failed",
-          detail: String(err),
-        });
-        return;
-      }
+          householdId: body.householdId,
+          content,
+          status,
+        }),
+      );
 
-      if (result.ok) {
-        sent++;
-        await logApns(c.env.DB, {
-          sessionId: body.sessionId,
-          deviceId: a.device_id,
-          event: "end",
-          outcome: "sent",
-          statusCode: result.statusCode,
-          apnsId: result.apnsId,
-        });
-      } else {
-        failed++;
-        if (result.tokenExpired) await invalidateUpdateToken(c.env.DB, a.update_token);
-        await logApns(c.env.DB, {
-          sessionId: body.sessionId,
-          deviceId: a.device_id,
-          event: "end",
-          outcome: result.tokenExpired ? "expired" : "failed",
-          statusCode: result.statusCode,
-          detail: result.reason ?? result.detail,
-        });
-      }
+      yield* reconcileSessionRecipients(c.env.DB, {
+        householdId: body.householdId,
+        sessionId: body.sessionId,
+        recipientMemberIds: body.recipientMemberIds,
+      });
+
+      const activities = yield* fromPromise(() =>
+        activityTokensForSession(
+          c.env.DB,
+          body.sessionId,
+          body.householdId,
+          body.recipientMemberIds,
+        ),
+      );
+
+      const { sent, failed } = yield* fanOut(activities, (a) =>
+        deliverPush({
+          send: () => sendEnd(c.env, a.update_token, content),
+          onThrow: (err) =>
+            logApns(c.env.DB, {
+              sessionId: body.sessionId,
+              deviceId: a.device_id,
+              event: "end",
+              outcome: "failed",
+              detail: String(err),
+            }),
+          onSent: (result) =>
+            logApns(c.env.DB, {
+              sessionId: body.sessionId,
+              deviceId: a.device_id,
+              event: "end",
+              outcome: "sent",
+              statusCode: result.statusCode,
+              apnsId: result.apnsId,
+            }),
+          onExpiredToken: () => invalidateUpdateToken(c.env.DB, a.update_token),
+          onFailed: (result) =>
+            logApns(c.env.DB, {
+              sessionId: body.sessionId,
+              deviceId: a.device_id,
+              event: "end",
+              outcome: result.tokenExpired ? "expired" : "failed",
+              statusCode: result.statusCode,
+              detail: result.reason ?? result.detail,
+            }),
+        }),
+      );
+
+      const notifications = yield* sendShoppingTripNotificationFanout(c.env, {
+        householdId: body.householdId,
+        sessionId: body.sessionId,
+        sourceDeviceId: body.sourceDeviceId,
+        recipientMemberIds: body.recipientMemberIds,
+        event: body.status === "completed" ? "completed" : "cancelled",
+        shopperName: body.shopperName,
+        storeName: body.storeName,
+        itemsFound: body.itemsFound,
+        itemsRemaining: body.itemsRemaining,
+        totalItems: body.totalItems,
+        outOfStockCount: body.outOfStockCount,
+        replacedCount: body.replacedCount,
+      });
+
+      const telemetry = yield* Telemetry;
+      yield* telemetry.capture({
+        distinctId: body.householdId,
+        event: "shopping trip ended",
+        properties: {
+          session_id: body.sessionId,
+          household_id: body.householdId,
+          status: body.status,
+          store_name: body.storeName ?? null,
+          items_found: body.itemsFound,
+          items_remaining: body.itemsRemaining,
+          total_items: body.totalItems,
+          out_of_stock_count: body.outOfStockCount,
+          replaced_count: body.replacedCount,
+          completion_rate:
+            body.totalItems > 0
+              ? Math.round((body.itemsFound / body.totalItems) * 100)
+              : null,
+          devices_notified: notifications.sent,
+          devices_notification_failed: notifications.failed,
+          $groups: { household: body.householdId },
+        },
+      });
+
+      return c.json({
+        ok: true,
+        sent,
+        failed,
+        notificationsSent: notifications.sent,
+        notificationsFailed: notifications.failed,
+      });
     }),
-  );
-
-  const notifications = await sendShoppingTripNotificationFanout(c, {
-    householdId: body.householdId,
-    sessionId: body.sessionId,
-    sourceDeviceId: body.sourceDeviceId,
-    recipientMemberIds: body.recipientMemberIds,
-    event: body.status === "completed" ? "completed" : "cancelled",
-    shopperName: body.shopperName,
-    storeName: body.storeName,
-    itemsFound: body.itemsFound,
-    itemsRemaining: body.itemsRemaining,
-    totalItems: body.totalItems,
-    outOfStockCount: body.outOfStockCount,
-    replacedCount: body.replacedCount,
-  });
-
-  const posthog = createPostHogClient(c.env);
-  posthog.capture({
-    distinctId: body.householdId,
-    event: "shopping trip ended",
-    properties: {
-      session_id: body.sessionId,
-      household_id: body.householdId,
-      status: body.status,
-      store_name: body.storeName ?? null,
-      items_found: body.itemsFound,
-      items_remaining: body.itemsRemaining,
-      total_items: body.totalItems,
-      out_of_stock_count: body.outOfStockCount,
-      replaced_count: body.replacedCount,
-      completion_rate: body.totalItems > 0
-        ? Math.round((body.itemsFound / body.totalItems) * 100)
-        : null,
-      devices_notified: notifications.sent,
-      devices_notification_failed: notifications.failed,
-      $groups: { household: body.householdId },
-    },
-  });
-  c.executionCtx.waitUntil(posthog.shutdown());
-
-  return c.json({
-    ok: true,
-    sent,
-    failed,
-    notificationsSent: notifications.sent,
-    notificationsFailed: notifications.failed,
-  });
-});
+  ),
+);
 
 // ---------------------------------------------------------------------------
 // GET /live-activity/debug/household/:id
 // Diagnostic view of registered tokens for a household — helps debug
 // notification delivery issues. Not exposed in the app UI.
 // ---------------------------------------------------------------------------
-liveActivityRoute.get("/live-activity/debug/household/:id", async (c) => {
-  const householdId = c.req.param("id");
-  const { results: devices } = await c.env.DB
-    .prepare(
-      `SELECT device_id, member_id, household_id,
-              push_to_start_token IS NOT NULL AS has_start_token,
-              push_notification_token IS NOT NULL AS has_notification_token,
-              live_activities_enabled, notifications_enabled,
-              token_valid, notification_token_valid,
-              app_version, platform, updated_at
-       FROM device_tokens WHERE household_id = ?1`,
-    )
-    .bind(householdId)
-    .all();
+liveActivityRoute.get("/live-activity/debug/household/:id", (c) =>
+  runHandler(
+    c,
+    Effect.gen(function* () {
+      const householdId = c.req.param("id");
 
-  const { results: recentLogs } = await c.env.DB
-    .prepare(
-      `SELECT event, outcome, device_id, status_code, detail, created_at
-       FROM apns_log
-       WHERE session_id IN (
-         SELECT session_id FROM session_snapshots WHERE household_id = ?1
-       )
-       ORDER BY created_at DESC LIMIT 20`,
-    )
-    .bind(householdId)
-    .all();
+      const devices = yield* fromPromise(() =>
+        c.env.DB.prepare(
+          `SELECT device_id, member_id, household_id,
+                  push_to_start_token IS NOT NULL AS has_start_token,
+                  push_notification_token IS NOT NULL AS has_notification_token,
+                  live_activities_enabled, notifications_enabled,
+                  token_valid, notification_token_valid,
+                  app_version, platform, updated_at
+           FROM device_tokens WHERE household_id = ?1`,
+        )
+          .bind(householdId)
+          .all(),
+      );
 
-  return c.json({ devices: devices ?? [], recentLogs: recentLogs ?? [] });
-});
+      const recentLogs = yield* fromPromise(() =>
+        c.env.DB.prepare(
+          `SELECT event, outcome, device_id, status_code, detail, created_at
+           FROM apns_log
+           WHERE session_id IN (
+             SELECT session_id FROM session_snapshots WHERE household_id = ?1
+           )
+           ORDER BY created_at DESC LIMIT 20`,
+        )
+          .bind(householdId)
+          .all(),
+      );
+
+      return c.json({
+        devices: devices.results ?? [],
+        recentLogs: recentLogs.results ?? [],
+      });
+    }),
+  ),
+);

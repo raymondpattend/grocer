@@ -46,7 +46,9 @@ settings:
     # Full strict-concurrency checking. In Swift 5 language mode these surface as
     # warnings (the build stays green) — the CloudKit subsystem is already clean;
     # remaining warnings in other subsystems are a tracked backlog ahead of a
-    # future SWIFT_VERSION=6.0 flip that turns them into errors.
+    # future SWIFT_VERSION=6.0 flip that turns them into errors. The dedicated
+    # Swift 6 readiness lane (ci_scripts/swift6_check.sh) builds in Swift 6
+    # language mode with warnings-as-errors to track that backlog.
     SWIFT_STRICT_CONCURRENCY: complete
     DEVELOPMENT_LANGUAGE: en
     SWIFT_EMIT_LOC_STRINGS: YES

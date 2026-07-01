@@ -3,8 +3,13 @@ export interface Env {
   DB: D1Database;
   IMAGES: R2Bucket;
   IMAGE_INDEX: VectorizeIndex;
-  AI_RL_PER_10S: RateLimit;
-  AI_RL_PER_MIN: RateLimit;
+  // AI-route rate limiters (Cloudflare native ratelimit bindings). Keyed on the
+  // trustworthy CF-Connecting-IP as the hard ceiling; the per-id/image buckets
+  // layer on top. See lib/aiRateLimit.ts.
+  AI_RL_PER_10S: RateLimit; // per-IP burst
+  AI_RL_PER_MIN: RateLimit; // per-IP sustained (hard ceiling)
+  AI_RL_ID_PER_MIN: RateLimit; // per-distinct-id fair-share cap
+  AI_RL_IMAGE_PER_MIN: RateLimit; // tighter per-IP cap for paid image generation
 
   // APNs configuration
   APNS_ENVIRONMENT: "sandbox" | "production";
