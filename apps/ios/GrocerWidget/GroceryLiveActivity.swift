@@ -156,7 +156,7 @@ private struct ShopperAvatarIcon: View {
                 .frame(width: size, height: size)
                 .clipShape(Circle())
         } else {
-            Image(systemName: "cart.fill").foregroundStyle(.green)
+            FAImage("cart.fill").foregroundStyle(.green)
         }
     }
 }

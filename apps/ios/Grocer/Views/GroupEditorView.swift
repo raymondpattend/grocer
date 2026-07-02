@@ -28,8 +28,7 @@ struct GroupEditorView: View {
         Form {
             Section {
                 HStack {
-                    Image(systemName: icon)
-                        .font(.title2).foregroundStyle(.white)
+                    FAImage(icon, relativeTo: .title2).foregroundStyle(.white)
                         .frame(width: 44, height: 44)
                         .background(Circle().fill(theme.color))
                     TextField("List name", text: $name).font(.headline)
@@ -48,7 +47,7 @@ struct GroupEditorView: View {
                                 .frame(width: 32, height: 32)
                                 .overlay {
                                     if t == theme {
-                                        Image(systemName: "checkmark").font(.caption.bold()).foregroundStyle(.white)
+                                        FAImage("checkmark", relativeTo: .caption).foregroundStyle(.white)
                                     }
                                 }
                         }
@@ -67,8 +66,7 @@ struct GroupEditorView: View {
                             Haptics.selection()
                             icon = choice
                         } label: {
-                            Image(systemName: choice)
-                                .font(.title3)
+                            FAImage(choice, relativeTo: .title3)
                                 .foregroundStyle(choice == icon ? .white : theme.color)
                                 .frame(width: 40, height: 40)
                                 .background(Circle().fill(choice == icon ? AnyShapeStyle(theme.color) : AnyShapeStyle(theme.color.opacity(0.15))))

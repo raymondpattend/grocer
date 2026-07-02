@@ -72,8 +72,7 @@ struct JoinedGroupSheet: View {
     }
 
     private func groupIcon(_ household: Household) -> some View {
-        Image(systemName: household.icon)
-            .font(.system(size: 32, weight: .semibold))
+        FAImage(household.icon, size: 32)
             .foregroundStyle(.white)
             .frame(width: 72, height: 72)
             .background(household.tint.gradient, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -116,9 +115,7 @@ struct JoinedGroupSheet: View {
                     .resizable()
                     .scaledToFill()
             } else {
-                Image(systemName: "person.crop.circle.fill")
-                    .resizable()
-                    .symbolRenderingMode(.hierarchical)
+                FAImage("person.crop.circle.fill", size: 28)
                     .foregroundStyle(.secondary)
             }
         }

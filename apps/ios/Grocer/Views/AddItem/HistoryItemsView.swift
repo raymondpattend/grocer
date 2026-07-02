@@ -72,8 +72,7 @@ struct HistoryItemsView: View {
                     Haptics.tap()
                     onClose()
                 } label: {
-                    Image(systemName: hasProposedItems ? "checkmark" : "xmark")
-                        .font(.subheadline.weight(.bold))
+                    FAImage(hasProposedItems ? "checkmark" : "xmark", relativeTo: .subheadline)
                         // Glyph inverts against the fill: dark on the light
                         // (dark-theme) circle, light on the dark (light-theme) one.
                         .foregroundStyle(Color(.systemBackground))
@@ -92,7 +91,7 @@ struct HistoryItemsView: View {
 
     private var searchField: some View {
         HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
+            FAImage("magnifyingglass")
                 .foregroundStyle(.secondary)
             TextField("Search previous items", text: $search)
                 .textInputAutocapitalization(.never)
@@ -102,7 +101,7 @@ struct HistoryItemsView: View {
                     Haptics.tap()
                     search = ""
                 } label: {
-                    Image(systemName: "xmark.circle.fill")
+                    FAImage("xmark.circle.fill")
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
@@ -146,8 +145,7 @@ struct HistoryItemsView: View {
 
     private var emptyState: some View {
         VStack(spacing: 8) {
-            Image(systemName: search.isEmpty ? "clock.arrow.circlepath" : "magnifyingglass")
-                .font(.title)
+            FAImage(search.isEmpty ? "clock.arrow.circlepath" : "magnifyingglass", relativeTo: .title)
                 .foregroundStyle(.tertiary)
             Text(search.isEmpty
                  ? String(localized: "No previous items yet")
@@ -228,8 +226,8 @@ struct HistoryItemRow: View {
                 Button {
                     toggleAdd()
                 } label: {
-                    Label(addedToList ? String(localized: "Remove") : String(localized: "Add"),
-                          systemImage: addedToList ? "minus" : "plus")
+                    FALabel(addedToList ? String(localized: "Remove") : String(localized: "Add"),
+                          icon: addedToList ? "minus" : "plus")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.primary)
                         .padding(.horizontal, 10)
@@ -313,7 +311,7 @@ struct HistoryItemRow: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                Label(suggestion.category.localizedName, systemImage: suggestion.category.systemImage)
+                FALabel(suggestion.category.localizedName, icon: suggestion.category.systemImage)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
             }

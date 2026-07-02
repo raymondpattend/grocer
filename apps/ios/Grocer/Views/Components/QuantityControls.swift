@@ -61,8 +61,7 @@ struct QuantityStepperControl: View {
 
     private func stepButton(systemImage: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: systemImage)
-                .font((large ? Font.body : Font.footnote).weight(.bold))
+            FAImage(systemImage, size: large ? 17 : 13)
                 .frame(width: large ? 44 : 30, height: large ? 34 : 24)
                 .contentShape(Rectangle())
         }
@@ -162,8 +161,7 @@ struct QuantityStepperField: View {
                 Text(effectiveUnit.isEmpty ? String(localized: "unit") : displayUnit)
                     .foregroundStyle(effectiveUnit.isEmpty ? .secondary : .primary)
                     .lineLimit(1)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.caption2)
+                FAImage("chevron.up.chevron.down", relativeTo: .caption2)
                     .foregroundStyle(.secondary)
             }
             .font(large ? .body : .subheadline)
@@ -200,8 +198,7 @@ struct QuantityStepperField: View {
 
     private func circleButton(systemImage: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.title3.weight(.semibold))
+            FAImage(systemImage, relativeTo: .title3)
                 .foregroundStyle(.primary)
                 .frame(width: 56, height: 56)
                 .background(Color(.systemGray5), in: Circle())
@@ -256,7 +253,7 @@ struct UnitMenuItems: View {
                 onSelect(unit)
             } label: {
                 if unit == selectedUnit {
-                    Label(unit, systemImage: "checkmark")
+                    FALabel(unit, icon: "checkmark")
                 } else {
                     Text(unit)
                 }

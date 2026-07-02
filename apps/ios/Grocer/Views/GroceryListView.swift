@@ -79,6 +79,14 @@ struct GroceryListView: View {
             && repo.currentMembers.count > 1
     }
 
+    private var canInvite: Bool {
+        repo.isOwnerOfCurrentGroup && repo.currentHousehold != nil
+    }
+
+    private var canShowHistory: Bool {
+        !repo.currentCompletedTrips.isEmpty
+    }
+
     /// Show the "link this list to a store" prompt until a store is linked or the
     /// member dismisses it (persisted per list, per device).
     private var showStoreBanner: Bool {
@@ -90,6 +98,14 @@ struct GroceryListView: View {
 
     var body: some View {
         List {
+            if repo.currentHousehold != nil {
+                listActionButtons
+                    .padding(.vertical, 4)
+                    .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 12, trailing: 0))
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+            }
+
             if showStoreBanner {
                 StoreLinkBanner(tint: tint) {
                     Haptics.selection()
@@ -160,8 +176,11 @@ struct GroceryListView: View {
                 }
 
                 if repo.pendingItems.isEmpty {
-                    ContentUnavailableView("Nothing on the list", systemImage: "checklist",
-                                           description: Text("Add what you need for \(repo.currentHousehold?.name ?? String(localized: "this list"))."))
+                    ContentUnavailableView {
+                        FALabel("Nothing on the list", icon: "checklist")
+                    } description: {
+                        Text("Add what you need for \(repo.currentHousehold?.name ?? String(localized: "this list")).")
+                    }
                     .padding(.top, 40)
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
@@ -171,14 +190,20 @@ struct GroceryListView: View {
                 // A group is selected but its list hasn't arrived yet — e.g.
                 // a freshly joined shared group whose records are still
                 // syncing. Showing "No lists yet" here would be misleading.
-                ContentUnavailableView("Syncing list…", systemImage: "icloud.and.arrow.down",
-                                       description: Text("\(repo.currentHousehold?.name ?? String(localized: "This list")) is on its way."))
+                ContentUnavailableView {
+                    FALabel("Syncing list…", icon: "icloud.and.arrow.down")
+                } description: {
+                    Text("\(repo.currentHousehold?.name ?? String(localized: "This list")) is on its way.")
+                }
                 .padding(.top, 40)
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
             } else if repo.hasCompletedInitialLoad {
-                ContentUnavailableView("No lists yet", systemImage: "person.2",
-                                       description: Text("Create a list to start planning."))
+                ContentUnavailableView {
+                    FALabel("No lists yet", icon: "person.2")
+                } description: {
+                    Text("Create a list to start planning.")
+                }
                 .padding(.top, 40)
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
@@ -227,43 +252,28 @@ struct GroceryListView: View {
         }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) { HapticBackButton() }
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                if repo.currentList != nil && !repo.pendingItems.isEmpty {
+            if repo.currentList != nil && !repo.pendingItems.isEmpty {
+                ToolbarItem(placement: .topBarTrailing) {
                     Button {
-                        sortModeBinding.wrappedValue = repo.currentSortMode == .custom ? .category : .custom
+                        withAnimation(reduceMotion ? nil : .spring(response: 0.4, dampingFraction: 0.85)) {
+                            sortModeBinding.wrappedValue = repo.currentSortMode == .custom ? .category : .custom
+                        }
                     } label: {
-                        Image(systemName: repo.currentSortMode == .custom ? "square.grid.2x2" : "line.3.horizontal")
+                        FAImage(repo.currentSortMode == .custom ? "square.grid.2x2" : "line.3.horizontal")
                     }
                     .accessibilityLabel(repo.currentSortMode == .custom ? "Switch to categories" : "Switch to my order")
                 }
 
-                Menu {
-                    if canSendHeadsUp {
-                        Button { Haptics.tap(); showHeadsUp = true } label: {
-                            Label("Give heads-up", systemImage: "bell.and.waves.left.and.right")
-                        }
-                    }
-
-                    if repo.isOwnerOfCurrentGroup && repo.currentHousehold != nil {
-                        Button { Haptics.tap(); showingInvite = true } label: {
-                            Label("Invite to list", systemImage: "person.crop.circle.badge.plus")
-                        }
-                    }
-
-                    if !repo.currentCompletedTrips.isEmpty {
-                        Button { Haptics.tap(); showingHistory = true } label: {
-                            Label("Trip history", systemImage: "clock.arrow.circlepath")
-                        }
-                    }
-
-                    Button { Haptics.tap(); showingSettings = true } label: {
-                        Label("Settings", systemImage: "gearshape")
-                    }
-                } label: {
-                    Image(systemName: "ellipsis")
+                if #available(iOS 26.0, *) {
+                    ToolbarSpacer(.fixed, placement: .topBarTrailing)
                 }
-                .simultaneousGesture(TapGesture().onEnded { Haptics.tap() })
-                .accessibilityLabel("More options")
+            }
+
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { Haptics.tap(); showingSettings = true } label: {
+                    FAImage("gearshape")
+                }
+                .accessibilityLabel("Settings")
             }
         }
         .fullScreenCover(isPresented: $showingAddSearch) {
@@ -320,12 +330,70 @@ struct GroceryListView: View {
         }
     }
 
+    /// Quick-action glass buttons pinned above the list. They mirror what used to
+    /// live in the ellipsis menu, appearing only when the action is available.
+    private var listActionButtons: some View {
+        HStack(alignment: .top, spacing: 28) {
+            if canSendHeadsUp {
+                listActionButton(
+                    label: "Notify",
+                    systemImage: "bell.and.waves.left.and.right"
+                ) { Haptics.tap(); showHeadsUp = true }
+            }
+
+            if canInvite {
+                listActionButton(
+                    label: "Invite",
+                    systemImage: "person.crop.circle.badge.plus"
+                ) { Haptics.tap(); showingInvite = true }
+            }
+
+            if canShowHistory {
+                listActionButton(
+                    label: "Trip History",
+                    systemImage: "clock.arrow.circlepath"
+                ) { Haptics.tap(); showingHistory = true }
+            }
+
+            listActionButton(
+                label: "Settings",
+                systemImage: "gearshape"
+            ) { Haptics.tap(); showingSettings = true }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func listActionButton(
+        label: LocalizedStringKey,
+        systemImage: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        VStack(spacing: 6) {
+            Button(action: action) {
+                FAImage(systemImage, relativeTo: .title3)
+                    .foregroundStyle(.primary)
+                    .frame(width: 24, height: 24)
+                    .padding(14)
+            }
+            .grocerGlassButton()
+            .buttonBorderShape(.circle)
+            .tint(.primary)
+
+            Text(label)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(label)
+    }
+
     private var startShoppingButton: some View {
         Button {
             Haptics.selection()
             showStartTrip = true
         } label: {
-            Label("Start Trip", systemImage: "cart.fill")
+            FALabel("Start Trip", icon: "cart.fill")
                 .font(.headline).frame(maxWidth: .infinity).padding(.vertical, 6)
         }
         .grocerGlassButton(prominent: true)
@@ -340,8 +408,7 @@ struct GroceryListView: View {
             Haptics.tap()
             showingAddSearch = true
         } label: {
-            Image(systemName: "plus")
-                .font(.title3.weight(.semibold))
+            FAImage("plus", relativeTo: .title3)
                 .foregroundStyle(.primary)
                 .frame(width: 24, height: 24)
                 .padding(14)
@@ -369,7 +436,7 @@ struct GroceryListView: View {
             Button(role: .destructive) {
                 removeItem(item)
             } label: {
-                Label("Remove", systemImage: "trash")
+                FALabel("Remove", icon: "trash")
             }
         }
     }
@@ -537,8 +604,7 @@ struct StartTripSheet: View {
         NavigationStack {
             VStack(spacing: 24) {
                 VStack(spacing: 8) {
-                    Image(systemName: "cart.fill")
-                        .font(.system(size: 40))
+                    FAImage("cart.fill", size: 40)
                         .foregroundStyle(tint)
                     Text("Start Trip")
                         .font(.title2.bold())
@@ -564,7 +630,7 @@ struct StartTripSheet: View {
                         dismiss()
                         onStart()
                     } label: {
-                        Label("Start Trip", systemImage: "cart.fill")
+                        FALabel("Start Trip", icon: "cart.fill")
                             .font(.headline)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 6)
@@ -579,8 +645,8 @@ struct StartTripSheet: View {
                             dismiss()
                             onShopMultiple()
                         } label: {
-                            Label("Shop with ^[\(otherStoreListCount) other list](inflect: true)",
-                                  systemImage: "square.stack.3d.up.fill")
+                            FALabel("Shop with ^[\(otherStoreListCount) other list](inflect: true)",
+                                  icon: "square.stack.3d.up.fill")
                                 .font(.subheadline.weight(.semibold))
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 4)
@@ -618,8 +684,7 @@ struct ActiveSessionBanner: View {
             HStack(spacing: 14) {
                 ZStack(alignment: .bottomTrailing) {
                     MemberAvatarView(member: shopper, size: 48)
-                    Image(systemName: "cart.fill")
-                        .font(.system(size: 10, weight: .bold))
+                    FAImage("cart.fill", size: 10)
                         .foregroundStyle(.white)
                         .padding(5)
                         .background(Circle().fill(tint))
@@ -634,8 +699,7 @@ struct ActiveSessionBanner: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 8)
-                Image(systemName: "chevron.right")
-                    .font(.subheadline.weight(.semibold))
+                FAImage("chevron.right", relativeTo: .subheadline)
                     .foregroundStyle(tint)
             }
             .padding(16)

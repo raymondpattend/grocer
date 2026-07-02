@@ -208,8 +208,7 @@ struct GrocerProPaywallView: View {
             Haptics.selection()
             dismiss()
         } label: {
-            Image(systemName: "xmark")
-                .font(.system(size: 13, weight: .bold))
+            FAImage("xmark", size: 13)
                 .foregroundStyle(Palette.secondaryText)
                 .frame(width: 30, height: 30)
                 .background(.ultraThinMaterial, in: Circle())
@@ -285,8 +284,7 @@ struct GrocerProPaywallView: View {
 
             ForEach(Self.features) { feature in
                 HStack(alignment: .top, spacing: 16) {
-                    Image(systemName: feature.icon)
-                        .font(.title3)
+                    FAImage(feature.icon, relativeTo: .title3)
                         .foregroundStyle(Palette.accent)
                         .frame(width: 30)
                     VStack(alignment: .leading, spacing: 3) {
@@ -718,8 +716,7 @@ private struct TestimonialBubble: View {
 private struct PaywallHero: View {
     var body: some View {
         ZStack {
-            Image(systemName: "cart.fill")
-                .font(.system(size: 64, weight: .regular))
+            FAImage("cart.fill", size: 64)
                 .foregroundStyle(Palette.accent)
 
             doodle("heart.fill", x: -90, y: -42, size: 16, tinted: true)
@@ -733,8 +730,7 @@ private struct PaywallHero: View {
 
     private func doodle(_ name: String, x: CGFloat, y: CGFloat, size: CGFloat,
                         tinted: Bool = false) -> some View {
-        Image(systemName: name)
-            .font(.system(size: size, weight: .light))
+        FAImage(name, size: size)
             .foregroundStyle(tinted ? Palette.accent.opacity(0.8) : Palette.primaryText.opacity(0.4))
             .offset(x: x, y: y)
     }

@@ -83,8 +83,7 @@ struct InviteContactsView: View {
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
-                        Image(systemName: selected.contains(contact.id) ? "checkmark.circle.fill" : "circle")
-                            .font(.title3)
+                        FAImage(selected.contains(contact.id) ? "checkmark.circle.fill" : "circle", relativeTo: .title3)
                             .foregroundStyle(selected.contains(contact.id) ? Color.accentColor : Color.secondary.opacity(0.4))
                             .accessibilityHidden(true)
                     }
@@ -97,7 +96,9 @@ struct InviteContactsView: View {
         .searchable(text: $search, prompt: "Search contacts")
         .overlay {
             if store.contacts.isEmpty {
-                ContentUnavailableView("No Contacts", systemImage: "person.crop.circle.badge.questionmark")
+                ContentUnavailableView {
+                    FALabel("No Contacts", icon: "person.crop.circle.badge.questionmark")
+                }
             }
         }
         .safeAreaInset(edge: .bottom) { inviteButton }
@@ -125,7 +126,7 @@ struct InviteContactsView: View {
 
     private var permissionDenied: some View {
         ContentUnavailableView {
-            Label("Contacts Access Off", systemImage: "person.crop.circle.badge.xmark")
+            FALabel("Contacts Access Off", icon: "person.crop.circle.badge.xmark")
         } description: {
             Text("Turn on Contacts for Grocer in Settings to pick people to invite, or use \u{201C}Get a link instead.\u{201D}")
         } actions: {

@@ -83,7 +83,7 @@ struct ItemDetailView: View {
                     }
                     dismiss()
                 } label: {
-                    Label("Remove", systemImage: "trash")
+                    FALabel("Remove", icon: "trash")
                 }
                 .tint(.red)
             }
@@ -297,8 +297,7 @@ private struct FullScreenPhotoView: View {
             Haptics.tap()
             dismiss()
         } label: {
-            Image(systemName: "xmark")
-                .font(.headline.weight(.semibold))
+            FAImage("xmark", relativeTo: .headline)
                 .foregroundStyle(.white)
                 .frame(width: 36, height: 36)
                 .background(.ultraThinMaterial, in: Circle())

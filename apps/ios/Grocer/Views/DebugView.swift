@@ -69,7 +69,7 @@ struct DebugView: View {
                         Haptics.selection()
                         exportReport()
                     } label: {
-                        Label("Export", systemImage: "square.and.arrow.up")
+                        FALabel("Export", icon: "square.and.arrow.up")
                     }
                 }
             }
@@ -274,7 +274,7 @@ struct DebugView: View {
                 UIPasteboard.general.string = reportText()
                 actionMessage = "Report copied to clipboard"
             } label: {
-                Label("Copy Report", systemImage: "doc.on.clipboard")
+                FALabel("Copy Report", icon: "doc.on.clipboard")
             }
         }
     }
@@ -297,7 +297,7 @@ struct DebugView: View {
             }
         } label: {
             HStack {
-                Label(title, systemImage: systemImage)
+                FALabel(title, icon: systemImage)
                 Spacer()
                 if isWorking { ProgressView() }
             }
@@ -323,14 +323,14 @@ struct DebugView: View {
                 Haptics.selection()
                 exportReport()
             } label: {
-                Label("Export Logs", systemImage: "square.and.arrow.up")
+                FALabel("Export Logs", icon: "square.and.arrow.up")
             }
             Button(role: .destructive) {
                 Haptics.warning()
                 LogStore.shared.clear()
                 refreshLog()
             } label: {
-                Label("Clear Logs", systemImage: "trash")
+                FALabel("Clear Logs", icon: "trash")
             }
         } header: {
             Text("Logs")

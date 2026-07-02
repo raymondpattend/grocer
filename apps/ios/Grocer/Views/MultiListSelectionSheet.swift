@@ -65,8 +65,7 @@ struct MultiListSelectionSheet: View {
         VStack(spacing: 10) {
             ZStack {
                 Circle().fill(tint.opacity(0.15)).frame(width: 64, height: 64)
-                Image(systemName: "cart.fill.badge.plus")
-                    .font(.system(size: 28, weight: .semibold))
+                FAImage("cart.fill.badge.plus", size: 28)
                     .foregroundStyle(tint)
             }
             .accessibilityHidden(true)
@@ -108,8 +107,7 @@ struct MultiListSelectionSheet: View {
                 HStack(spacing: 12) {
                     ZStack {
                         Circle().fill(house.tint.opacity(0.15)).frame(width: 40, height: 40)
-                        Image(systemName: house.icon)
-                            .font(.system(size: 17, weight: .semibold))
+                        FAImage(house.icon, size: 17)
                             .foregroundStyle(house.tint)
                     }
                     VStack(alignment: .leading, spacing: 2) {
@@ -121,8 +119,7 @@ struct MultiListSelectionSheet: View {
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                        .font(.title2)
+                    FAImage(isSelected ? "checkmark.circle.fill" : "circle", relativeTo: .title2)
                         .foregroundStyle(isSelected ? tint : Color(.systemGray3))
                 }
 
@@ -210,8 +207,7 @@ struct CombinedSessionBanner: View {
             HStack(spacing: 14) {
                 ZStack {
                     Circle().fill(tint.opacity(0.2)).frame(width: 48, height: 48)
-                    Image(systemName: "cart.fill.badge.plus")
-                        .font(.system(size: 18, weight: .semibold))
+                    FAImage("cart.fill.badge.plus", size: 18)
                         .foregroundStyle(tint)
                 }
                 VStack(alignment: .leading, spacing: 3) {
@@ -222,8 +218,7 @@ struct CombinedSessionBanner: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 8)
-                Image(systemName: "chevron.right")
-                    .font(.subheadline.weight(.semibold))
+                FAImage("chevron.right", relativeTo: .subheadline)
                     .foregroundStyle(tint)
             }
             .padding(16)

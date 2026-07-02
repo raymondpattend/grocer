@@ -89,13 +89,12 @@ struct HapticBackButton: View {
             Haptics.tap()
             dismiss()
         } label: {
-            // Matches the native back chevron weight, centered in a square 44pt
-            // hit area so taps anywhere on the button register (not just on the
-            // glyph). The square keeps the system's glass background a circle.
-            Image(systemName: "chevron.backward")
-                .font(.body.weight(.semibold))
-                .frame(width: 44, height: 44)
-                .contentShape(Circle())
+            // `FAImage` renders the Classic chevron as a Text glyph, which the
+            // iOS 26 toolbar treats as a *text* button and wraps in a wide pill.
+            // Rendering the same glyph as a template UIImage makes the toolbar
+            // treat it as an icon, giving the normal compact circular glass.
+            Image(uiImage: FontAwesome.uiImage("chevron.backward", size: 19) ?? UIImage())
+                .accessibilityHidden(true)
         }
         .accessibilityLabel(Text("Back"))
     }
@@ -238,8 +237,7 @@ struct PriorityCircle: View {
                 .fill(priority.markerColor)
                 .frame(width: size, height: size)
             if differentiateWithoutColor, let symbol = prioritySymbol {
-                Image(systemName: symbol)
-                    .font(.system(size: size * 0.6, weight: .bold))
+                FAImage(symbol, size: size * 0.6)
                     .foregroundStyle(.white)
             }
         }

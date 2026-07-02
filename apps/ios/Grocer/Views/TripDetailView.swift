@@ -43,7 +43,7 @@ struct TripDetailView: View {
                         Button {
                             addAllToList()
                         } label: {
-                            Label("Add All to List", systemImage: "plus.circle.fill")
+                            FALabel("Add All to List", icon: "plus.circle.fill")
                                 .font(.headline)
                                 .frame(maxWidth: .infinity)
                         }
@@ -91,7 +91,7 @@ struct TripDetailView: View {
 
     private func summaryRow(_ title: String, _ count: Int, systemImage: String, tint: Color) -> some View {
         HStack {
-            Label(title, systemImage: systemImage)
+            FALabel(title, icon: systemImage)
                 .symbolRenderingMode(.palette)
                 .foregroundStyle(.white, tint)
             Spacer()
@@ -101,7 +101,7 @@ struct TripDetailView: View {
 
     private func itemRow(_ item: ShoppingTripItem, group: OutcomeGroup) -> some View {
         HStack(spacing: 12) {
-            Image(systemName: group.systemImage)
+            FAImage(group.systemImage)
                 .symbolRenderingMode(.palette)
                 .foregroundStyle(.white, group.tint)
             VStack(alignment: .leading, spacing: 2) {
@@ -118,8 +118,8 @@ struct TripDetailView: View {
                 Button {
                     addToList(item)
                 } label: {
-                    Label(addedTripItemIds.contains(item.id) ? "Added" : "Add",
-                          systemImage: addedTripItemIds.contains(item.id) ? "checkmark" : "plus")
+                    FALabel(addedTripItemIds.contains(item.id) ? "Added" : "Add",
+                          icon: addedTripItemIds.contains(item.id) ? "checkmark" : "plus")
                         .labelStyle(.titleAndIcon)
                         .font(.caption.weight(.semibold))
                 }

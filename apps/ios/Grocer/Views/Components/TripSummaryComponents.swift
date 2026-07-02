@@ -90,7 +90,7 @@ struct TripSummaryItemCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
-                Image(systemName: systemImage).foregroundStyle(iconColor)
+                FAImage(systemImage).foregroundStyle(iconColor)
                 Text(title)
                 Text("·")
                 Text("\(items.count)")
@@ -127,7 +127,7 @@ struct TripSummaryItemCard: View {
                     .lineLimit(1)
                 HStack(spacing: 6) {
                     if let badge = groupBadge(item) {
-                        Label(badge.name, systemImage: badge.icon)
+                        FALabel(badge.name, icon: badge.icon)
                             .font(.caption2.weight(.semibold))
                             .lineLimit(1)
                             .foregroundStyle(badge.tint)
@@ -172,7 +172,7 @@ struct TripCleanupCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
-                Image(systemName: "slider.horizontal.3").foregroundStyle(.secondary)
+                FAImage("slider.horizontal.3").foregroundStyle(.secondary)
                 Text("Cleanup")
                 Spacer()
             }

@@ -12,8 +12,7 @@ struct RequiredAppUpdateView: View {
         VStack(spacing: 28) {
             Spacer()
 
-            Image(systemName: "arrow.down.app.fill")
-                .font(.system(size: 52, weight: .semibold))
+            FAImage("arrow.down.app.fill", size: 52)
                 .foregroundStyle(.green)
                 .symbolRenderingMode(.hierarchical)
 
@@ -33,7 +32,7 @@ struct RequiredAppUpdateView: View {
                 Haptics.selection()
                 openUpdate()
             } label: {
-                Label("Update App", systemImage: "arrow.up.forward.app.fill")
+                FALabel("Update App", icon: "arrow.up.forward.app.fill")
                     .font(.headline)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 6)

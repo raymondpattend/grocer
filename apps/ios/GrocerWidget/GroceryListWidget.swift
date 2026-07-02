@@ -241,8 +241,7 @@ struct GroceryListWidgetView: View {
             } else {
                 ZStack {
                     Color.white.opacity(0.28)
-                    Image(systemName: "basket.fill")
-                        .font(.system(size: side * 0.46))
+                    FAImage("basket.fill", size: side * 0.46)
                         .foregroundStyle(WidgetPalette.ink.opacity(0.5))
                 }
             }
@@ -281,8 +280,7 @@ struct GroceryListWidgetView: View {
 
     private var addButtonLabel: some View {
         HStack(spacing: 6) {
-            Image(systemName: "plus")
-                .font(.footnote.weight(.heavy))
+            FAImage("plus", relativeTo: .footnote)
             Text("Add")
                 .font(.subheadline.weight(.semibold))
         }

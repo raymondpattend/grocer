@@ -42,7 +42,7 @@ struct ProductImageView: View {
                     .fill(Color(.systemGray6))
                     .frame(width: size, height: size)
                     .overlay {
-                        Image(systemName: "basket.fill")
+                        FAImage("basket.fill")
                             .foregroundStyle(.tertiary)
                             .font(.system(size: size * 0.35))
                     }

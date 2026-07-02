@@ -171,11 +171,9 @@ struct SettingsView: View {
             Spacer(minLength: 12)
 
             ZStack {
-                Image(systemName: "sparkle")
-                    .font(.system(size: 24, weight: .semibold))
+                FAImage("sparkle", size: 24)
                     .offset(x: -22, y: -22)
-                Image(systemName: "lock.open")
-                    .font(.system(size: 42, weight: .medium))
+                FAImage("lock.open", size: 42)
                     .rotationEffect(.degrees(8))
             }
             .foregroundStyle(.white)
@@ -283,8 +281,7 @@ struct SettingsView: View {
             MembersView()
         } label: {
             HStack(spacing: 14) {
-                Image(systemName: "person.2.fill")
-                    .font(.title2)
+                FAImage("person.2.fill", relativeTo: .title2)
                     .foregroundStyle(Color.accentColor)
                     .frame(width: 30)
                 VStack(alignment: .leading, spacing: 2) {
@@ -296,8 +293,7 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 8)
-                Image(systemName: "chevron.right")
-                    .font(.footnote.weight(.semibold))
+                FAImage("chevron.right", relativeTo: .footnote)
                     .foregroundStyle(.tertiary)
             }
             .padding(16)
@@ -542,16 +538,14 @@ private func settingsRowLabel(_ title: String,
     let iconColor: Color = !enabled ? .secondary : (destructive ? .red : tint)
     let textColor: Color = !enabled ? .secondary : (destructive ? .red : .primary)
     return HStack(spacing: 14) {
-        Image(systemName: systemImage)
-            .font(.body)
+        FAImage(systemImage, relativeTo: .body)
             .foregroundStyle(iconColor)
             .frame(width: 24)
         Text(title)
             .foregroundStyle(textColor)
         Spacer(minLength: 8)
         if chevron {
-            Image(systemName: "chevron.right")
-                .font(.footnote.weight(.semibold))
+            FAImage("chevron.right", relativeTo: .footnote)
                 .foregroundStyle(.tertiary)
         }
     }
@@ -584,12 +578,10 @@ private func settingsTileContent(_ title: String,
                                  tint: Color) -> some View {
     VStack(alignment: .leading, spacing: 0) {
         HStack(spacing: 8) {
-            Image(systemName: systemImage)
-                .font(.title2)
+            FAImage(systemImage, relativeTo: .title2)
                 .foregroundStyle(tint)
             Spacer(minLength: 8)
-            Image(systemName: "chevron.right")
-                .font(.footnote.weight(.semibold))
+            FAImage("chevron.right", relativeTo: .footnote)
                 .foregroundStyle(.tertiary)
         }
         Spacer(minLength: 10)
@@ -670,8 +662,7 @@ struct MembersView: View {
     /// semibold body title — so it reads as a primary action.
     private func inviteRow(enabled: Bool) -> some View {
         HStack(spacing: 12) {
-            Image(systemName: "person.crop.circle.fill.badge.plus")
-                .font(.title2)
+            FAImage("person.crop.circle.fill.badge.plus", relativeTo: .title2)
                 .foregroundStyle(enabled ? Color.accentColor : .secondary)
                 .frame(width: 30)
             Text("Invite to List")
@@ -681,8 +672,7 @@ struct MembersView: View {
             if showsInviteLimitChip {
                 inviteLimitChip
             }
-            Image(systemName: "chevron.right")
-                .font(.footnote.weight(.semibold))
+            FAImage("chevron.right", relativeTo: .footnote)
                 .foregroundStyle(.tertiary)
         }
         .padding(.horizontal, 16)
@@ -740,8 +730,7 @@ struct MembersView: View {
             Text(member.displayName)
             Spacer(minLength: 8)
             if isOwner {
-                Image(systemName: "crown.fill")
-                    .font(.footnote)
+                FAImage("crown.fill", relativeTo: .footnote)
                     .foregroundStyle(.yellow)
                     .accessibilityLabel(Text(member.role.localizedName))
             }
@@ -863,11 +852,8 @@ private struct ProfilePicture: View {
                     .resizable()
                     .scaledToFill()
             } else {
-                Image(systemName: "person.crop.circle.fill")
-                    .resizable()
-                    .symbolRenderingMode(.hierarchical)
+                FAImage("person.crop.circle.fill", size: size)
                     .foregroundStyle(.secondary)
-                    .padding(size * 0.08)
             }
         }
         .frame(width: size, height: size)
@@ -998,8 +984,7 @@ struct InviteToGroupSheet: View {
     /// see, so the user knows exactly what they're handing over.
     private var shareCard: some View {
         ZStack(alignment: .topLeading) {
-            Image(systemName: "cart.fill")
-                .font(.system(size: 150))
+            FAImage("cart.fill", size: 150)
                 .foregroundStyle(.white.opacity(0.08))
                 .rotationEffect(.degrees(-12))
                 .offset(x: 110, y: 70)
@@ -1012,8 +997,7 @@ struct InviteToGroupSheet: View {
                     .foregroundStyle(.white.opacity(0.85))
 
                 HStack(spacing: 10) {
-                    Image(systemName: repo.currentHousehold?.icon ?? "cart.fill")
-                        .font(.title3.weight(.semibold))
+                    FAImage(repo.currentHousehold?.icon ?? "cart.fill", relativeTo: .title3)
                     Text(groupName)
                         .font(.title2.bold())
                         .lineLimit(1)
@@ -1116,8 +1100,7 @@ struct InviteToGroupSheet: View {
             Haptics.tap()
             dismiss()
         } label: {
-            Image(systemName: "xmark")
-                .font(.subheadline.weight(.semibold))
+            FAImage("xmark", relativeTo: .subheadline)
                 .foregroundStyle(.secondary)
                 .frame(width: 44, height: 44)
                 .contentShape(Circle())
@@ -1195,7 +1178,7 @@ struct HeadsUpSheet: View {
             Button(action: send) {
                 Group {
                     if sent {
-                        Label("Heads-Up Sent", systemImage: "checkmark")
+                        FALabel("Heads-Up Sent", icon: "checkmark")
                     } else if otherMemberCount > 0 {
                         Text("^[Notify \(otherMemberCount) person](inflect: true)")
                     } else {
@@ -1228,8 +1211,7 @@ struct HeadsUpSheet: View {
 
     /// Bell glyph in the group's tint, ringing to signal the time-sensitive alert.
     private var headsUpBell: some View {
-        Image(systemName: "bell.and.waves.left.and.right.fill")
-            .font(.system(size: 64, weight: .semibold))
+        FAImage("bell.and.waves.left.and.right.fill", size: 64)
             .foregroundStyle(tint.gradient)
             .frame(width: 120, height: 120)
             .accessibilityHidden(true)
@@ -1271,8 +1253,7 @@ struct HeadsUpSheet: View {
             Haptics.tap()
             dismiss()
         } label: {
-            Image(systemName: "xmark")
-                .font(.subheadline.weight(.semibold))
+            FAImage("xmark", relativeTo: .subheadline)
                 .foregroundStyle(.secondary)
                 .frame(width: 44, height: 44)
                 .contentShape(Circle())
@@ -1327,7 +1308,7 @@ struct FeedbackView: View {
                     .textInputAutocapitalization(.never)
             }
             if sent {
-                Label("Thanks for the feedback!", systemImage: "checkmark.circle.fill")
+                FALabel("Thanks for the feedback!", icon: "checkmark.circle.fill")
                     .foregroundStyle(.green)
             }
         }
@@ -1395,7 +1376,7 @@ private struct SwipeToRemoveRow<Content: View>: View {
                 close()
                 onRemove()
             } label: {
-                Label("Remove", systemImage: "trash.fill")
+                FALabel("Remove", icon: "trash.fill")
                     .labelStyle(.iconOnly)
                     .font(.title3)
                     .foregroundStyle(.white)

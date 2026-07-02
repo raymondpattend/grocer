@@ -145,8 +145,7 @@ struct TripHistoryView: View {
                 if trip.storeName?.isEmpty == false || !trip.startedByDisplayName.isEmpty {
                     HStack(spacing: 5) {
                         if let store = trip.storeName, !store.isEmpty {
-                            Image(systemName: "storefront")
-                                .font(.caption2.weight(.medium))
+                            FAImage("storefront", relativeTo: .caption2)
                             Text(store)
                         }
                         if !trip.startedByDisplayName.isEmpty {
@@ -166,8 +165,7 @@ struct TripHistoryView: View {
                 }
             }
 
-            Image(systemName: "chevron.right")
-                .font(.caption.weight(.semibold))
+            FAImage("chevron.right", relativeTo: .caption)
                 .foregroundStyle(.tertiary)
         }
         .padding(.horizontal, 16)
@@ -183,8 +181,7 @@ struct TripHistoryView: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(isCancelled ? Color(.systemGray5) : tint.opacity(0.14))
                 .frame(width: 40, height: 40)
-            Image(systemName: isCancelled ? "cart.badge.minus" : "cart.fill")
-                .font(.system(size: 16, weight: .medium))
+            FAImage(isCancelled ? "cart.badge.minus" : "cart.fill", size: 16)
                 .foregroundStyle(isCancelled ? Color(.systemGray2) : tint)
         }
     }
@@ -211,8 +208,7 @@ struct TripHistoryView: View {
 
     private func outcomePill(count: Int, color: Color, symbol: String) -> some View {
         HStack(spacing: 3) {
-            Image(systemName: symbol)
-                .font(.system(size: 9, weight: .bold))
+            FAImage(symbol, size: 9)
             Text("\(count)")
                 .font(.caption2.weight(.semibold))
                 .monospacedDigit()

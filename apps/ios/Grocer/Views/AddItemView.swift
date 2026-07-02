@@ -23,7 +23,7 @@ struct AddItemView: View {
                         Haptics.selection()
                         showPastItems = true
                     } label: {
-                        Label("Add from Previous Items", systemImage: "clock.arrow.circlepath")
+                        FALabel("Add from Previous Items", icon: "clock.arrow.circlepath")
                     }
                 }
             }
@@ -407,8 +407,7 @@ struct AddItemSearchView: View {
         Button {
             startPhotoCapture()
         } label: {
-            Image(systemName: "camera.fill")
-                .font(.body.weight(.semibold))
+            FAImage("camera.fill", relativeTo: .body)
                 .foregroundStyle(.primary)
                 .frame(width: 50, height: 50)
                 .contentShape(Rectangle())
@@ -427,8 +426,7 @@ struct AddItemSearchView: View {
         Button {
             startManualEntry()
         } label: {
-            Image(systemName: "plus.circle.dashed")
-                .font(.body.weight(.semibold))
+            FAImage("plus.circle.dashed", relativeTo: .body)
                 .foregroundStyle(.primary)
                 .frame(width: 50, height: 50)
                 .contentShape(Rectangle())
@@ -448,8 +446,7 @@ struct AddItemSearchView: View {
             draftFocused = false
             showHistory = true
         } label: {
-            Image(systemName: "clock.arrow.circlepath")
-                .font(.body.weight(.semibold))
+            FAImage("clock.arrow.circlepath", relativeTo: .body)
                 .foregroundStyle(.primary)
                 .frame(width: 50, height: 50)
                 .contentShape(Rectangle())
@@ -468,8 +465,7 @@ struct AddItemSearchView: View {
             Haptics.tap()
             dismissKeyboard()
         } label: {
-            Image(systemName: "keyboard.chevron.compact.down")
-                .font(.subheadline.weight(.semibold))
+            FAImage("keyboard.chevron.compact.down", relativeTo: .subheadline)
                 .foregroundStyle(.secondary)
                 .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
@@ -583,8 +579,7 @@ struct AddItemSearchView: View {
                 Haptics.tap()
                 attemptClose()
             } label: {
-                Image(systemName: "chevron.left")
-                    .font(.subheadline.weight(.semibold))
+                FAImage("chevron.left", relativeTo: .subheadline)
                     .foregroundStyle(.secondary)
                     .frame(width: 48, height: 48)
                     .contentShape(Rectangle())
@@ -640,7 +635,7 @@ struct AddItemSearchView: View {
     // own (inline amounts, the "!" urgency marker, return-per-item, the camera).
     private var emptyProposed: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Label("Tips", systemImage: "lightbulb")
+            FALabel("Tips", icon: "lightbulb")
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.secondary)
 
@@ -658,8 +653,7 @@ struct AddItemSearchView: View {
 
     private func composeTipRow(_ tip: ComposeTip) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
-            Image(systemName: tip.icon)
-                .font(.subheadline)
+            FAImage(tip.icon, relativeTo: .subheadline)
                 .foregroundStyle(.secondary)
                 .frame(width: 20, alignment: .center)
             Text(tip.text)
@@ -1645,22 +1639,22 @@ private struct LineItemRow: View {
                     Haptics.tap()
                     showCriticalAlert = true
                 } label: {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.subheadline.weight(.semibold))
+                    FAImage("exclamationmark.triangle.fill", relativeTo: .subheadline)
                         .foregroundStyle(.red)
                         .frame(width: 28, height: 28)
                         .contentShape(Rectangle())
                         .grocerLiquidGlass(in: Circle(), interactive: true)
                 }
                 .buttonStyle(.plain)
+                .tint(.gray)
                 .alert("Critical Item", isPresented: $showCriticalAlert) {
                     Button("Remove Critical", role: .destructive) {
                         Haptics.tap()
                         onRemovePriority()
                     }
-                    Button("OK", role: .cancel) {}
+                    Button("Cancel", role: .cancel) {}
                 } message: {
-                    Text("This item is marked as critical. It will be highlighted so shoppers know it's especially important and shouldn't be skipped or substituted.")
+                    Text("This item is marked as critical. It's highlighted during shopping trips so shoppers know it needs extra attention.")
                 }
             }
 
@@ -1688,8 +1682,7 @@ private struct LineItemRow: View {
     /// the thinking and resolved states.
     private var removeButton: some View {
         Button(action: onRemove) {
-            Image(systemName: "xmark")
-                .font(.footnote.weight(.semibold))
+            FAImage("xmark", relativeTo: .footnote)
                 .foregroundStyle(.tertiary)
                 .frame(width: 28, height: 28)
                 .contentShape(Rectangle())
@@ -1863,8 +1856,7 @@ private struct InlineQuantityChip: View {
 
     private func stepButton(systemImage: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.footnote.weight(.bold))
+            FAImage(systemImage, relativeTo: .footnote)
                 .foregroundStyle(.primary)
                 .frame(width: 30, height: 28)
                 .contentShape(Rectangle())
@@ -1942,8 +1934,7 @@ private struct InlineQuantityChip: View {
                     .foregroundStyle(.primary)
                 Spacer(minLength: 0)
                 if unit == effectiveUnit {
-                    Image(systemName: "checkmark")
-                        .font(.subheadline.weight(.semibold))
+                    FAImage("checkmark", relativeTo: .subheadline)
                         .foregroundStyle(tint)
                 }
             }
@@ -2015,7 +2006,7 @@ private struct PastItemsSheet: View {
                             onSelect(itemName)
                             dismiss()
                         } label: {
-                            Label(itemName, systemImage: "arrow.counterclockwise")
+                            FALabel(itemName, icon: "arrow.counterclockwise")
                         }
                     }
                 }

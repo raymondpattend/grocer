@@ -4,12 +4,13 @@ import Foundation
 /// Mirrors `DEFAULT_LIST_NAME` in packages/shared/src/constants.ts.
 let DEFAULT_LIST_NAME = "Groceries"
 
-/// Curated SF Symbols offered when customizing a group.
+/// Curated Font Awesome (Jelly) icons offered when customizing a group.
+/// Persisted as the group's `icon`; rendered via `FAImage`.
 let GROUP_ICON_CHOICES = [
-    "cart.fill", "basket.fill", "bag.fill", "takeoutbag.and.cup.and.straw.fill",
-    "fork.knife", "carrot.fill", "fish.fill", "birthday.cake.fill",
-    "wineglass.fill", "cup.and.saucer.fill", "house.fill", "pawprint.fill",
-    "gift.fill", "leaf.fill", "shippingbox.fill", "heart.fill",
+    "cart-shopping", "bag-shopping", "shop", "utensils",
+    "fish", "leaf", "cake-candles", "martini-glass",
+    "mug-hot", "house", "paw", "gift",
+    "heart", "box", "tree", "star",
 ]
 
 /// Preset color themes for a group (raw value persisted in CloudKit).
@@ -43,20 +44,21 @@ enum GroceryCategory: String, CaseIterable, Codable, Identifiable, Hashable {
     /// Stable display order used to group the list.
     static var ordered: [GroceryCategory] { allCases }
 
+    /// Font Awesome (Jelly) icon name for the category, rendered via `FAImage`.
     var systemImage: String {
         switch self {
         case .produce: return "leaf"
         case .meatSeafood: return "fish"
-        case .dairy: return "drop"
+        case .dairy: return "droplet"
         case .frozen: return "snowflake"
-        case .pantry: return "archivebox"
-        case .bakery: return "birthday.cake"
-        case .drinks: return "cup.and.saucer"
-        case .snacks: return "popcorn"
+        case .pantry: return "box-archive"
+        case .bakery: return "cake-candles"
+        case .drinks: return "mug-hot"
+        case .snacks: return "bag-shopping"
         case .household: return "house"
-        case .personalCare: return "comb"
-        case .pet: return "pawprint"
-        case .other: return "bag"
+        case .personalCare: return "scissors"
+        case .pet: return "paw"
+        case .other: return "box"
         }
     }
 }

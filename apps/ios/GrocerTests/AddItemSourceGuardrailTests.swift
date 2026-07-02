@@ -282,7 +282,7 @@ final class AddItemSourceGuardrailTests: XCTestCase {
         // Icon-only — the "Snap Item" label was removed.
         XCTAssertFalse(button.contains("\"Snap Item\""),
                        "The camera button should no longer carry a \"Snap Item\" label")
-        XCTAssertTrue(button.contains("Image(systemName: \"camera.fill\")"))
+        XCTAssertTrue(button.contains("FAImage(\"camera.fill\""))
     }
 
     func testCameraCaptureSkipsRetakeConfirmation() throws {

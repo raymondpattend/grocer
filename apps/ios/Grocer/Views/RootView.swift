@@ -182,8 +182,7 @@ private struct UpgradedToProOverlay: View {
                 .ignoresSafeArea()
 
             VStack(spacing: 16) {
-                Image(systemName: "checkmark.seal.fill")
-                    .font(.system(size: 44, weight: .semibold))
+                FAImage("checkmark.seal.fill", size: 44)
                     .foregroundStyle(.white)
                     .symbolRenderingMode(.hierarchical)
 
@@ -267,10 +266,10 @@ struct CloudIssueChip: View {
                     detailIssue = CloudIssuePresentation(issue: issue)
                 } label: {
                     HStack(spacing: 6) {
-                        Image(systemName: Self.icon(for: issue))
+                        FAImage(Self.icon(for: issue))
                         Text(Self.title(for: issue))
                             .fontWeight(.semibold)
-                        Image(systemName: "info.circle")
+                        FAImage("info.circle")
                             .foregroundStyle(.secondary)
                     }
                     .font(.footnote)
@@ -355,8 +354,7 @@ private struct CloudIssueDetailSheet: View {
         VStack(spacing: 20) {
             Spacer(minLength: 24)
 
-            Image(systemName: CloudIssueChip.icon(for: issue))
-                .font(.system(size: 44, weight: .semibold))
+            FAImage(CloudIssueChip.icon(for: issue), size: 44)
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(CloudIssueChip.tint(for: issue))
 
@@ -462,7 +460,7 @@ struct CategoryHeader: View {
     var count: Int?
     var body: some View {
         HStack(spacing: 6) {
-            Label(category.localizedName, systemImage: category.systemImage)
+            FALabel(category.localizedName, icon: category.systemImage)
             if let count {
                 Text("•")
                 Text("^[\(count) item](inflect: true)")

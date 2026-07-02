@@ -224,8 +224,7 @@ struct AppearanceSettingsView: View {
                     }
                     .overlay(alignment: .bottomTrailing) {
                         if isLocked {
-                            Image(systemName: "lock.fill")
-                                .font(.caption2.weight(.bold))
+                            FAImage("lock.fill", relativeTo: .caption2)
                                 .foregroundStyle(.white)
                                 .padding(5)
                                 .background(Color.accentColor, in: Circle())

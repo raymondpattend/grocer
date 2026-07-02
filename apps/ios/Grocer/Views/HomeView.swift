@@ -55,7 +55,7 @@ struct HomeView: View {
                             Haptics.selection()
                             withAnimation(reduceMotion ? nil : .snappy) { separateShared.toggle() }
                         } label: {
-                            Image(systemName: separateShared ? "person.2.fill" : "person.2")
+                            FAImage(separateShared ? "person.2.fill" : "person.2")
                         }
                         .accessibilityLabel("Separate shared lists")
                     }
@@ -63,7 +63,7 @@ struct HomeView: View {
                     Button {
                         addGroupTapped()
                     } label: {
-                        Image(systemName: "plus")
+                        FAImage("plus")
                     }
                     .accessibilityLabel(isAtFreeOwnedGroupLimit
                                         ? String(localized: "Upgrade to add list")
@@ -136,8 +136,11 @@ struct HomeView: View {
     private var content: some View {
         if repo.households.isEmpty {
             if repo.hasCompletedInitialLoad {
-                ContentUnavailableView("No lists yet", systemImage: "person.2",
-                                       description: Text("Create a list to start planning."))
+                ContentUnavailableView {
+                    FALabel("No lists yet", icon: "person.2")
+                } description: {
+                    Text("Create a list to start planning.")
+                }
                 .padding(.top, 40)
             } else {
                 skeleton
@@ -365,11 +368,9 @@ struct HomeView: View {
             Spacer(minLength: 12)
 
             ZStack {
-                Image(systemName: "sparkle")
-                    .font(.system(size: 24, weight: .semibold))
+                FAImage("sparkle", size: 24)
                     .offset(x: -22, y: -22)
-                Image(systemName: "lock.open")
-                    .font(.system(size: 42, weight: .medium))
+                FAImage("lock.open", size: 42)
                     .rotationEffect(.degrees(8))
             }
             .foregroundStyle(.white)
@@ -445,8 +446,7 @@ struct HomeView: View {
                             .foregroundStyle(.primary)
                             .lineLimit(1)
                         if isPinned(house) {
-                            Image(systemName: "pin.fill")
-                                .font(.caption2)
+                            FAImage("pin.fill", relativeTo: .caption2)
                                 .foregroundStyle(.tertiary)
                                 .accessibilityHidden(true)
                         }
@@ -455,7 +455,7 @@ struct HomeView: View {
                     HStack(spacing: 4) {
                         Text("^[\(pendingCount(for: house)) item](inflect: true)")
                         if hasActiveSession(house) {
-                            Image(systemName: "cart.fill")
+                            FAImage("cart.fill")
                                 .foregroundStyle(house.tint)
                         }
                     }
@@ -533,8 +533,7 @@ struct HomeView: View {
     @ViewBuilder
     private func sharedBadge(_ house: Household) -> some View {
         if showsSharedBadge(house) {
-            Image(systemName: "person.2.fill")
-                .font(.subheadline.weight(.semibold))
+            FAImage("person.2.fill", relativeTo: .subheadline)
                 .foregroundStyle(.secondary)
                 .frame(width: 44, height: 44)
                 .accessibilityHidden(true)
@@ -557,8 +556,8 @@ struct HomeView: View {
             Haptics.selection()
             withAnimation(reduceMotion ? nil : .snappy) { togglePin(house) }
         } label: {
-            Label(pinned ? "Unpin" : "Pin to Top",
-                  systemImage: pinned ? "pin.slash" : "pin")
+            FALabel(pinned ? "Unpin" : "Pin to Top",
+                  icon: pinned ? "pin.slash" : "pin")
         }
     }
 
@@ -571,7 +570,7 @@ struct HomeView: View {
             repo.selectHousehold(house.id)
             editingGroup = house
         } label: {
-            Label("Edit List", systemImage: "paintbrush")
+            FALabel("Edit List", icon: "paintbrush")
         }
     }
 

@@ -129,8 +129,7 @@ struct CombinedSessionSummaryView: View {
                 Circle()
                     .fill(tint.opacity(0.12))
                     .frame(width: 80, height: 80)
-                Image(systemName: "checkmark.seal.fill")
-                    .font(.system(size: 38))
+                FAImage("checkmark.seal.fill", size: 38)
                     .foregroundStyle(tint)
             }
             .accessibilityHidden(true)
@@ -181,7 +180,7 @@ struct CombinedSessionSummaryView: View {
     private var retryCard: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                FAImage("exclamationmark.triangle.fill").foregroundStyle(.orange)
                 Text("Couldn't finish ^[\(failedSessionIds.count) list](inflect: true)")
                 Spacer()
             }

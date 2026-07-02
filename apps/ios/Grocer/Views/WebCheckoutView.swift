@@ -80,8 +80,7 @@ struct WebCheckoutView: View {
     /// because the device is offline. Offers a retry instead of a blank screen.
     private var errorState: some View {
         VStack(spacing: 16) {
-            Image(systemName: "wifi.slash")
-                .font(.system(size: 40, weight: .regular))
+            FAImage("wifi.slash", size: 40)
                 .foregroundStyle(.secondary)
             VStack(spacing: 6) {
                 Text("Couldn\u{2019}t load checkout")
@@ -125,8 +124,7 @@ struct WebCheckoutView: View {
         Button {
             close()
         } label: {
-            Image(systemName: "xmark")
-                .font(.subheadline.weight(.semibold))
+            FAImage("xmark", relativeTo: .subheadline)
                 .foregroundStyle(.secondary)
                 .frame(width: 44, height: 44)
                 .contentShape(Circle())

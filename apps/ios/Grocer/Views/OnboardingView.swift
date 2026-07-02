@@ -93,8 +93,7 @@ struct OnboardingView: View {
                     .scaledToFit()
                     .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
             } else {
-                Image(systemName: "cart.fill")
-                    .font(.system(size: 72, weight: .semibold))
+                FAImage("cart.fill", size: 72)
                     .foregroundStyle(.white)
                     .frame(width: 160, height: 160)
                     .background(.green.opacity(0.35), in: RoundedRectangle(cornerRadius: 28, style: .continuous))
@@ -141,8 +140,7 @@ private struct OnboardingProfileSheet: View {
                 PhotosPicker(selection: $selectedProfilePhoto, matching: .images) {
                     ZStack(alignment: .bottomTrailing) {
                         OnboardingProfilePicture(imageData: settings.profileImageData, size: 96)
-                        Image(systemName: "camera.circle.fill")
-                            .font(.title3)
+                        FAImage("camera.circle.fill", relativeTo: .title3)
                             .symbolRenderingMode(.palette)
                             .foregroundStyle(.white, .green)
                     }
@@ -249,9 +247,7 @@ private struct OnboardingProfilePicture: View {
                     .resizable()
                     .scaledToFill()
             } else {
-                Image(systemName: "person.crop.circle.fill")
-                    .resizable()
-                    .symbolRenderingMode(.hierarchical)
+                FAImage("person.crop.circle.fill", size: size)
                     .foregroundStyle(Color(.systemFill))
             }
         }
@@ -268,9 +264,9 @@ private struct JoinExistingGroupHelpView: View {
         NavigationStack {
             List {
                 Section {
-                    Label("Ask a list owner to send an invite from Settings.", systemImage: "person.crop.circle.badge.plus")
-                    Label("Open the invite link on this iPhone.", systemImage: "link")
-                    Label("Grocer will add the shared list after iCloud accepts it.", systemImage: "icloud.and.arrow.down")
+                    FALabel("Ask a list owner to send an invite from Settings.", icon: "person.crop.circle.badge.plus")
+                    FALabel("Open the invite link on this iPhone.", icon: "link")
+                    FALabel("Grocer will add the shared list after iCloud accepts it.", icon: "icloud.and.arrow.down")
                 }
             }
             .navigationTitle("Join a List")

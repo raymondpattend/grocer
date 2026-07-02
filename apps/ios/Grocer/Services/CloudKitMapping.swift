@@ -85,7 +85,9 @@ extension Household: CloudKitApplicable {
             storeLatitude: double(r, CK.Field.storeLatitude),
             storeLongitude: double(r, CK.Field.storeLongitude),
             storeRadius: double(r, CK.Field.storeRadius),
-            icon: string(r, CK.Field.icon) ?? GROUP_ICON_CHOICES[0],
+            // Migrate any legacy SF Symbol icon name to its Font Awesome
+            // equivalent on decode; re-saving the group persists the FA name.
+            icon: FASymbolMap.faName(for: string(r, CK.Field.icon) ?? GROUP_ICON_CHOICES[0]),
             colorTheme: string(r, CK.Field.colorTheme)
                 .flatMap(ListColorTheme.init(rawValue:)) ?? .default,
             createdAt: date(r, CK.Field.createdAt) ?? r.creationDate ?? Date(),

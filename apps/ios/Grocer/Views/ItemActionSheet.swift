@@ -53,12 +53,12 @@ struct ItemActionSheet: View {
                         note = item.notes ?? ""
                         addingNote = true
                     } label: {
-                        Label("Add Note", systemImage: "note.text")
+                        FALabel("Add Note", icon: "note.text")
                     }
                     NavigationLink {
                         ItemDetailView(item: item)
                     } label: {
-                        Label("View Details", systemImage: "info.circle")
+                        FALabel("View Details", icon: "info.circle")
                     }
                     .simultaneousGesture(TapGesture().onEnded {
                         Haptics.selection()
@@ -91,7 +91,7 @@ struct ItemActionSheet: View {
 
     private func actionRow(_ title: String, systemImage: String, tint: Color, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Label(title, systemImage: systemImage)
+            FALabel(title, icon: systemImage)
                 .foregroundStyle(.primary)
                 .symbolRenderingMode(.palette)
                 .foregroundStyle(.white, tint)
@@ -134,7 +134,7 @@ struct ReplacementSheet: View {
                             moveItem { repo.mark(item, as: .replaced, replacement: option) }
                             dismiss()
                         } label: {
-                            Label(option, systemImage: "cart.badge.plus")
+                            FALabel(option, icon: "cart.badge.plus")
                         }
                     }
                 }

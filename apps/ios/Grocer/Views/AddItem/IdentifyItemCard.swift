@@ -172,8 +172,7 @@ struct IdentifyItemCard: View {
                         Haptics.tap()
                         onRemovePhoto()
                     } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.title3)
+                        FAImage("xmark.circle.fill", relativeTo: .title3)
                             .symbolRenderingMode(.palette)
                             .foregroundStyle(.white, Color.black.opacity(0.55))
                     }
@@ -186,8 +185,7 @@ struct IdentifyItemCard: View {
                 onAddPhoto()
             } label: {
                 VStack(spacing: 5) {
-                    Image(systemName: "camera.fill")
-                        .font(.title3)
+                    FAImage("camera.fill", relativeTo: .title3)
                     Text("Add Photo")
                         .font(.caption2.weight(.semibold))
                 }
@@ -218,8 +216,7 @@ struct IdentifyItemCard: View {
                 .fill(Color(.systemGray6))
                 .frame(width: 200, height: 200)
                 .overlay {
-                    Image(systemName: "photo")
-                        .font(.largeTitle)
+                    FAImage("photo", relativeTo: .largeTitle)
                         .foregroundStyle(.tertiary)
                 }
                 .accessibilityHidden(true)

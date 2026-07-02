@@ -131,6 +131,11 @@ targets:
       - path: Grocer/Shared/GroceryActivityAttributes.swift
       - path: Grocer/Shared/GroupDeepLink.swift
       - path: Grocer/Shared/WidgetSharedData.swift
+      # Font Awesome (shared icon layer + bundled Jelly fonts).
+      - path: Grocer/Shared/FontAwesome/FontAwesome.swift
+      - path: Grocer/Shared/FontAwesome/FAIcons.swift
+      - path: Grocer/Shared/FontAwesome/SFSymbolMapping.swift
+      - path: Grocer/Shared/FontAwesome/Fonts
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.narro.grocer.GrocerWidget

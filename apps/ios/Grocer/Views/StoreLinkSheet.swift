@@ -126,8 +126,7 @@ struct StoreLinkSheet: View {
     }
 
     private var introIcon: some View {
-        Image(systemName: "mappin.and.ellipse")
-            .font(.system(size: 38, weight: .semibold))
+        FAImage("mappin.and.ellipse", size: 38)
             .foregroundStyle(.white)
             .frame(width: 84, height: 84)
             .background(
@@ -238,8 +237,7 @@ struct StoreLinkSheet: View {
                     Haptics.tap()
                     dismiss()
                 } label: {
-                    Image(systemName: "xmark")
-                        .font(.subheadline.weight(.semibold))
+                    FAImage("xmark", relativeTo: .subheadline)
                         .foregroundStyle(.primary)
                         .frame(width: 44, height: 44)
                         .contentShape(Circle())
@@ -251,8 +249,7 @@ struct StoreLinkSheet: View {
                 Spacer()
 
                 Button(action: confirm) {
-                    Image(systemName: "checkmark")
-                        .font(.headline.weight(.bold))
+                    FAImage("checkmark", relativeTo: .headline)
                         .foregroundStyle(.white)
                         .frame(width: 44, height: 44)
                         .background {
@@ -307,7 +304,7 @@ struct StoreLinkSheet: View {
         } label: {
             HStack(spacing: 5) {
                 Text(size.label).fontWeight(.semibold)
-                Image(systemName: "chevron.up.chevron.down").font(.caption2.weight(.semibold))
+                FAImage("chevron.up.chevron.down", relativeTo: .caption2)
             }
             .font(.subheadline)
             .foregroundStyle(.white)
@@ -363,8 +360,7 @@ struct StoreLinkSheet: View {
             Haptics.tap()
             dismiss()
         } label: {
-            Image(systemName: "xmark")
-                .font(.subheadline.weight(.semibold))
+            FAImage("xmark", relativeTo: .subheadline)
                 .foregroundStyle(.secondary)
                 .frame(width: 44, height: 44)
                 .contentShape(Circle())
@@ -623,7 +619,7 @@ private struct StorePickerMapView: UIViewRepresentable {
 
         private func style(_ view: MKMarkerAnnotationView, selected: Bool) {
             view.markerTintColor = selected ? .systemRed : .systemBlue
-            view.glyphImage = UIImage(systemName: selected ? "cart.fill" : "storefront.fill")
+            view.glyphImage = FontAwesome.uiImage(selected ? "cart.fill" : "storefront.fill")
         }
     }
 }
@@ -696,8 +692,7 @@ struct StoreLinkBanner: View {
     var body: some View {
         Button(action: onTap) {
             HStack(spacing: 14) {
-                Image(systemName: "mappin.and.ellipse")
-                    .font(.title2)
+                FAImage("mappin.and.ellipse", relativeTo: .title2)
                     .foregroundStyle(tint)
                     .frame(width: 44, height: 44)
                     .background(Circle().fill(tint.opacity(0.16)))
@@ -717,8 +712,7 @@ struct StoreLinkBanner: View {
                 Button {
                     onClose()
                 } label: {
-                    Image(systemName: "xmark")
-                        .font(.caption.weight(.bold))
+                    FAImage("xmark", relativeTo: .caption)
                         .foregroundStyle(.secondary)
                         .padding(8)
                         .contentShape(Rectangle())
@@ -776,7 +770,7 @@ struct StoreLocationCard: View {
                 Label {
                     Text("Notify me when I arrive")
                 } icon: {
-                    Image(systemName: "location.fill.viewfinder")
+                    FAImage("location.fill.viewfinder")
                 }
             }
             .padding(.horizontal, 16)
@@ -841,8 +835,7 @@ private struct StoreMapSnapshot: View {
                     .stroke(Color.blue.opacity(0.65), lineWidth: 2)
 
                 Annotation("", coordinate: coordinate) {
-                    Image(systemName: "mappin")
-                        .font(.system(size: 14, weight: .bold))
+                    FAImage("mappin", size: 14)
                         .foregroundStyle(.white)
                         .frame(width: 28, height: 28)
                         .background(Color.red, in: Circle())
@@ -874,8 +867,7 @@ private struct StoreMapSnapshot: View {
             Haptics.warning()
             onRemove()
         } label: {
-            Image(systemName: "trash.fill")
-                .font(.system(size: 15, weight: .semibold))
+            FAImage("trash.fill", size: 15)
                 .foregroundStyle(.red)
                 .frame(width: 38, height: 38)
                 .contentShape(Circle())

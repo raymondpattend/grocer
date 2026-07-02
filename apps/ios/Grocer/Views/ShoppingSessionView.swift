@@ -57,8 +57,11 @@ struct ShoppingSessionView: View {
             if let session {
                 sessionContent(session)
             } else {
-                ContentUnavailableView("Session ended", systemImage: "cart",
-                                       description: Text("This shopping trip is no longer active."))
+                ContentUnavailableView {
+                    FALabel("Session ended", icon: "cart")
+                } description: {
+                    Text("This shopping trip is no longer active.")
+                }
             }
         }
         .navigationTitle("Shopping")
@@ -118,7 +121,7 @@ struct ShoppingSessionView: View {
                         shopItemButton(item, canManageTrip: canManageTrip)
                     }
                 } header: {
-                    Label("Added During Trip", systemImage: "sparkles")
+                    FALabel("Added During Trip", icon: "sparkles")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.green)
                         .textCase(nil)
@@ -137,16 +140,16 @@ struct ShoppingSessionView: View {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Menu {
                     Picker("Organize", selection: sortModeBinding(session)) {
-                        Label("Categories", systemImage: "square.grid.2x2").tag(ListSortMode.category)
-                        Label("My order", systemImage: "line.3.horizontal").tag(ListSortMode.custom)
+                        FALabel("Categories", icon: "square.grid.2x2").tag(ListSortMode.category)
+                        FALabel("My order", icon: "line.3.horizontal").tag(ListSortMode.custom)
                     }
                     .pickerStyle(.inline)
                 } label: {
-                    Image(systemName: repo.sortMode(forSession: session) == .custom ? "line.3.horizontal" : "arrow.up.arrow.down")
+                    FAImage(repo.sortMode(forSession: session) == .custom ? "line.3.horizontal" : "arrow.up.arrow.down")
                 }
                 .accessibilityLabel("Organize list")
 
-                Button { Haptics.tap(); showAddItem = true } label: { Image(systemName: "plus") }
+                Button { Haptics.tap(); showAddItem = true } label: { FAImage("plus") }
             }
         }
         .sheet(item: $selectedItem) { item in
@@ -226,7 +229,7 @@ struct ShoppingSessionView: View {
         .swipeActions(edge: .trailing, allowsFullSwipe: canManageTrip) {
             if canManageTrip {
                 Button { markItem(item, as: .found) } label: {
-                    Label("Found", systemImage: "checkmark")
+                    FALabel("Found", icon: "checkmark")
                 }
                 .tint(.green)
             } else {
@@ -234,7 +237,7 @@ struct ShoppingSessionView: View {
                     Haptics.selection()
                     editingItem = item
                 } label: {
-                    Label("Edit", systemImage: "pencil")
+                    FALabel("Edit", icon: "pencil")
                 }
                 .tint(tint)
             }
@@ -245,15 +248,15 @@ struct ShoppingSessionView: View {
                     Haptics.selection()
                     replacingItem = item
                 } label: {
-                    Label("Replace", systemImage: "arrow.triangle.2.circlepath")
+                    FALabel("Replace", icon: "arrow.triangle.2.circlepath")
                 }
                 .tint(.blue)
                 Button { markItem(item, as: .skipped) } label: {
-                    Label("Skip", systemImage: "arrow.uturn.forward")
+                    FALabel("Skip", icon: "arrow.uturn.forward")
                 }
                 .tint(.orange)
                 Button { markItem(item, as: .outOfStock) } label: {
-                    Label("Out", systemImage: "xmark")
+                    FALabel("Out", icon: "xmark")
                 }
                 .tint(.red)
             }
@@ -310,7 +313,7 @@ struct ShoppingSessionView: View {
                             HStack(spacing: 6) {
                                 Text(session.storeName ?? String(localized: "Set store")).font(.title2.bold())
                                     .foregroundStyle(session.storeName == nil ? .secondary : .primary)
-                                Image(systemName: "pencil").font(.caption).foregroundStyle(.secondary)
+                                FAImage("pencil", relativeTo: .caption).foregroundStyle(.secondary)
                             }
                         }
                         .buttonStyle(.plain)
@@ -339,7 +342,7 @@ struct ShoppingSessionView: View {
 
             if canManageTrip {
                 HStack(spacing: 4) {
-                    Image(systemName: "hand.draw").font(.caption2)
+                    FAImage("hand.draw", relativeTo: .caption2)
                     Text("Swipe right → Found · Swipe left for more")
                         .font(.caption2)
                 }
@@ -367,8 +370,7 @@ struct ShoppingSessionView: View {
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(.secondary)
                         Spacer()
-                        Image(systemName: "chevron.right")
-                            .font(.caption.weight(.semibold))
+                        FAImage("chevron.right", relativeTo: .caption)
                             .foregroundStyle(.tertiary)
                             .rotationEffect(.degrees(showCompleted ? 90 : 0))
                     }
@@ -410,7 +412,7 @@ struct ShoppingSessionView: View {
                 showFinishConfirm = true
             }
         } label: {
-            Label("Finish Shopping", systemImage: "flag.checkered")
+            FALabel("Finish Shopping", icon: "flag.checkered")
                 .font(.headline).frame(maxWidth: .infinity).padding(.vertical, 6)
         }
         .grocerGlassButton(prominent: true)
@@ -485,8 +487,7 @@ struct ShopItemRow: View {
             MemberAvatarView(member: member, size: 26)
                 .overlay(alignment: .bottomTrailing) {
                     if let groupBadge {
-                        Image(systemName: groupBadge.icon)
-                            .font(.system(size: 8, weight: .bold))
+                        FAImage(groupBadge.icon, size: 8)
                             .foregroundStyle(.white)
                             .padding(3)
                             .background(Circle().fill(groupBadge.tint))
@@ -527,7 +528,7 @@ private struct CompletedItemRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: icon)
+            FAImage(icon)
                 .foregroundStyle(statusColor)
                 .font(.body)
 
@@ -545,18 +546,17 @@ private struct CompletedItemRow: View {
             Menu {
                 if canManageTrip {
                     Button { onUndo() } label: {
-                        Label("Put Back on List", systemImage: "arrow.uturn.backward")
+                        FALabel("Put Back on List", icon: "arrow.uturn.backward")
                     }
                 }
                 Button {
                     Haptics.selection()
                     onEdit()
                 } label: {
-                    Label("Edit Item", systemImage: "pencil")
+                    FALabel("Edit Item", icon: "pencil")
                 }
             } label: {
-                Image(systemName: "ellipsis.circle")
-                    .font(.body)
+                FAImage("ellipsis.circle", relativeTo: .body)
                     .foregroundStyle(.secondary)
             }
             .accessibilityLabel(String(localized: "Options for \(item.name)"))
@@ -636,7 +636,7 @@ struct ShoppingItemDetailView: View {
                 .multilineTextAlignment(.center)
 
             HStack(spacing: 6) {
-                Label(item.category.localizedName, systemImage: item.category.systemImage)
+                FALabel(item.category.localizedName, icon: item.category.systemImage)
                     .font(.caption.weight(.medium))
                     .foregroundStyle(tint)
                     .padding(.horizontal, 10)
@@ -695,7 +695,7 @@ struct ShoppingItemDetailView: View {
 
     private func detailRow(label: String, systemImage: String, value: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Label(label, systemImage: systemImage)
+            FALabel(label, icon: systemImage)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
             Text(value)
@@ -733,7 +733,7 @@ struct ShoppingItemDetailView: View {
         VStack(spacing: 10) {
             if canManageTrip {
                 Button { onAction(.found) } label: {
-                    Label("Mark Found", systemImage: "checkmark.circle.fill")
+                    FALabel("Mark Found", icon: "checkmark.circle.fill")
                         .font(.headline)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 6)
@@ -744,7 +744,7 @@ struct ShoppingItemDetailView: View {
 
                 HStack(spacing: 10) {
                     Button { onAction(.replace) } label: {
-                        Label("Replace", systemImage: "arrow.triangle.2.circlepath")
+                        FALabel("Replace", icon: "arrow.triangle.2.circlepath")
                             .font(.subheadline.weight(.semibold))
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 4)
@@ -754,7 +754,7 @@ struct ShoppingItemDetailView: View {
                     .controlSize(.regular)
 
                     Button { onAction(.skip) } label: {
-                        Label("Skip", systemImage: "arrow.uturn.forward")
+                        FALabel("Skip", icon: "arrow.uturn.forward")
                             .font(.subheadline.weight(.semibold))
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 4)
@@ -764,7 +764,7 @@ struct ShoppingItemDetailView: View {
                     .controlSize(.regular)
 
                     Button { onAction(.outOfStock) } label: {
-                        Label("Out", systemImage: "xmark")
+                        FALabel("Out", icon: "xmark")
                             .font(.subheadline.weight(.semibold))
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 4)
@@ -776,7 +776,7 @@ struct ShoppingItemDetailView: View {
             }
 
             Button { onAction(.edit) } label: {
-                Label("Edit Item", systemImage: "pencil")
+                FALabel("Edit Item", icon: "pencil")
                     .font(.subheadline.weight(.semibold))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 4)

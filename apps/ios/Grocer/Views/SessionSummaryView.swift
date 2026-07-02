@@ -114,8 +114,7 @@ struct SessionSummaryView: View {
                 Circle()
                     .fill(tint.opacity(0.12))
                     .frame(width: 80, height: 80)
-                Image(systemName: "checkmark.seal.fill")
-                    .font(.system(size: 38))
+                FAImage("checkmark.seal.fill", size: 38)
                     .foregroundStyle(tint)
             }
             .accessibilityHidden(true)
